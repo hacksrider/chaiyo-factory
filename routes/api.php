@@ -169,4 +169,21 @@ Route::prefix('production-monitor')->group(function () {
      *   }
      */
     Route::post('/session-confirm/{machineId}', [ProductionMonitorController::class, 'sessionConfirm']);
+
+    // ── DB-first endpoints (Phase 1) ─────────────────────────────────────────
+
+    // Queue
+    Route::post('/queue/{machineId}',                [ProductionMonitorController::class, 'enqueueItem']);
+    Route::get('/queue/{machineId}',                 [ProductionMonitorController::class, 'getQueue']);
+    Route::delete('/queue/{machineId}/{itemId}',     [ProductionMonitorController::class, 'deleteQueueItem'])
+        ->whereNumber('itemId');
+
+    // Session / Live
+    Route::get('/session/{machineId}',               [ProductionMonitorController::class, 'getSession']);
+    Route::post('/start/{machineId}',                [ProductionMonitorController::class, 'startSession']);
+    Route::post('/pause/{machineId}',                [ProductionMonitorController::class, 'pauseSession']);
+    Route::post('/finish/{machineId}',               [ProductionMonitorController::class, 'finishSession']);
+
+    // History from DB
+    Route::get('/history-db',                        [ProductionMonitorController::class, 'getHistoryDb']);
 });

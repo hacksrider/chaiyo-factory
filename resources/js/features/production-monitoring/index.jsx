@@ -14,6 +14,12 @@ import {
   logWeightEvent,
   appendMachineLog,
   fetchDailyPlan,
+  // DB-first
+  dbEnqueueItem,
+  dbGetQueue,
+  dbDeleteQueueItem,
+  dbStartSession,
+  dbGetSession,
 } from './api/productionApi';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { SSE_EVENTS } from './SSE_EVENTS';
@@ -273,6 +279,9 @@ const ProductionMonitoring = () => {
     resumeOrder,
     clearPausedOrder,
     mergeServerStates,
+    setQueueFromDb,
+    applyDbQueueUpdate,
+    applyDbSessionUpdate,
   } = useProductionStates();
 
   const [selectedMachineId, setSelectedMachineId] = useState(null);
@@ -301,6 +310,29 @@ const ProductionMonitoring = () => {
       setSelectedMachineId(machines[0].id);
     }
   }, [machines, selectedMachineId, urlLedMachineId]);
+
+  // Load DB queue and session for each machine once the machine list is ready
+  const dbInitDoneRef = useRef(false);
+  useEffect(() => {
+    if (machines.length === 0 || dbInitDoneRef.current) return;
+    dbInitDoneRef.current = true;
+    Promise.allSettled(
+      machines.map(async (m) => {
+        try {
+          const [qRes, sRes] = await Promise.allSettled([
+            dbGetQueue(m.id),
+            dbGetSession(m.id),
+          ]);
+          if (qRes.status === 'fulfilled' && Array.isArray(qRes.value?.queue)) {
+            setQueueFromDb(m.id, qRes.value.queue);
+          }
+          if (sRes.status === 'fulfilled' && sRes.value?.session) {
+            applyDbSessionUpdate({ machineId: m.id, session: sRes.value.session });
+          }
+        } catch { /* non-critical, cache-based state will still work */ }
+      }),
+    );
+  }, [machines]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // /led-sign/:machineId → เลือกเครื่องตาม URL (เมื่อ URL segment หรือรายการเครื่องพร้อมใช้งาน)
   useEffect(() => {
@@ -538,6 +570,71 @@ const ProductionMonitoring = () => {
     });
   }, [selectedMachineId]);
 
+  // SSE handler for queue_updated — another browser/DB changed the queue
+  const handleSseQueueUpdated = useCallback((payload) => {
+    if (!payload?.machineId) return;
+    applyDbQueueUpdate(payload);
+  }, [applyDbQueueUpdate]);
+
+  // SSE handler for session_updated — DB session changed (start/pause/finish)
+  const handleSseSessionUpdated = useCallback((payload) => {
+    if (!payload?.machineId || !payload?.session) return;
+    applyDbSessionUpdate(payload);
+  }, [applyDbSessionUpdate]);
+
+  // DB-aware add-to-queue: write to DB first, update local state on success
+  const handleDbAddToQueue = useCallback(async (machineId, item) => {
+    // Optimistic local update (keeps UI snappy)
+    const tempItem = {
+      ...item,
+      queueId: item.queueId ?? `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      addedAt: new Date().toISOString(),
+    };
+    addToQueue(machineId, tempItem);
+
+    try {
+      const m = machines.find((mc) => mc.id === machineId);
+      const res = await dbEnqueueItem(machineId, {
+        ...item,
+        sheetName: item.sheetName || m?.sheetName || machineId,
+        ledIp:     item.ledIp     || m?.ledIp     || '',
+        queueKey:  tempItem.queueId,
+      });
+      if (res?.item) {
+        // Replace optimistic entry with server-confirmed item
+        removeFromQueue(machineId, tempItem.queueId);
+        addToQueue(machineId, res.item);
+      }
+    } catch (err) {
+      console.warn('[queue] dbEnqueueItem failed (local-only):', err?.message);
+    }
+  }, [addToQueue, removeFromQueue, machines]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // DB-aware remove-from-queue
+  const handleDbRemoveFromQueue = useCallback((machineId, queueId) => {
+    removeFromQueue(machineId, queueId);
+    // Fire-and-forget DB delete (queueId might be DB id or temp key)
+    const numId = parseInt(queueId, 10);
+    if (!isNaN(numId)) {
+      dbDeleteQueueItem(machineId, numId).catch((err) =>
+        console.warn('[queue] dbDeleteQueueItem failed:', err?.message),
+      );
+    }
+  }, [removeFromQueue]);
+
+  // Load DB queues for all machines (called on mount and reconnect)
+  const loadDbQueuesRef = useRef(null);
+  loadDbQueuesRef.current = useCallback(async (machineList) => {
+    await Promise.allSettled(
+      (machineList ?? machines).map(async (m) => {
+        try {
+          const res = await dbGetQueue(m.id);
+          if (Array.isArray(res?.queue)) setQueueFromDb(m.id, res.queue);
+        } catch { /* non-critical */ }
+      }),
+    );
+  }, [machines, setQueueFromDb]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // On reconnect — re-fetch state snapshot to fill the gap during disconnection
   const handleSseReconnect = useCallback(async () => {
     try {
@@ -549,6 +646,8 @@ const ProductionMonitoring = () => {
       });
       mergeServerStatesRef.current(data.sessions);
     } catch { /* network error — polling will catch up */ }
+    // Also reload DB queues to catch any changes during disconnection
+    loadDbQueuesRef.current?.().catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Attach SSE — real-time push for all events
@@ -558,6 +657,8 @@ const ProductionMonitoring = () => {
     onProductionUpdated: handleSseProductionUpdated,
     onSessionConfirmed:  handleSseSessionConfirmed,
     onLedUpdated:        handleSseLedUpdated,
+    onQueueUpdated:      handleSseQueueUpdated,
+    onSessionUpdated:    handleSseSessionUpdated,
     onStatusChange:      setSseStatus,
     onReconnect:         handleSseReconnect,
     // LED state is handled inside LedSignView directly
@@ -951,14 +1052,9 @@ const ProductionMonitoring = () => {
                 machines={machines}
                 queuedMap={queuedMap}
                 onAddToQueue={(machineId, item) => {
-                  const m = machines.find((mc) => mc.id === machineId);
-                  addToQueue(machineId, {
-                    ...item,
-                    sheetName: item.sheetName || m?.sheetName || machineId,
-                    ledIp:     item.ledIp     || m?.ledIp     || '',
-                  });
+                  handleDbAddToQueue(machineId, item);
                 }}
-                onRemoveFromQueue={removeFromQueue}
+                onRemoveFromQueue={(machineId, queueId) => handleDbRemoveFromQueue(machineId, queueId)}
               />
             )}
           </div>
@@ -1177,8 +1273,9 @@ const ProductionMonitoring = () => {
                       }, 50);
                     }}
                     onCloseAndStart={(item) => {
-                      if (item.queueId) removeFromQueue(selectedMachineId, item.queueId);
-                      updateMachineState(selectedMachineId, {
+                      const mid = selectedMachineId;
+                      if (item.queueId) handleDbRemoveFromQueue(mid, item.queueId);
+                      updateMachineState(mid, {
                         orderId:      item.orderId,
                         productCode:  item.productCode || '',
                         productName:  item.productName,
@@ -1194,9 +1291,19 @@ const ProductionMonitoring = () => {
                         startedAt:    new Date().toISOString(),
                         pausedOrder:  null,
                       });
-                      queueProductionLedForMachine(selectedMachineId, { ...item }, 0).catch(() => {});
+                      dbStartSession(mid, {
+                        orderId:     item.orderId,
+                        productCode: item.productCode || '',
+                        productName: item.productName,
+                        targetQty:   item.targetQty,
+                        remainingQty:item.remainingQty ?? 0,
+                        planDate:    item.planDate     ?? '',
+                        sheetName:   item.sheetName ?? selectedMachine.sheetName,
+                        ledIp:       item.ledIp     ?? selectedMachine.ledIp,
+                      }).catch((err) => console.warn('[start] dbStartSession(closeAndStart) failed:', err?.message));
+                      queueProductionLedForMachine(mid, { ...item }, 0).catch(() => {});
                       logStartNow({
-                        machineId:    selectedMachineId,
+                        machineId:    mid,
                         machineLabel: selectedMachine.label,
                         productCode:  item.productCode || '',
                         shift:        item.shift       || '',
@@ -1211,8 +1318,8 @@ const ProductionMonitoring = () => {
                     ledIp={selectedMachine.ledIp}
                     queue={machineState.queue ?? []}
                     pausedOrder={machineState.pausedOrder ?? null}
-                    onAddToQueue={(item) => addToQueue(selectedMachineId, item)}
-                    onRemoveFromQueue={(queueId) => removeFromQueue(selectedMachineId, queueId)}
+                    onAddToQueue={(item) => handleDbAddToQueue(selectedMachineId, item)}
+                    onRemoveFromQueue={(queueId) => handleDbRemoveFromQueue(selectedMachineId, queueId)}
                     onResumeOrder={() => { void resumeOrderWithLed(selectedMachineId); }}
                     onResumeWithScaleConfirm={(shift, employeeId) => {
                       const mid = selectedMachineId;
@@ -1225,8 +1332,11 @@ const ProductionMonitoring = () => {
                     }}
                     onClosePausedOrder={() => clearPausedOrder(selectedMachineId)}
                     onStartProduction={(data) => {
-                      if (data.queueId) removeFromQueue(selectedMachineId, data.queueId);
-                      updateMachineState(selectedMachineId, {
+                      const mid = selectedMachineId;
+                      // Remove from queue (DB + local)
+                      if (data.queueId) handleDbRemoveFromQueue(mid, data.queueId);
+                      // Optimistic local state update
+                      updateMachineState(mid, {
                         orderId:      data.orderId,
                         productCode:  data.productCode || '',
                         productName:  data.productName,
@@ -1242,7 +1352,6 @@ const ProductionMonitoring = () => {
                         lastWeight:   null,
                         lastWeightAt: null,
                         startedAt:    new Date().toISOString(),
-                        // ข้อมูลจาก Sheet Product
                         peType:      data.peType      ?? '',
                         size:        data.size        ?? null,
                         length:      data.length      ?? null,
@@ -1253,9 +1362,30 @@ const ProductionMonitoring = () => {
                         minWeight:   data.minWeight   ?? null,
                         maxWeight:   data.maxWeight   ?? null,
                       });
-                      queueProductionLedForMachine(selectedMachineId, data, 0).catch(() => {});
+                      // DB write (fire-and-forget; SSE will propagate to other browsers)
+                      dbStartSession(mid, {
+                        queueItemId:  data.queueItemId ?? null,
+                        orderId:      data.orderId,
+                        productCode:  data.productCode || '',
+                        productName:  data.productName,
+                        targetQty:    data.targetQty,
+                        remainingQty: data.remainingQty ?? 0,
+                        planDate:     data.planDate     ?? '',
+                        sheetName:    data.sheetName,
+                        ledIp:        data.ledIp,
+                        peType:       data.peType      ?? '',
+                        size:         data.size        ?? null,
+                        length:       data.length      ?? null,
+                        pn:           data.pn          ?? null,
+                        brand:        data.brand       ?? '',
+                        colorStripe:  data.colorStripe ?? '',
+                        stdWeight:    data.stdWeight   ?? null,
+                        minWeight:    data.minWeight   ?? null,
+                        maxWeight:    data.maxWeight   ?? null,
+                      }).catch((err) => console.warn('[start] dbStartSession failed:', err?.message));
+                      queueProductionLedForMachine(mid, data, 0).catch(() => {});
                       logStartNow({
-                        machineId:    selectedMachineId,
+                        machineId:    mid,
                         machineLabel: selectedMachine.label,
                         productCode:  data.productCode || '',
                         shift:        data.shift       || '',

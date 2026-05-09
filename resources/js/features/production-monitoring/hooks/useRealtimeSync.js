@@ -19,6 +19,8 @@
  *   production_updated { machineId, qty_good, qty_remaining, total_weight, _ts }
  *   session_confirmed  { machineId, shift, employee_id, confirmed_at }
  *   scale_weight       { machineId, event }
+ *   queue_updated      { machineId, action, item?, itemId? }  ← DB queue
+ *   session_updated    { machineId, session }                 ← DB session
  */
 
 import { useEffect, useRef, useCallback } from 'react';
@@ -64,6 +66,8 @@ const writeLastTs = (machineId, ts) => {
  * @param {function} [handlers.onProductionUpdated]  ({ machineId, qty_good, qty_remaining, total_weight, _ts }) => void
  * @param {function} [handlers.onSessionConfirmed]   ({ machineId, shift, employee_id, confirmed_at }) => void
  * @param {function} [handlers.onScaleWeight]        ({ machineId, event }) => void
+ * @param {function} [handlers.onQueueUpdated]       ({ machineId, action, item?, itemId? }) => void
+ * @param {function} [handlers.onSessionUpdated]     ({ machineId, session }) => void
  * @param {function} [handlers.onConnected]          ({ latestId }) => void
  * @param {function} [handlers.onReconnect]          () => void — fires after every successful re-open (not first connect)
  * @param {function} [handlers.onStatusChange]       ('connecting'|'open'|'closed'|'error') => void
@@ -77,6 +81,8 @@ export const useRealtimeSync = ({
   onProductionUpdated,
   onSessionConfirmed,
   onScaleWeight,
+  onQueueUpdated,
+  onSessionUpdated,
   onConnected,
   onReconnect,
   onStatusChange,
@@ -98,6 +104,8 @@ export const useRealtimeSync = ({
   cbRefs.current.onProductionUpdated = onProductionUpdated;
   cbRefs.current.onSessionConfirmed  = onSessionConfirmed;
   cbRefs.current.onScaleWeight       = onScaleWeight;
+  cbRefs.current.onQueueUpdated      = onQueueUpdated;
+  cbRefs.current.onSessionUpdated    = onSessionUpdated;
   cbRefs.current.onConnected         = onConnected;
   cbRefs.current.onReconnect         = onReconnect;
   cbRefs.current.onStatusChange      = onStatusChange;
@@ -222,6 +230,12 @@ export const useRealtimeSync = ({
 
     // ── scale_weight ─────────────────────────────────────────────────────
     es.addEventListener(SSE_EVENTS.SCALE_WEIGHT, makeHandler('onScaleWeight'));
+
+    // ── queue_updated (DB-first queue) ────────────────────────────────────
+    es.addEventListener(SSE_EVENTS.QUEUE_UPDATED, makeHandler('onQueueUpdated'));
+
+    // ── session_updated (DB-first session) ───────────────────────────────
+    es.addEventListener(SSE_EVENTS.SESSION_UPDATED, makeHandler('onSessionUpdated'));
 
     // ── Keep-alive comments (: heartbeat) ────────────────────────────────
     // Server sends `: heartbeat` every 15s; EventSource fires this as a

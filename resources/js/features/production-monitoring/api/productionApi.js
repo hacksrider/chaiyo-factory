@@ -62,6 +62,26 @@ const get = async (endpoint) => {
 const getCsrfToken = () =>
   document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
 
+const del = async (endpoint) => {
+  const response = await fetchWithTimeout(`${BASE}${endpoint}`, {
+    method: 'DELETE',
+    headers: {
+      Accept: 'application/json',
+      'X-CSRF-TOKEN': getCsrfToken(),
+    },
+  });
+
+  const data = await response
+    .json()
+    .catch(() => ({ success: false, message: response.statusText }));
+
+  if (!response.ok) {
+    throw buildError(data, response.status);
+  }
+
+  return data;
+};
+
 const post = async (endpoint, body) => {
   const response = await fetchWithTimeout(`${BASE}${endpoint}`, {
     method: 'POST',
@@ -708,3 +728,63 @@ export const pushToScale = (machineId, payload) =>
  */
 export const storeScaleSessionConfirm = (machineId, payload) =>
   post(`/session-confirm/${encodeURIComponent(machineId)}`, payload);
+
+// ─── DB-first endpoints (Phase 1) ────────────────────────────────────────────
+
+/**
+ * POST /api/production-monitor/queue/{machineId}
+ * เพิ่มรายการผลิตเข้าคิว DB
+ */
+export const dbEnqueueItem = (machineId, payload) =>
+  post(`/queue/${encodeURIComponent(machineId)}`, payload);
+
+/**
+ * GET /api/production-monitor/queue/{machineId}
+ * ดึงคิวจาก DB
+ */
+export const dbGetQueue = (machineId) =>
+  get(`/queue/${encodeURIComponent(machineId)}`);
+
+/**
+ * DELETE /api/production-monitor/queue/{machineId}/{itemId}
+ * ยกเลิกรายการในคิว
+ */
+export const dbDeleteQueueItem = (machineId, itemId) =>
+  del(`/queue/${encodeURIComponent(machineId)}/${itemId}`);
+
+/**
+ * GET /api/production-monitor/session/{machineId}
+ * ดึง active session จาก DB
+ */
+export const dbGetSession = (machineId) =>
+  get(`/session/${encodeURIComponent(machineId)}`);
+
+/**
+ * POST /api/production-monitor/start/{machineId}
+ * StartNow: สร้าง live session ใน DB
+ */
+export const dbStartSession = (machineId, payload) =>
+  post(`/start/${encodeURIComponent(machineId)}`, payload);
+
+/**
+ * POST /api/production-monitor/pause/{machineId}
+ * หยุดชั่วคราว
+ */
+export const dbPauseSession = (machineId, payload) =>
+  post(`/pause/${encodeURIComponent(machineId)}`, payload);
+
+/**
+ * POST /api/production-monitor/finish/{machineId}
+ * จบงาน
+ */
+export const dbFinishSession = (machineId, payload) =>
+  post(`/finish/${encodeURIComponent(machineId)}`, payload);
+
+/**
+ * GET /api/production-monitor/history-db
+ * ประวัติการผลิตจาก DB
+ */
+export const dbGetHistory = (params = {}) => {
+  const qs = new URLSearchParams(params).toString();
+  return get(`/history-db${qs ? `?${qs}` : ''}`);
+};

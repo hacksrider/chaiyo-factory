@@ -35,6 +35,12 @@ export const SSE_EVENTS = {
 
   /** Raw weight submitted by scale ESP32 (real-time button press): { machineId, event } */
   SCALE_WEIGHT:       'scale_weight',
+
+  /** DB queue changed (add/remove): { machineId, action, item?, itemId? } */
+  QUEUE_UPDATED:      'queue_updated',
+
+  /** DB session changed (start/pause/finish/confirm): { machineId, session } */
+  SESSION_UPDATED:    'session_updated',
 };
 
 export default SSE_EVENTS;

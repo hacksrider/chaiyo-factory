@@ -303,6 +303,70 @@ export const useProductionStates = () => {
     });
   }, []);
 
+  // ── DB-first helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * Replace the queue for a machine with a fresh list from DB.
+   * Called on mount and on SSE reconnect.
+   */
+  const setQueueFromDb = useCallback((machineId, dbItems) => {
+    if (!Array.isArray(dbItems)) return;
+    setAllStates((prev) => {
+      const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
+      return { ...prev, [machineId]: { ...current, queue: dbItems } };
+    });
+  }, []);
+
+  /**
+   * Apply a queue_updated SSE event from the DB.
+   * { machineId, action: 'added'|'removed', item?, itemId? }
+   */
+  const applyDbQueueUpdate = useCallback(({ machineId, action, item, itemId }) => {
+    setAllStates((prev) => {
+      const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
+      let nextQueue = current.queue ?? [];
+      if (action === 'added' && item) {
+        // Avoid duplicates if we already added it optimistically
+        const exists = nextQueue.some(
+          (q) => (q.id && q.id === item.id) || (q.queueKey && q.queueKey === item.queueKey),
+        );
+        if (!exists) nextQueue = [...nextQueue, item];
+      } else if (action === 'removed') {
+        nextQueue = nextQueue.filter(
+          (q) => !(q.id && q.id === itemId) && !(q.queueId && q.queueId === String(itemId)),
+        );
+      }
+      return { ...prev, [machineId]: { ...current, queue: nextQueue } };
+    });
+  }, []);
+
+  /**
+   * Apply a session_updated SSE event from the DB.
+   * { machineId, session } — session is DB frontendState shape
+   */
+  const applyDbSessionUpdate = useCallback(({ machineId, session }) => {
+    if (!session || typeof session !== 'object') return;
+    setAllStates((prev) => {
+      const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
+      // Always trust DB session — it's authoritative
+      return {
+        ...prev,
+        [machineId]: {
+          ...current,
+          ...session,
+          // Preserve in-memory events (not persisted in DB state snapshot)
+          goodEvents: current.goodEvents ?? [],
+          ngEvents:   current.ngEvents   ?? [],
+          // Max-wins on counters to avoid going backwards on a stale broadcast
+          pipeCounter:     Math.max(session.pipeCounter     ?? 0, current.pipeCounter     ?? 0),
+          ngCount:         Math.max(session.ngCount         ?? 0, current.ngCount         ?? 0),
+          totalGoodWeight: Math.max(session.totalGoodWeight ?? 0, current.totalGoodWeight ?? 0),
+          totalNgWeight:   Math.max(session.totalNgWeight   ?? 0, current.totalNgWeight   ?? 0),
+        },
+      };
+    });
+  }, []);
+
   return {
     allStates,
     getMachineState,
@@ -314,5 +378,8 @@ export const useProductionStates = () => {
     resumeOrder,
     clearPausedOrder,
     mergeServerStates,
+    setQueueFromDb,
+    applyDbQueueUpdate,
+    applyDbSessionUpdate,
   };
 };
