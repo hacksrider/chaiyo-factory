@@ -902,7 +902,7 @@ void sendWeightToServer(const String& type) {
         lcd.setCursor(0, 3);
         lcd.print("!QUEUE FULL-CALL IT!");
         delay(3000);
-        // คืนบรรทัด 3 เป็น status เดิม (หรือล้าง)
+        // คืนบรรทัด 3 เป็น status เดิม(หรือล้าง)
         lcd.setCursor(0, 3);
         lcd.print("                    ");
       }
