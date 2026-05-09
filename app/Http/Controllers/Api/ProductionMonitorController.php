@@ -1592,6 +1592,43 @@ class ProductionMonitorController extends Controller
     }
 
     /**
+     * Merge active DB sessions with per-browser cache fallback.
+     * Machines that only have finished/cancelled DB rows never use stale cache ("live").
+     */
+    private function buildMachineSessionsSnapshot(): array
+    {
+        $dbSessions = ProductionSession::whereNotIn('status', ['finished', 'cancelled'])
+            ->get()
+            ->keyBy('machine_id')
+            ->map(fn ($s) => $s->toFrontendState())
+            ->toArray();
+
+        $terminalMachineIds = ProductionSession::whereIn('status', ['finished', 'cancelled'])
+            ->pluck('machine_id')
+            ->unique()
+            ->all();
+
+        $known = Cache::get('known_machine_session_ids', []);
+        $sessions = $dbSessions;
+
+        foreach ($known as $mid) {
+            if (isset($sessions[$mid])) {
+                continue;
+            }
+            // Loose match: machine_id may be stored as string vs int across sources
+            if (in_array($mid, $terminalMachineIds, false)) {
+                continue;
+            }
+            $cached = Cache::get("machine_session_{$mid}");
+            if ($cached !== null) {
+                $sessions[$mid] = $cached;
+            }
+        }
+
+        return $sessions;
+    }
+
+    /**
      * GET /api/production-monitor/machine-sessions
      *
      * Browser ทุกเครื่อง poll ทุก 5 วินาที เพื่อรับสถานะล่าสุดของทุกเครื่อง
@@ -1599,17 +1636,7 @@ class ProductionMonitorController extends Controller
      */
     public function fetchAllMachineSessions(): JsonResponse
     {
-        $known    = Cache::get('known_machine_session_ids', []);
-        $sessions = [];
-
-        foreach ($known as $mid) {
-            $state = Cache::get("machine_session_{$mid}");
-            if ($state !== null) {
-                $sessions[$mid] = $state;
-            }
-        }
-
-        return response()->json(['sessions' => $sessions]);
+        return response()->json(['sessions' => $this->buildMachineSessionsSnapshot()]);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1625,24 +1652,7 @@ class ProductionMonitorController extends Controller
      */
     public function stateSnapshot(): JsonResponse
     {
-        // DB-first: load all non-finished sessions
-        $dbSessions = ProductionSession::whereNotIn('status', ['finished', 'cancelled'])
-            ->get()
-            ->keyBy('machine_id')
-            ->map(fn($s) => $s->toFrontendState())
-            ->toArray();
-
-        // Fallback: cache-based sessions for machines not in DB yet
-        $known    = Cache::get('known_machine_session_ids', []);
-        $sessions = $dbSessions;
-        foreach ($known as $mid) {
-            if (!isset($sessions[$mid])) {
-                $cached = Cache::get("machine_session_{$mid}");
-                if ($cached !== null) {
-                    $sessions[$mid] = $cached;
-                }
-            }
-        }
+        $sessions = $this->buildMachineSessionsSnapshot();
 
         // DB queue per machine
         $queueItems = ProductionQueueItem::where('status', 'queued')
@@ -1811,6 +1821,48 @@ class ProductionMonitorController extends Controller
         return response()->json([
             'session' => $session ? $session->toFrontendState() : null,
         ]);
+    }
+
+    /**
+     * POST /api/production-monitor/cancel/{machineId}
+     *
+     * ยกเลิกการผลิตจากฝั่งผู้ใช้ — ตั้ง session เป็น cancelled ใน DB (ไม่ sync GAS)
+     * ล้าง cache ป้าย / ตาชั่งที่ทำให้รีเฟรชแล้วกลับมา Live
+     */
+    public function cancelSession(string $machineId): JsonResponse
+    {
+        $session = ProductionSession::where('machine_id', $machineId)
+            ->whereIn('status', ['live', 'paused'])
+            ->first();
+
+        $now = now();
+        $ts  = (int) ($now->timestamp * 1000);
+
+        if ($session) {
+            $session->update([
+                'status'      => 'cancelled',
+                'finished_at' => $now,
+                'ts'          => $ts,
+            ]);
+        }
+
+        Cache::forget("machine_session_{$machineId}");
+        Cache::put("scale_live_{$machineId}", ['live' => false], now()->addDays(7));
+        Cache::forget("session_confirm_{$machineId}");
+        Cache::forget("scale_confirm_{$machineId}");
+
+        $this->publishEvent('session_updated', [
+            'machineId' => $machineId,
+            'cleared'   => true,
+            'session'   => null,
+        ]);
+        $this->publishEvent('production_updated', [
+            'machineId' => $machineId,
+            'cleared'   => true,
+            'state'     => null,
+        ]);
+
+        return response()->json(['success' => true]);
     }
 
     /**

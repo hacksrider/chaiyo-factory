@@ -20,6 +20,7 @@ import {
   dbDeleteQueueItem,
   dbStartSession,
   dbGetSession,
+  dbCancelSession,
 } from './api/productionApi';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { SSE_EVENTS } from './SSE_EVENTS';
@@ -500,6 +501,11 @@ const ProductionMonitoring = () => {
     const { machineId, qty_good, qty_remaining, total_weight, _ts, state } = payload ?? {};
     if (!machineId) return;
 
+    if (payload?.cleared === true) {
+      resetMachineState(machineId);
+      return;
+    }
+
     // New shape: เช่น startSession / pause / finish ส่งมาเป็น { machineId, state }
     if (state && typeof state === 'object') {
       applyDbSessionUpdate({ machineId, session: state });
@@ -535,7 +541,7 @@ const ProductionMonitoring = () => {
     window.dispatchEvent(new CustomEvent('sse:production_updated', {
       detail: { machineId, qty_good, qty_remaining, total_weight, _ts: ts },
     }));
-  }, [updateMachineState, applyDbSessionUpdate]);
+  }, [updateMachineState, applyDbSessionUpdate, resetMachineState]);
 
   // SSE handler for session_confirmed — ESP32 operator confirmed shift + employee ID
   const handleSseSessionConfirmed = useCallback(({ machineId, shift, employee_id, confirmed_at }) => {
@@ -594,9 +600,13 @@ const ProductionMonitoring = () => {
 
   // SSE handler for session_updated — DB session changed (start/pause/finish)
   const handleSseSessionUpdated = useCallback((payload) => {
-    if (!payload?.machineId || !payload?.session) return;
+    if (!payload?.machineId) return;
+    if (payload.cleared === true || payload.session == null) {
+      resetMachineState(payload.machineId);
+      return;
+    }
     applyDbSessionUpdate(payload);
-  }, [applyDbSessionUpdate]);
+  }, [applyDbSessionUpdate, resetMachineState]);
 
   // DB-aware add-to-queue: write to DB first, update local state on success
   const handleDbAddToQueue = useCallback(async (machineId, item) => {
@@ -628,13 +638,20 @@ const ProductionMonitoring = () => {
 
   // DB-aware remove-from-queue
   const handleDbRemoveFromQueue = useCallback((machineId, queueId) => {
-    removeFromQueue(machineId, queueId);
-    // Fire-and-forget DB delete (queueId might be DB id or temp key)
     let dbId = parseInt(queueId, 10);
     if (Number.isNaN(dbId)) {
       const m = String(queueId ?? '').match(/^db_(\d+)$/);
       if (m) dbId = parseInt(m[1], 10);
     }
+    if (Number.isNaN(dbId)) {
+      const q = allStatesRef.current[machineId]?.queue ?? [];
+      const hit = q.find((it) => String(it.queueId) === String(queueId));
+      const n = Number(hit?.id);
+      if (!Number.isNaN(n)) dbId = n;
+    }
+
+    removeFromQueue(machineId, queueId);
+
     if (!Number.isNaN(dbId)) {
       dbDeleteQueueItem(machineId, dbId).catch((err) =>
         console.warn('[queue] dbDeleteQueueItem failed:', err?.message),
@@ -1292,14 +1309,21 @@ const ProductionMonitoring = () => {
                     onAddToQueue={(item) => addToQueue(selectedMachineId, item)}
                     onRemoveFromQueue={(queueId) => handleDbRemoveFromQueue(selectedMachineId, queueId)}
                     onCancelOrder={() => {
-                      // ยกเลิกการผลิต — reset state ทันที ไม่บันทึกลง GAS
-                      pushPrepLed(selectedMachineId);
-                      resetMachineState(selectedMachineId);
                       const mid = selectedMachineId;
-                      if (pushDebounceRef.current[mid]) clearTimeout(pushDebounceRef.current[mid]);
-                      setTimeout(() => {
-                        storeMachineSession(mid, allStatesRef.current[mid]).catch(() => {});
-                      }, 50);
+                      if (!mid) return;
+                      void (async () => {
+                        try {
+                          await dbCancelSession(mid);
+                        } catch (err) {
+                          console.warn('[cancel] dbCancelSession failed:', err?.message);
+                        }
+                        pushPrepLed(mid);
+                        resetMachineState(mid);
+                        if (pushDebounceRef.current[mid]) clearTimeout(pushDebounceRef.current[mid]);
+                        setTimeout(() => {
+                          storeMachineSession(mid, allStatesRef.current[mid]).catch(() => {});
+                        }, 50);
+                      })();
                     }}
                     onCloseAndStart={(item) => {
                       const mid = selectedMachineId;

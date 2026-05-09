@@ -339,9 +339,13 @@ export const useProductionStates = () => {
         });
         if (!exists) nextQueue = [...nextQueue, item];
       } else if (action === 'removed') {
-        nextQueue = nextQueue.filter(
-          (q) => !(q.id && q.id === itemId) && !(q.queueId && q.queueId === String(itemId)),
-        );
+        const idNum = Number(itemId);
+        nextQueue = nextQueue.filter((q) => {
+          if (Number.isFinite(idNum) && q.id != null && Number(q.id) === idNum) return false;
+          if (q.queueId != null && itemId != null && String(q.queueId) === String(itemId))
+            return false;
+          return true;
+        });
       }
       return { ...prev, [machineId]: { ...current, queue: nextQueue } };
     });

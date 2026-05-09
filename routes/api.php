@@ -183,6 +183,7 @@ Route::prefix('production-monitor')->group(function () {
     Route::post('/start/{machineId}',                [ProductionMonitorController::class, 'startSession']);
     Route::post('/pause/{machineId}',                [ProductionMonitorController::class, 'pauseSession']);
     Route::post('/finish/{machineId}',               [ProductionMonitorController::class, 'finishSession']);
+    Route::post('/cancel/{machineId}',               [ProductionMonitorController::class, 'cancelSession']);
 
     // History from DB
     Route::get('/history-db',                        [ProductionMonitorController::class, 'getHistoryDb']);

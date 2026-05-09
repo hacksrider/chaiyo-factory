@@ -782,6 +782,13 @@ export const dbFinishSession = (machineId, payload) =>
   post(`/finish/${encodeURIComponent(machineId)}`, payload);
 
 /**
+ * POST /api/production-monitor/cancel/{machineId}
+ * ยกเลิกการผลิต — อัปเดต DB + ล้าง cache (รีเฟรชแล้วไม่กลับมา Live)
+ */
+export const dbCancelSession = (machineId) =>
+  post(`/cancel/${encodeURIComponent(machineId)}`, {});
+
+/**
  * GET /api/production-monitor/history-db
  * ประวัติการผลิตจาก DB
  */
