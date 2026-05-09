@@ -737,6 +737,48 @@ class ProductionMonitorController extends Controller
     }
 
     /**
+     * POST /api/production-monitor/session-confirm/{machineId}
+     *
+     * NEW: Called by Scale ESP32 when operator confirms (shift + employee id).
+     * Stores confirmation in cache and broadcasts SSE `session_confirmed` to all browsers.
+     *
+     * Body: { shift, employee_id, confirmed_at }
+     * (firmware may also send employeeId for legacy compatibility)
+     */
+    public function sessionConfirm(Request $request, string $machineId): JsonResponse
+    {
+        $shift = (string) $request->input('shift', '');
+        $employeeId = (string) ($request->input('employee_id') ?? $request->input('employeeId') ?? '');
+        $confirmedAt = $request->input('confirmed_at');
+
+        if ($shift === '' || $employeeId === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Missing required fields: shift, employee_id',
+            ], 422);
+        }
+
+        $data = [
+            'machineId'     => $machineId,
+            'shift'         => $shift,
+            'employee_id'   => $employeeId,
+            'confirmed_at'  => is_numeric($confirmedAt) ? (int) $confirmedAt : null,
+        ];
+
+        Cache::put("session_confirm_{$machineId}", $data, now()->addHours(12));
+
+        // Keep legacy polling flow working (SetupMode polls /scale-confirm).
+        Cache::put("scale_confirm_{$machineId}", [
+            'shift'      => $shift,
+            'employeeId' => $employeeId,
+        ], now()->addMinutes(5));
+
+        $this->publishEvent('session_confirmed', $data);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
      * GET /api/production-monitor/scale-confirm/{machineId}
      *
      * Web หน้าเว็บ poll รอการยืนยันจาก Scale ESP32 (pull-once)
