@@ -1427,8 +1427,11 @@ class ProductionMonitorController extends Controller
             }
 
             // Keep-alive heartbeat (prevents proxy timeout)
+            // Sent as a named event so the frontend EventSource listener can reset
+            // its 30-second dead-connection watchdog timer.
             if (($now - $lastHb) >= $hbInterval) {
-                echo ": heartbeat " . date('H:i:s') . "\n\n";
+                echo "event: heartbeat\n";
+                echo "data: " . json_encode(['t' => time()]) . "\n\n";
                 flush();
                 $lastHb = $now;
             }

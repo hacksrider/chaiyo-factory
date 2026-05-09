@@ -237,9 +237,12 @@ export const useRealtimeSync = ({
     // ── session_updated (DB-first session) ───────────────────────────────
     es.addEventListener(SSE_EVENTS.SESSION_UPDATED, makeHandler('onSessionUpdated'));
 
-    // ── Keep-alive comments (: heartbeat) ────────────────────────────────
-    // Server sends `: heartbeat` every 15s; EventSource fires this as a
-    // generic message. We use onmessage to reset the watchdog.
+    // ── Heartbeat event ───────────────────────────────────────────────────
+    // Server sends "event: heartbeat" every 15s to keep the connection alive
+    // and reset the 30-second dead-connection watchdog timer.
+    es.addEventListener('heartbeat', () => resetDeadTimer());
+
+    // Fallback: plain data messages (no event type) also reset the watchdog.
     es.onmessage = () => resetDeadTimer();
 
     // ── Connection opened ─────────────────────────────────────────────────
