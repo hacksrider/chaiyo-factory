@@ -707,6 +707,8 @@ class ProductionMonitorController extends Controller
         // รีเซ็ตนับของดีของเซสชั่นก่อนหน้า
         Cache::put("scale_count_{$machineId}", 0, now()->addHours(24));
         Cache::forget("scale_events_{$machineId}");
+        // บันทึกเวลาเริ่ม session ใหม่ เพื่อ reject event เก่าของ session ก่อนหน้าที่ ESP32 ค้างไว้
+        Cache::put("scale_session_start_{$machineId}", now()->toIso8601String(), now()->addHours(24));
 
         return response()->json(['success' => true, 'queued' => true]);
     }
@@ -940,6 +942,18 @@ class ProductionMonitorController extends Controller
         }
         // เก็บเวลา server ด้วยเสมอ (ใช้ debug / ตรวจ latency)
         $payload['receivedAt'] = now()->toISOString();
+
+        // ป้องกัน ESP32 flush pending events จาก session ก่อนหน้า:
+        // ถ้า pressedAt เก่ากว่าเวลาที่ web กด Start Now → ทิ้งทิ้งทิ้ง (stale event)
+        $sessionStart = Cache::get("scale_session_start_{$machineId}");
+        if ($sessionStart && $payload['pressedAt'] !== now()->toISOString()) {
+            $pressedTs = strtotime($payload['pressedAt']);
+            $startTs   = strtotime($sessionStart);
+            if ($pressedTs !== false && $startTs !== false && $pressedTs < $startTs) {
+                Log::info("storeScaleWeight: rejected stale event for {$machineId} (pressedAt={$payload['pressedAt']} < sessionStart={$sessionStart})");
+                return response()->json(['success' => true, 'stale' => true]);
+            }
+        }
 
         // DB write: insert weight event + update session counters atomically
         try {

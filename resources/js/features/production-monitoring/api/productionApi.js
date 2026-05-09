@@ -397,7 +397,8 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
     fontSize: 1,
     speed: 50,
     actual,
-    target: String(data?.remainingQty ?? data?.targetQty ?? 0),
+    // แสดง remainingQty เสมอ ถ้ายังไม่มีให้แสดง 0 (ไม่ fallback targetQty/กะ)
+    target: String(data?.remainingQty ?? 0),
   };
 };
 

@@ -155,7 +155,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
   const machineSet = new Set(rows.map((r) => r._machineId || r.machineId));
 
   const pendingEnqueueCount = rows.filter((row) => {
-    const queueKey = `${row._machineId}::${row.jobNo}`;
+    const queueKey = `${row._machineId}::${row.jobNo}::${row.date ?? ''}`;
     return !queuedMap?.get(queueKey);
   }).length;
 
@@ -182,7 +182,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
               type="button"
               onClick={() => {
                 rows.forEach((row) => {
-                  const queueKey = `${row._machineId}::${row.jobNo}`;
+                  const queueKey = `${row._machineId}::${row.jobNo}::${row.date ?? ''}`;
                   if (queuedMap?.get(queueKey)) return;
                   onAddToQueue(row._machineId, buildScheduleQueuePayload(row, productDetails));
                 });
@@ -336,7 +336,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
                   {/* เพิ่มเข้าคิว / สถานะในคิว */}
                   <td className="py-2.5 px-3 whitespace-nowrap">
                     {(() => {
-                      const queueKey = `${row._machineId}::${row.jobNo}`;
+                      const queueKey = `${row._machineId}::${row.jobNo}::${row.date ?? ''}`;
                       const queued   = queuedMap?.get(queueKey);
 
                       if (queued) {

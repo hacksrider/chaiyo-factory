@@ -371,12 +371,16 @@ const ProductionMonitoring = () => {
   const buildScaleLivePayload = useCallback((machineId, isLive) => {
     if (!isLive) return { live: false };
     const st = getMachineState(machineId);
+    // ใช้ remainingQty เป็น targetQty เสมอ (ยอดค้างผลิต ไม่ใช่เป้า/กะ)
+    // ถ้าไม่มี remainingQty ให้ fallback targetQty เป็น last resort
+    const effectiveTarget = (st.remainingQty > 0) ? st.remainingQty : (st.targetQty ?? 0);
     return {
       live:         true,
       orderId:      st.orderId      ?? '',
       productCode:  st.productCode  ?? '',
       productName:  st.productName  ?? '',
-      targetQty:    st.targetQty    ?? 0,
+      targetQty:    effectiveTarget,
+      remainingQty: st.remainingQty ?? 0,
       shift:        st.shift        ?? '',
       employeeId:   st.employeeId   ?? '',
       sheetName:    st.sheetName    ?? '',
@@ -794,7 +798,9 @@ const ProductionMonitoring = () => {
     const map = new Map();
     Object.entries(allStates).forEach(([mid, state]) => {
       (state?.queue ?? []).forEach((item) => {
-        map.set(`${mid}::${item.orderId}`, { machineId: mid, queueId: item.queueId });
+        // Key includes planDate so same orderId on different dates are treated independently
+        const key = `${mid}::${item.orderId}::${item.planDate ?? ''}`;
+        map.set(key, { machineId: mid, queueId: item.queueId });
       });
     });
     return map;

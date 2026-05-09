@@ -137,7 +137,7 @@ const SwitchOrderModal = ({
               <span className="text-[10px] font-bold text-gray-500 uppercase w-14 flex-shrink-0">{t('production.switchOrderStartLabel')}</span>
               <div className="min-w-0">
                 <p className="font-mono text-green-300 truncate">{targetItem.orderId}</p>
-                <p className="text-xs text-gray-500 truncate">{targetItem.productName} · ×{targetItem.targetQty}</p>
+                <p className="text-xs text-gray-500 truncate">{targetItem.productName} · ×{targetItem.remainingQty > 0 ? targetItem.remainingQty : targetItem.targetQty}</p>
               </div>
             </div>
           </div>
@@ -665,11 +665,8 @@ const LiveMonitoring = ({
     setTimeout(() => setToast(null), ms);
   };
 
-  // ค้างผลิต: ใช้ remainingQty ถ้ามี > 0 ไม่ก็ fallback targetQty
-  // label ตลอดเวลาคือ 'ค้างผลิต' — ไม่ใช้ 'เป้า/กะ' อีกต่อไป
-  const displayTarget = (machineState.remainingQty > 0)
-    ? machineState.remainingQty
-    : machineState.targetQty;
+  // ค้างผลิต: ใช้ remainingQty เสมอ ไม่ fallback targetQty (เป้า/กะ)
+  const displayTarget = machineState.remainingQty ?? 0;
 
   const progress   = displayTarget > 0
     ? Math.min(100, Math.round((goodCount / displayTarget) * 100))
