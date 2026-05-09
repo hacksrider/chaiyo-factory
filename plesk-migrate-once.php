@@ -18,7 +18,7 @@ declare(strict_types=1);
 
 $browserSecret = ''; // ตัวอย่าง: 'paste-long-random-string' — ถ้าว่าง = ปิดการรันผ่านเบราว์เซอร์
 
-$isCli = PHP_SAPI_NAME === 'cli';
+$isCli = \php_sapi_name() === 'cli' || \php_sapi_name() === 'phpdbg';
 $browserOk = $browserSecret !== ''
     && isset($_GET['key'])
     && hash_equals($browserSecret, (string) $_GET['key']);
