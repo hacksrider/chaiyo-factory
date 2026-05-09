@@ -618,9 +618,13 @@ const ProductionMonitoring = () => {
   const handleDbRemoveFromQueue = useCallback((machineId, queueId) => {
     removeFromQueue(machineId, queueId);
     // Fire-and-forget DB delete (queueId might be DB id or temp key)
-    const numId = parseInt(queueId, 10);
-    if (!isNaN(numId)) {
-      dbDeleteQueueItem(machineId, numId).catch((err) =>
+    let dbId = parseInt(queueId, 10);
+    if (Number.isNaN(dbId)) {
+      const m = String(queueId ?? '').match(/^db_(\d+)$/);
+      if (m) dbId = parseInt(m[1], 10);
+    }
+    if (!Number.isNaN(dbId)) {
+      dbDeleteQueueItem(machineId, dbId).catch((err) =>
         console.warn('[queue] dbDeleteQueueItem failed:', err?.message),
       );
     }

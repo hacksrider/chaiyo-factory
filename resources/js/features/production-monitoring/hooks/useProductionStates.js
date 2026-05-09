@@ -109,8 +109,12 @@ export const useProductionStates = () => {
       const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
       const entry = {
         ...item,
-        queueId: `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        addedAt: new Date().toISOString(),
+        // เคารพ queueId จาก caller (คิว DB / optimistic) — อย่าสุ่มทับ เดี๋ยว dedupe กับ SSE พัง
+        queueId:
+          item.queueId ??
+          item.queue_id ??
+          `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        addedAt: item.addedAt ?? new Date().toISOString(),
       };
       return {
         ...prev,
@@ -326,10 +330,13 @@ export const useProductionStates = () => {
       const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
       let nextQueue = current.queue ?? [];
       if (action === 'added' && item) {
-        // Avoid duplicates if we already added it optimistically
-        const exists = nextQueue.some(
-          (q) => (q.id && q.id === item.id) || (q.queueKey && q.queueKey === item.queueKey),
-        );
+        // Dedupe vs optimistic row + SSE: match DB id OR same queueId (server stores queue_key as queueId)
+        const exists = nextQueue.some((q) => {
+          if (q.id != null && item.id != null && Number(q.id) === Number(item.id)) return true;
+          if (q.queueId && item.queueId && String(q.queueId) === String(item.queueId))
+            return true;
+          return false;
+        });
         if (!exists) nextQueue = [...nextQueue, item];
       } else if (action === 'removed') {
         nextQueue = nextQueue.filter(

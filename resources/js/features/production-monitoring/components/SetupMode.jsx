@@ -690,10 +690,22 @@ const SetupMode = ({
                 sheetName={sheetName}
                 ledIp={ledIp}
                 onStart={(queueItem, confirmation = {}) => onStartProduction({
+                  queueItemId:  queueItem.id ?? null,
                   orderId:     queueItem.orderId,
                   productCode: queueItem.productCode || '',
                   productName: queueItem.productName,
                   targetQty:   queueItem.targetQty,
+                  remainingQty: queueItem.remainingQty ?? 0,
+                  planDate:    queueItem.planDate ?? '',
+                  peType:      queueItem.peType ?? '',
+                  size:        queueItem.size ?? null,
+                  length:      queueItem.length ?? null,
+                  pn:          queueItem.pn ?? null,
+                  brand:       queueItem.brand ?? '',
+                  colorStripe: queueItem.colorStripe ?? '',
+                  stdWeight:   queueItem.stdWeight ?? null,
+                  minWeight:   queueItem.minWeight ?? null,
+                  maxWeight:   queueItem.maxWeight ?? null,
                   sheetName,
                   ledIp,
                   queueId:     queueItem.queueId,

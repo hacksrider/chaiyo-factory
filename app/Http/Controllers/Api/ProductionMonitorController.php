@@ -1649,6 +1649,21 @@ class ProductionMonitorController extends Controller
             }
         }
 
+        // Second line of defence: same order + same plan day already queued (e.g. double-click / race)
+        $planDateForDedup = (string) ($data['planDate'] ?? '');
+        $dupLogical = ProductionQueueItem::where('machine_id', $machineId)
+            ->where('order_id', $data['orderId'])
+            ->where('plan_date', $planDateForDedup)
+            ->where('status', 'queued')
+            ->first();
+        if ($dupLogical) {
+            return response()->json([
+                'success' => true,
+                'item'    => $dupLogical->toFrontend(),
+                'dedup'   => true,
+            ]);
+        }
+
         $item = ProductionQueueItem::create([
             'machine_id'   => $machineId,
             'order_id'     => $data['orderId'],
@@ -1800,16 +1815,14 @@ class ProductionMonitorController extends Controller
             'ts'           => $ts,
         ];
 
-        DB::transaction(function () use ($machineId, $data, $sessionData, $now) {
-            // Finish any existing active session for this machine
-            ProductionSession::where('machine_id', $machineId)
-                ->whereNotIn('status', ['finished', 'cancelled'])
-                ->update(['status' => 'finished', 'finished_at' => $now]);
+        // IMPORTANT: uniq_session_machine = ONE row per machine_id (not historical rows).
+        // Never insert a second row — always update-or-create so Start Now succeeds every time.
+        DB::transaction(function () use ($machineId, $data, $sessionData) {
+            ProductionSession::updateOrCreate(
+                ['machine_id' => $machineId],
+                $sessionData
+            );
 
-            // Create new session
-            ProductionSession::create($sessionData);
-
-            // Mark the queue item as started
             if (!empty($data['queueItemId'])) {
                 ProductionQueueItem::where('id', (int) $data['queueItemId'])
                     ->where('machine_id', $machineId)
