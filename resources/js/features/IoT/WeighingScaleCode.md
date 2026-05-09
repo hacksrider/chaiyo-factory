@@ -181,7 +181,7 @@ void renderLcd();
 void handleKeypad(char key);
 void pollJobFromServer();
 void sendConfirmToServer();
-void sendWeightToServer(const String& type);
+bool sendWeightToServer(const String& type);
 void flushPendingEvents();
 void enterState(ScaleState s);
 void enterProductionFresh();
@@ -619,6 +619,11 @@ void renderLcd() {
 //  handleKeypad — ประมวลผลปุ่มที่กด
 // ======================================================================
 void handleKeypad(char key) {
+  // ช่วงหลังส่งน้ำหนัก: ห้าม keypad ยิงรหัสใหม่ (ครอบเวลา LCD บรรทัด 3 เช่นเดียวกับปุ่มกด)
+  if (g_state == ST_PRODUCTION && millis() < g_btnLockUntil) {
+    Serial.println("[KEY] ignored (post-weight lock)");
+    return;
+  }
 
   if (g_state == ST_WAIT_SHIFT) {
     if (key == 'A' || key == 'B' || key == 'C') {
@@ -868,17 +873,22 @@ bool doPostWeight(const String& type, const String& weight, const String& presse
     String respBody = http.getString();
     StaticJsonDocument<256> respDoc;
     if (!deserializeJson(respDoc, respBody)) {
+      int srvAc = respDoc["actualCount"] | -1;
       int newGood = respDoc["qty_good"]      | -1;
       int newRem  = respDoc["qty_remaining"] | -1;
-      if (newGood >= 0) g_qtyGood      = newGood;
-      if (newRem  >= 0) g_qtyRemaining = newRem;
-      if (newGood >= 0 || newRem >= 0) {
-        // แสดง "ดี X / ค้าง Y" ชั่วคราวบรรทัด 3 (5 วินาที lock เดิมจะล้าง)
-        String qtyLine = "G:" + String(g_qtyGood) + " R:" + String(g_qtyRemaining);
+      // เลขจาก Laravel (pipe_counter ใน DB) ให้ตรงป้าย/เว็บ — ห้ามนับ g_actualCount เพิ่มเร็วก่อนได้ response
+      if (srvAc >= 0) g_actualCount = srvAc;
+      else if (newGood >= 0) g_actualCount = newGood;
+      if (newGood >= 0) g_qtyGood = newGood;
+      else if (srvAc >= 0) g_qtyGood = srvAc;
+      if (newRem >= 0) g_qtyRemaining = newRem;
+      if (newGood >= 0 || srvAc >= 0 || newRem >= 0) {
+        // แสดง "ดี X / ค้าง Y" ชั่วคราวบรรทัด 3 (ระหว่าง lock ครบแล้ว clear)
+        String qtyLine = "G:" + String(g_qtyGood) + " R:" + String(g_qtyRemaining >= 0 ? g_qtyRemaining : 0);
         while (qtyLine.length() < 20) qtyLine += ' ';
         lcd.setCursor(0, 3);
         lcd.print(qtyLine.substring(0, 20));
-        Serial.printf("[Scale] qty_good=%d qty_remaining=%d\n", g_qtyGood, g_qtyRemaining);
+        Serial.printf("[Scale] qty_good=%d qty_remaining=%d actual=%d\n", g_qtyGood, g_qtyRemaining, g_actualCount);
       }
     }
   }
@@ -887,7 +897,7 @@ bool doPostWeight(const String& type, const String& weight, const String& presse
   return (code == 200 || code == 201);
 }
 
-void sendWeightToServer(const String& type) {
+bool sendWeightToServer(const String& type) {
   String pressedAt = getIsoTime();  // จับเวลา ณ ตอนกดปุ่ม
 
   if (g_wifiOk && !g_serverUrl.isEmpty()) {
@@ -907,6 +917,7 @@ void sendWeightToServer(const String& type) {
         lcd.print("                    ");
       }
     }
+    return ok;
   } else {
     // WiFi หลุด → queue ไว้ก่อน
     if (g_pendingCount < MAX_PENDING) {
@@ -921,6 +932,7 @@ void sendWeightToServer(const String& type) {
       lcd.print("                    ");
     }
   }
+  return false;
 }
 
 // ======================================================================
@@ -990,14 +1002,16 @@ void loop() {
         // ยังอยู่ในช่วง 5 วินาที — ห้ามส่งซ้ำ
         Serial.println("[BTN] GREEN ignored (locked)");
       } else {
-        // รับคำสั่ง: set lock, แสดง status, ส่งข้อมูล
+        // Lock + แสดงบรรทัด 3 แล้วส่ง HTTP — ครบทั้ง BTN_LOCK_MS ถึงเปิดรับครั้งใหม่; ถ้าโพสต์ล้มเหลวจะเลิก lock
         g_btnLockUntil = millis() + BTN_LOCK_MS;
-        g_actualCount++;
+        // ไม่ ++ g_actualCount ที่นี่ — ให้จาก response (เลขจาก DB เทียบเว็บ/ป้าย)
         g_lastStatus = "OK - " + trimWeight(g_liveWeight) + " kg.";
         lcd.setCursor(0, 3);
         lcd.print(g_lastStatus);
-        sendWeightToServer("good");
-        Serial.printf("[BTN] GOOD #%d  w=%s\n", g_actualCount, g_liveWeight.c_str());
+        if (!sendWeightToServer("good")) {
+          g_btnLockUntil = 0;
+        }
+        Serial.printf("[BTN] GOOD (server count) #%d w=%s\n", g_actualCount, g_liveWeight.c_str());
         saveProductionSession();
       }
     }
@@ -1016,7 +1030,9 @@ void loop() {
         g_lastStatus = "NG - " + trimWeight(g_liveWeight) + " kg.";
         lcd.setCursor(0, 3);
         lcd.print(g_lastStatus);
-        sendWeightToServer("ng");    // server accepts "good"/"ng" only
+        if (!sendWeightToServer("ng")) {
+          g_btnLockUntil = 0;
+        }
         Serial.printf("[BTN] REJECT  w=%s\n", g_liveWeight.c_str());
         saveProductionSession();   // persist NG count เผื่อไฟดับ
       }

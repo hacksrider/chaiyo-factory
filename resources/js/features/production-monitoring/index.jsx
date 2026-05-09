@@ -495,20 +495,33 @@ const ProductionMonitoring = () => {
     }
   }, []);
 
-  // SSE handler for production_updated — after weight event GAS write completes
-  // Updates machine state immediately without waiting for the 15s polling cycle.
-  const handleSseProductionUpdated = useCallback(({ machineId, qty_good, qty_remaining, total_weight, _ts }) => {
+  // SSE handler for production_updated — Legacy GAS counters OR { state } จาก Laravel
+  const handleSseProductionUpdated = useCallback((payload) => {
+    const { machineId, qty_good, qty_remaining, total_weight, _ts, state } = payload ?? {};
     if (!machineId) return;
+
+    // New shape: เช่น startSession / pause / finish ส่งมาเป็น { machineId, state }
+    if (state && typeof state === 'object') {
+      applyDbSessionUpdate({ machineId, session: state });
+      const ts = Number(state._ts) || 0;
+      if (ts > 0) sessionSyncTsRef.current[machineId] = ts;
+      window.dispatchEvent(new CustomEvent('sse:production_updated', {
+        detail: { machineId, state },
+      }));
+      return;
+    }
+
     const ts = Number(_ts) || 0;
     const localTs = Number(allStatesRef.current[machineId]?._ts) || 0;
-    if (ts > 0 && ts <= localTs) return; // already up-to-date
+    if (ts > 0 && ts <= localTs) return;
 
     updateMachineState(machineId, (prev) => {
       const patch = {};
       if (typeof qty_good === 'number' && qty_good > (prev.pipeCounter ?? 0)) {
         patch.pipeCounter = qty_good;
       }
-      if (typeof qty_remaining === 'number' && qty_remaining >= 0) {
+      // ไม่รับ qty_remaining = 0 จาก GAS — มักทำให้ UI คิดว่าไม่มีค้างผลิต
+      if (typeof qty_remaining === 'number' && qty_remaining > 0) {
         patch.remainingQty = qty_remaining;
       }
       if (typeof total_weight === 'number' && total_weight > (prev.totalGoodWeight ?? 0)) {
@@ -519,11 +532,10 @@ const ProductionMonitoring = () => {
 
     if (ts > 0) sessionSyncTsRef.current[machineId] = ts;
 
-    // Dispatch so LedSignView can re-push LED without polling
     window.dispatchEvent(new CustomEvent('sse:production_updated', {
       detail: { machineId, qty_good, qty_remaining, total_weight, _ts: ts },
     }));
-  }, [updateMachineState]);
+  }, [updateMachineState, applyDbSessionUpdate]);
 
   // SSE handler for session_confirmed — ESP32 operator confirmed shift + employee ID
   const handleSseSessionConfirmed = useCallback(({ machineId, shift, employee_id, confirmed_at }) => {
@@ -717,6 +729,8 @@ const ProductionMonitoring = () => {
   useEffect(() => {
     Object.entries(allStates).forEach(([mid, st]) => {
       if (st?.mode !== 'live') return;
+      // กำลังผลิดีแล้ว — ห้ามดึงจาก Daily มาทับ (มัก match แถวผิดหรือเหลือ 0 ทำให้ UI พัง)
+      if ((st.pipeCounter ?? 0) > 0) return;
       if ((st.remainingQty ?? 0) > 0) return;   // มีแล้ว ไม่ต้อง fetch
       if (!st.orderId) return;
       if (remainingFetchedRef.current[mid] === st.orderId) return; // fetch ไปแล้ว
@@ -1205,13 +1219,17 @@ const ProductionMonitoring = () => {
                       const seq  = (snap.pipeCounter ?? 0) + (snap.ngCount ?? 0) + 1;
 
                       if (type === 'good') {
-                        updateMachineState(mid, (prev) => ({
-                          pipeCounter:      (prev.pipeCounter      ?? 0) + 1,
-                          totalGoodWeight:  (prev.totalGoodWeight  ?? 0) + weight,
-                          lastGoodWeight:   weight,
-                          lastGoodAt:       pressedAt,
-                          goodEvents:       [...(prev.goodEvents ?? []), entry],
-                        }));
+                        updateMachineState(mid, (prev) => {
+                          const prevRem = prev.remainingQty ?? 0;
+                          return {
+                            pipeCounter:      (prev.pipeCounter      ?? 0) + 1,
+                            remainingQty:     prevRem > 0 ? prevRem - 1 : prevRem,
+                            totalGoodWeight:  (prev.totalGoodWeight  ?? 0) + weight,
+                            lastGoodWeight:   weight,
+                            lastGoodAt:       pressedAt,
+                            goodEvents:       [...(prev.goodEvents ?? []), entry],
+                          };
+                        });
                       } else {
                         updateMachineState(mid, (prev) => ({
                           ngCount:          (prev.ngCount          ?? 0) + 1,
@@ -1272,6 +1290,7 @@ const ProductionMonitoring = () => {
                       queueProductionLedForMachine(selectedMachineId, { ...item }, 0).catch(() => {});
                     }}
                     onAddToQueue={(item) => addToQueue(selectedMachineId, item)}
+                    onRemoveFromQueue={(queueId) => handleDbRemoveFromQueue(selectedMachineId, queueId)}
                     onCancelOrder={() => {
                       // ยกเลิกการผลิต — reset state ทันที ไม่บันทึกลง GAS
                       pushPrepLed(selectedMachineId);

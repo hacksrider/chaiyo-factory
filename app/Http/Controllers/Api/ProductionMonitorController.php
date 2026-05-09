@@ -955,9 +955,34 @@ class ProductionMonitorController extends Controller
             }
         }
 
-        // DB write: insert weight event + update session counters atomically
+        // Idempotent ต่อเหตุการณ์ซ้ำ (กดเร็ว / network retry ใช้ payload เดียวกัน)
+        $orderIdDedup = (string) ($payload['orderId'] ?? '');
+        $typeDedup    = (string) ($payload['type'] ?? 'good');
+        $weightDedup  = (string) ($payload['weight'] ?? '');
+        $pressedDedup = (string) ($payload['pressedAt'] ?? '');
+        $dedupKeyRaw  = "{$machineId}|{$orderIdDedup}|{$pressedDedup}|{$typeDedup}|{$weightDedup}";
+        $dedupKey     = 'sw_evt_' . hash('sha1', $dedupKeyRaw);
+        $firstSeen    = Cache::add($dedupKey, 1, now()->addSeconds(20));
+
+        if (! $firstSeen) {
+            $snap = ProductionSession::where('machine_id', $machineId)
+                ->whereNotIn('status', ['finished', 'cancelled'])
+                ->first();
+
+            return response()->json([
+                'success'       => true,
+                'duplicate'     => true,
+                'actualCount'   => $snap ? (int) $snap->pipe_counter : 0,
+                'qty_good'      => $snap ? (int) $snap->pipe_counter : 0,
+                'qty_remaining' => $snap ? (int) $snap->remaining_qty : -1,
+            ]);
+        }
+
+        /** @var ProductionSession|null $sessionAfter */
+        $sessionAfter = null;
+
         try {
-            DB::transaction(function () use ($machineId, $payload) {
+            DB::transaction(function () use ($machineId, $payload, &$sessionAfter) {
                 $type   = $payload['type']   ?? 'good';
                 $weight = (float) ($payload['weight'] ?? 0);
                 $orderId    = $payload['orderId']    ?? '';
@@ -971,17 +996,17 @@ class ProductionMonitorController extends Controller
                     ->max('seq') + 1;
 
                 $weightEvent = ProductionWeightEvent::create([
-                    'machine_id'  => $machineId,
-                    'order_id'    => $orderId,
-                    'sheet_name'  => $sheetName,
-                    'type'        => $type,
-                    'weight'      => $weight,
-                    'seq'         => $seq,
-                    'employee_id' => $employeeId,
-                    'shift'       => $shift,
-                    'pressed_at'  => $payload['pressedAt'],
-                    'received_at' => $payload['receivedAt'],
-                    'raw_payload' => $payload,
+                    'machine_id'      => $machineId,
+                    'order_id'        => $orderId,
+                    'sheet_name'      => $sheetName,
+                    'type'            => $type,
+                    'weight'          => $weight,
+                    'seq'             => $seq,
+                    'employee_id'     => $employeeId,
+                    'shift'           => $shift,
+                    'pressed_at'      => $payload['pressedAt'],
+                    'received_at'     => $payload['receivedAt'],
+                    'raw_payload'     => $payload,
                     'gas_sync_status' => 'pending',
                 ]);
 
@@ -989,23 +1014,35 @@ class ProductionMonitorController extends Controller
                 SyncWeightEventToGas::dispatch($weightEvent->id, $this->gasUrl)
                     ->onQueue('gas-sync');
 
-                // Update session counters
                 $session = ProductionSession::where('machine_id', $machineId)
                     ->whereNotIn('status', ['finished', 'cancelled'])
                     ->first();
 
                 if ($session) {
+                    $tsMs = (int) (now()->timestamp * 1000);
                     if ($type === 'good') {
                         $session->increment('pipe_counter');
                         $session->increment('total_good_weight', $weight);
+                        // ให้การแสดง "ค้างผลิต" จาก DB เดินตามผลิดี — อย่ารอผลจาก GAS
+                        if ($session->remaining_qty > 0) {
+                            $session->decrement('remaining_qty');
+                        }
                     } else {
                         $session->increment('ng_count');
                         $session->increment('total_ng_weight', $weight);
                     }
+                    $session->forceFill(['ts' => $tsMs])->save();
+                    $sessionAfter = $session->fresh();
                 }
             });
         } catch (\Throwable $e) {
+            Cache::forget($dedupKey);
             Log::warning("storeScaleWeight DB write failed for {$machineId}: " . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'database write failed',
+            ], 500);
         }
 
         // เก็บ event ต่อท้าย list — ใช้ Cache::get (ไม่ใช่ pull) เพื่อให้ทุก browser รับได้
@@ -1024,24 +1061,31 @@ class ProductionMonitorController extends Controller
             'event'     => $payload,
         ]);
 
-        // ถ้าของดี → push actualCount ลง led_cmd เพื่อให้ป้ายไฟรับอัตโนมัติ
+        // ซิงก์เลขจาก DB เข้ากับป้ายไฟและตาชั่ง (ไม่เชื่อ actualCount จาก ESP32 เท่ากับแหล่งจริง)
+        $pipeFromDb       = $sessionAfter ? (int) $sessionAfter->pipe_counter : (int) ($payload['actualCount'] ?? 0);
+        $remainingFromDb  = $sessionAfter ? (int) $sessionAfter->remaining_qty : -1;
+
+        Cache::put("scale_count_{$machineId}", $pipeFromDb, now()->addHours(24));
+
         if (($payload['type'] ?? '') === 'good') {
-            $actualCount = intval($payload['actualCount'] ?? 0);
-            Cache::put("scale_count_{$machineId}", $actualCount, now()->addHours(24));
 
             $ledState = Cache::get("led_state_{$machineId}");
 
             // Bug 5 fix: ถ้า led_state ไม่มี (ยังไม่เคย set จากหน้าเว็บ)
             // ให้สร้าง default จาก machine_session หรือ scale_live session
             // เพื่อให้ LED อัปเดต actualCount ได้แม้ไม่เคยผ่าน /led-cmd
-            if (!$ledState) {
+            if (! $ledState) {
                 $session = Cache::get("machine_session_{$machineId}")
                         ?? Cache::get("scale_live_{$machineId}");
                 if (is_array($session) && ($session['live'] ?? $session['mode'] ?? '') !== false) {
                     $orderId     = $session['orderId']     ?? '';
                     $productCode = $session['productCode'] ?? '';
                     $productName = $session['productName'] ?? '';
-                    $targetQty   = $session['targetQty']   ?? 0;
+                    // target / ค้าง: จาก DB session เป็นหลัก
+                    $ledTarget =
+                        ($sessionAfter && $remainingFromDb >= 0)
+                        ? $remainingFromDb
+                        : (int) ($session['remainingQty'] ?? $session['targetQty'] ?? 0);
                     $displayText = $productCode
                         ? "{$productCode} {$productName}"
                         : "Order: {$orderId}";
@@ -1052,26 +1096,36 @@ class ProductionMonitorController extends Controller
                         'b'         => 255,
                         'fontSize'  => 1,
                         'speed'     => 50,
-                        'actual'    => (string) $actualCount,
-                        'target'    => (string) $targetQty,
+                        'actual'    => (string) $pipeFromDb,
+                        'target'    => (string) $ledTarget,
                     ];
                     Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
                 }
             }
 
             if ($ledState) {
-                $ledState['actual'] = (string) $actualCount;
+                $ledState['actual'] = (string) $pipeFromDb;
+                if ($remainingFromDb >= 0) {
+                    $ledState['target'] = (string) $remainingFromDb;
+                }
                 $ledState['updatedAt'] = now()->toISOString();
-                // Push pending led_cmd (ESP32 ป้ายไฟ poll ทุก 2s)
                 Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
-                // Persist state so /led-status reflects latest actual (used by ESP32 reconcile)
                 Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
             }
         }
 
+        if ($sessionAfter) {
+            $this->publishEvent('session_updated', [
+                'machineId' => $machineId,
+                'session'   => $sessionAfter->toFrontendState(),
+            ]);
+        }
+
         return response()->json([
-            'success'     => true,
-            'actualCount' => Cache::get("scale_count_{$machineId}", 0),
+            'success'       => true,
+            'actualCount'   => $pipeFromDb,
+            'qty_good'      => $pipeFromDb,
+            'qty_remaining' => $remainingFromDb,
         ]);
     }
 
