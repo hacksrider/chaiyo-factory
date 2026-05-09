@@ -67,10 +67,12 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
 
     // ส่งข้อมูลงานไปที่ตาชั่ง ESP32 ผ่าน Laravel
     try {
+      // ส่ง remainingQty เป็น target ถ้ามี (ยอดค้างผลิตจริง) — ถ้าไม่มีใช้ targetQty (เป้า/กะ)
+      const scaleTarget = (item.remainingQty > 0) ? item.remainingQty : item.targetQty;
       await storeScaleCommand(machineId, {
         orderId:     item.orderId,
         productCode: item.productCode || '',
-        targetQty:   item.targetQty,
+        targetQty:   scaleTarget,
         sheetName,
         stdWeight:   item.stdWeight   ?? 0,
         minWeight:   item.minWeight   ?? 0,

@@ -793,6 +793,17 @@ class ProductionMonitorController extends Controller
             Log::warning("sessionConfirm DB update failed for {$machineId}: " . $e->getMessage());
         }
 
+        // Defensive: mark scale-live as live=true immediately so the ESP32 does NOT
+        // reset back to IDLE if the web browser crashes before its useEffect fires
+        // storeScaleLive(). We merge over the existing payload to preserve orderId,
+        // targetQty, stdWeight etc. that were already stored by the web on Start Now.
+        $existingLive = Cache::get("scale_live_{$machineId}") ?? [];
+        Cache::put("scale_live_{$machineId}", array_merge($existingLive, [
+            'live'        => true,
+            'shift'       => $shift,
+            'employee_id' => $employeeId,
+        ]), now()->addDays(1));
+
         $this->publishEvent('session_confirmed', $data);
 
         return response()->json(['success' => true]);
