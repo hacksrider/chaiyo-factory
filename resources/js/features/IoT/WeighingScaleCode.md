@@ -67,13 +67,13 @@
 struct WifiProfile {
   const char* ssid;
   const char* pass;
-  const char* serverUrl;  // http://192.168.3.90:8080 — server หลัก (เดียวกันทุก network)
+  const char* serverUrl;  // https://www.chaiyo-factory.com — server หลัก (เดียวกันทุก network)
 };
 
 // AP-Office และ KANOK-AP route ถึงกันได้ → ใช้ server URL เดียวกันทุก network
 const WifiProfile WIFI_PROFILES[] = {
-  { "AP-Office", "Info2024",   "http://192.168.3.90:8080" },
-  { "KANOK-AP",  "kanok2564",  "http://192.168.3.90:8080" },
+  { "AP-Office", "Info2024",   "https://www.chaiyo-factory.com" },
+  { "KANOK-AP",  "kanok2564",  "https://www.chaiyo-factory.com" },
 };
 const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
 // ======================================================================

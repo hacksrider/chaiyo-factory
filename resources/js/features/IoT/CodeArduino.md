@@ -18,7 +18,7 @@
   - ESP32 รายงาน IP จริงของตัวเองมาที่ server ผ่าน polling ทุก 2 วินาที
     → เว็บรู้ IP ปัจจุบันเสมอ ไม่ว่าจะเชื่อม AP ไหน
   - เพิ่ม/แก้รายการ WiFi ได้ใน WIFI_PROFILES ด้านล่าง
-  - SERVER_URL ใช้ "http://192.168.3.90:8080" เดียวกันทุก network
+  - SERVER_URL ใช้ "https://www.chaiyo-factory.com" เดียวกันทุก network
   - ตั้งค่า MACHINE_ID ให้ตรงกับ Machine ID ในชีต Settings (ไม่ต้องตั้ง LED_IP แล้ว)
 
   ถอดปลั๊กแล้วเสียบใหม่แล้ว WiFi ไม่ขึ้น (สาเหตุที่พบบ่อย):
@@ -53,19 +53,19 @@
 // ── รายการ WiFi ที่รู้จัก ─────────────────────────────────────────────
 // ESP32 จะ scan แล้วเลือก SSID ที่ RSSI ดีที่สุดอัตโนมัติ
 // เพิ่ม WiFi ใหม่: คัดลอกบล็อก { ... } แล้วแก้ค่าตามเน็ตเวิร์ก
-// serverUrl = URL ของ server หลัก (http://192.168.3.90:8080) — ใช้เดียวกันทุก network
+// serverUrl = URL ของ server หลัก (https://www.chaiyo-factory.com) — ใช้เดียวกันทุก network
 struct WifiProfile {
   const char* ssid;
   const char* pass;
-  const char* serverUrl;  // http://192.168.3.90:8080 — server หลัก (เดียวกันทุก network)
+  const char* serverUrl;  // https://www.chaiyo-factory.com — server หลัก (เดียวกันทุก network)
 };
 
 // ใช้ DHCP — Router แจก IP เอง ไม่ต้อง hardcode
 // ESP32 รายงาน IP จริงให้ server ผ่าน heartbeat ทุก 2 วินาที → เว็บรู้ IP เสมอ
 // AP-Office และ KANOK-AP route ถึงกันได้ → ใช้ server URL เดียวกันทุก network
 const WifiProfile WIFI_PROFILES[] = {
-  { "AP-Office", "Info2024",  "http://192.168.3.90:8080" },
-  { "KANOK-AP",  "kanok2564", "http://192.168.3.90:8080" },
+  { "AP-Office", "Info2024",  "https://www.chaiyo-factory.com" },
+  { "KANOK-AP",  "kanok2564", "https://www.chaiyo-factory.com" },
 };
 const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
 
