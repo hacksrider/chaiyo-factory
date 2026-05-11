@@ -744,13 +744,30 @@ class ProductionMonitorController extends Controller
     {
         $shift      = (string) $request->input('shift', '');
         $employeeId = (string) ($request->input('employeeId') ?? '');
-        ProductionSession::where('machine_id', $machineId)
-            ->whereIn('status', ['live', 'paused'])
-            ->update([
-                'shift'       => $shift,
-                'employee_id' => $employeeId,
-                'ts'          => (int) (now()->timestamp * 1000),
-            ]);
+
+        $session = ProductionSession::where('machine_id', $machineId)
+            ->whereNotIn('status', ['finished', 'cancelled'])
+            ->first();
+
+        if (! $session) {
+            return response()->json(['success' => false, 'message' => 'no session'], 404);
+        }
+
+        $session->shift       = $shift;
+        $session->employee_id = $employeeId;
+        if ($session->status === 'awaiting_scale') {
+            $session->status = 'live';
+        }
+        $session->ts = (int) (now()->timestamp * 1000);
+        $session->save();
+
+        $fresh = $session->fresh();
+        $this->ensureActiveGasOrderForSession($fresh);
+        if ($fresh) {
+            $state = $fresh->toFrontendState();
+            $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
+            $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
+        }
 
         return response()->json(['success' => true]);
     }
@@ -784,15 +801,29 @@ class ProductionMonitorController extends Controller
             'confirmed_at'  => is_numeric($confirmedAt) ? (int) $confirmedAt : null,
         ];
 
-        // DB เท่านั้น — canonical session
+        // DB เท่านั้น — canonical session; promote awaiting_scale → live when operator confirms
         try {
-            ProductionSession::where('machine_id', $machineId)
+            $session = ProductionSession::where('machine_id', $machineId)
                 ->whereNotIn('status', ['finished', 'cancelled'])
-                ->update([
-                    'shift'       => $shift,
-                    'employee_id' => $employeeId,
-                    'ts'          => (int) (now()->timestamp * 1000),
-                ]);
+                ->first();
+
+            if ($session) {
+                $session->shift       = $shift;
+                $session->employee_id = $employeeId;
+                if ($session->status === 'awaiting_scale') {
+                    $session->status = 'live';
+                }
+                $session->ts = (int) (now()->timestamp * 1000);
+                $session->save();
+
+                $fresh = $session->fresh();
+                $this->ensureActiveGasOrderForSession($fresh);
+                if ($fresh) {
+                    $state = $fresh->toFrontendState();
+                    $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
+                    $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
+                }
+            }
         } catch (\Throwable $e) {
             Log::warning("sessionConfirm DB update failed for {$machineId}: " . $e->getMessage());
         }
@@ -813,7 +844,7 @@ class ProductionMonitorController extends Controller
     {
         $session = ProductionSession::where('machine_id', $machineId)->first();
 
-        if (! $session || ! in_array($session->status, ['live', 'paused'], true)) {
+        if (! $session || ! in_array($session->status, ['live', 'paused', 'awaiting_scale'], true)) {
             return response()->json(['pending' => false, 'shift' => '', 'employeeId' => '']);
         }
 
@@ -966,14 +997,15 @@ class ProductionMonitorController extends Controller
         /** @var ProductionSession|null $sessionAfter */
         $sessionAfter = null;
         $createdEventId = null;
+        $rejectedNotLive = false;
 
         $orderForLock = (string) ($payload['orderId'] ?? '');
         $lockKey      = 'weight-seq:' . hash('sha1', "{$machineId}|{$orderForLock}");
 
         try {
             // ให้เลขลำดับใน order เป็นแบบ linear ภายใน machine+order เสมอ (กันชน max(seq) เมื่อไม่มีแถว session lock พร้อมกัน / เรียกคู่ขนานจาก ESP32)
-            Cache::lock($lockKey, 30)->block(15, function () use ($machineId, $payload, &$sessionAfter, &$createdEventId) {
-                DB::transaction(function () use ($machineId, $payload, &$sessionAfter, &$createdEventId) {
+            Cache::lock($lockKey, 30)->block(15, function () use ($machineId, $payload, &$sessionAfter, &$createdEventId, &$rejectedNotLive) {
+                DB::transaction(function () use ($machineId, $payload, &$sessionAfter, &$createdEventId, &$rejectedNotLive) {
                     $type       = $payload['type']   ?? 'good';
                     $weight     = (float) ($payload['weight'] ?? 0);
                     $orderId    = $payload['orderId']    ?? '';
@@ -985,6 +1017,12 @@ class ProductionMonitorController extends Controller
                         ->whereNotIn('status', ['finished', 'cancelled'])
                         ->lockForUpdate()
                         ->first();
+
+                    if (! $session || $session->status !== 'live') {
+                        $rejectedNotLive = true;
+
+                        return;
+                    }
 
                     $runUlid = $session?->session_run_ulid;
 
@@ -1076,6 +1114,16 @@ class ProductionMonitorController extends Controller
                 'success' => false,
                 'message' => 'database write failed',
             ], 500);
+        }
+
+        if ($rejectedNotLive) {
+            Cache::forget($dedupKey);
+
+            return response()->json([
+                'success' => true,
+                'stale'   => true,
+                'reason'  => 'session_not_live',
+            ]);
         }
 
         // ความจริงอยู่ที่ DB เท่านั้น — ไม่ mirror events ใน cache
@@ -1947,7 +1995,7 @@ class ProductionMonitorController extends Controller
     public function cancelSession(string $machineId): JsonResponse
     {
         $session = ProductionSession::where('machine_id', $machineId)
-            ->whereIn('status', ['live', 'paused'])
+            ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
             ->first();
 
         $now = now();
@@ -1994,7 +2042,7 @@ class ProductionMonitorController extends Controller
     /**
      * POST /api/production-monitor/start/{machineId}
      *
-     * StartNow: สร้าง/อัปเดต session เป็น live ใน DB
+     * StartNow: สร้าง/อัปเดต session — ยังไม่มีกะ/รหัสจากตาชั่งจะเป็น awaiting_scale (เว็บยังโหมด setup)
      *           mark queue item started, broadcast session_updated + production_updated
      *
      * Body: { queueItemId?, orderId, productCode, productName, targetQty, remainingQty,
@@ -2019,7 +2067,16 @@ class ProductionMonitorController extends Controller
 
         $existing = ProductionSession::where('machine_id', $machineId)->first();
         $sameOrder = $existing && (string) ($existing->order_id ?? '') === (string) $data['orderId'];
-        $continuing = $sameOrder && $existing && in_array((string) ($existing->status ?? ''), ['live', 'paused'], true);
+        $continuing = $sameOrder && $existing && in_array((string) ($existing->status ?? ''), ['live', 'paused', 'awaiting_scale'], true);
+
+        $hasOperator = $shiftIn !== '' && $empIn !== '';
+        if ($continuing) {
+            $newStatus = $hasOperator ? 'live' : (string) ($existing->status ?? 'live');
+        } elseif ($hasOperator) {
+            $newStatus = 'live';
+        } else {
+            $newStatus = 'awaiting_scale';
+        }
 
         $sessionRunUlid = ($continuing && ! empty($existing->session_run_ulid))
             ? (string) $existing->session_run_ulid
@@ -2048,7 +2105,7 @@ class ProductionMonitorController extends Controller
             'std_weight'        => isset($data['stdWeight']) ? (float) $data['stdWeight'] : null,
             'min_weight'        => isset($data['minWeight']) ? (float) $data['minWeight'] : null,
             'max_weight'        => isset($data['maxWeight']) ? (float) $data['maxWeight'] : null,
-            'status'            => 'live',
+            'status'            => $newStatus,
             'source'            => 'web',
             'started_at'        => ($continuing && $existing->started_at) ? $existing->started_at : $now,
             'paused_at'         => null,
@@ -2078,43 +2135,12 @@ class ProductionMonitorController extends Controller
             }
         });
 
-        $session = ProductionSession::where('machine_id', $machineId)
-            ->where('status', 'live')
-            ->latest()
-            ->first();
+        $session = ProductionSession::where('machine_id', $machineId)->first();
 
-        $frontendState = $session ? $session->toFrontendState() : $sessionData;
+        $frontendState = $session ? $session->toFrontendState() : [];
 
-        // Async dual-write: เมื่อมีกะ+รหัสครบแล้วเท่านั้น (ยืนยันจากตาชั่งแล้ว) — ไม่ซ้ำเมื่อเรียก start ซ้ำระหว่างรอ D
-        if ($session) {
-            $hasIdentity = trim((string) ($session->shift ?? '')) !== ''
-                && trim((string) ($session->employee_id ?? '')) !== '';
-            if ($hasIdentity) {
-                $dupOrder = ProductionOrder::where('machine_id', $machineId)
-                    ->where('session_run_ulid', $session->session_run_ulid)
-                    ->where('status', 'active')
-                    ->exists();
-                if (! $dupOrder) {
-                    $tmpOrder = ProductionOrder::create([
-                        'machine_id'       => $machineId,
-                        'session_run_ulid' => $session->session_run_ulid,
-                        'order_id'         => $session->order_id,
-                        'product_code'     => $session->product_code,
-                        'product_name'     => $session->product_name,
-                        'target_qty'       => $session->target_qty,
-                        'remaining_qty'    => $session->remaining_qty,
-                        'plan_date'        => $session->plan_date,
-                        'sheet_name'       => $session->sheet_name,
-                        'led_ip'           => $session->led_ip,
-                        'started_at'       => $session->started_at,
-                        'status'           => 'active',
-                        'gas_sync_status'  => 'pending',
-                    ]);
-                    SyncOrderToGas::dispatch($tmpOrder->id, 'createOrder', $this->gasUrl)
-                        ->onQueue('gas-sync');
-                }
-            }
-        }
+        // Async dual-write: เมื่อมีกะ+รหัสครบและสถานะ live เท่านั้น (ครอบคลุมเมื่อ sessionConfirm ทำก่อนรอบสองของ start)
+        $this->ensureActiveGasOrderForSession($session);
 
         // Broadcast as production_updated to match existing frontend SSE handler
         $this->publishEvent('production_updated', [
@@ -2169,10 +2195,10 @@ class ProductionMonitorController extends Controller
     public function finishSession(Request $request, string $machineId): JsonResponse
     {
         $session = ProductionSession::where('machine_id', $machineId)
-            ->whereIn('status', ['live', 'paused'])
+            ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
             ->first();
 
-        if (!$session) {
+        if (! $session) {
             return response()->json(['success' => false, 'message' => 'no active session'], 404);
         }
 
@@ -2521,6 +2547,49 @@ class ProductionMonitorController extends Controller
         }
 
         return new Collection($out);
+    }
+
+    /**
+     * สร้างแถว production_orders + queue GAS createOrder เมื่อเซสชัน live และมีกะ+รหัสครบ (idempotent)
+     */
+    private function ensureActiveGasOrderForSession(?ProductionSession $session): void
+    {
+        if (! $session || $session->status !== 'live') {
+            return;
+        }
+
+        $machineId = (string) $session->machine_id;
+        $hasIdentity = trim((string) ($session->shift ?? '')) !== ''
+            && trim((string) ($session->employee_id ?? '')) !== '';
+        if (! $hasIdentity) {
+            return;
+        }
+
+        $dupOrder = ProductionOrder::where('machine_id', $machineId)
+            ->where('session_run_ulid', $session->session_run_ulid)
+            ->where('status', 'active')
+            ->exists();
+        if ($dupOrder) {
+            return;
+        }
+
+        $tmpOrder = ProductionOrder::create([
+            'machine_id'       => $machineId,
+            'session_run_ulid' => $session->session_run_ulid,
+            'order_id'         => $session->order_id,
+            'product_code'     => $session->product_code,
+            'product_name'     => $session->product_name,
+            'target_qty'       => $session->target_qty,
+            'remaining_qty'    => $session->remaining_qty,
+            'plan_date'        => $session->plan_date,
+            'sheet_name'       => $session->sheet_name,
+            'led_ip'           => $session->led_ip,
+            'started_at'       => $session->started_at,
+            'status'           => 'active',
+            'gas_sync_status'  => 'pending',
+        ]);
+        SyncOrderToGas::dispatch($tmpOrder->id, 'createOrder', $this->gasUrl)
+            ->onQueue('gas-sync');
     }
 
     /**

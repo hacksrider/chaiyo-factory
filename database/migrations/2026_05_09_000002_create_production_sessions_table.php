@@ -37,7 +37,7 @@ return new class extends Migration
             $table->decimal('std_weight', 10, 4)->nullable();
             $table->decimal('min_weight', 10, 4)->nullable();
             $table->decimal('max_weight', 10, 4)->nullable();
-            // status: setup | live | paused | finished | cancelled
+            // status: setup | awaiting_scale | live | paused | finished | cancelled
             $table->string('status', 20)->default('setup');
             // source of last update: web | scale
             $table->string('source', 20)->default('web');
