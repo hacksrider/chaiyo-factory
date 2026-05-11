@@ -637,7 +637,6 @@ const LiveMonitoring = ({
   machineState,
   onWeightUpdate,   // (type: 'good'|'ng', weight: number, event) → update state
   onCloseOrder,
-  onPauseOrder,
   onPauseAndStart,
   onCloseAndStart,
   onAddToQueue,
@@ -761,33 +760,33 @@ const LiveMonitoring = ({
     return () => window.removeEventListener('sse:session_confirmed', handler);
   }, [machineId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Fallback poll every 5s — catches events missed during SSE gap ────────
-  // Uses ?since=<ISO timestamp> to fetch only NEW events
-  const scaleEventsSinceRef = useRef(null);
+  // ── Fallback poll — ดึง events จาก production_weight_events ผ่าน API (incremental sinceId)
+  const scaleEventsSinceIdRef = useRef(0);
+  useEffect(() => {
+    scaleEventsSinceIdRef.current = 0;
+  }, [machineId, machineState?.sessionRunUlid, machineState?.orderId]);
+
   useEffect(() => {
     if (!machineId) return;
 
     const tick = async () => {
       try {
-        const res = await fetchScaleWeights(machineId, scaleEventsSinceRef.current);
+        const res = await fetchScaleWeights(machineId, {
+          sinceId: scaleEventsSinceIdRef.current,
+        });
         const events = res?.events ?? [];
-        if (res?.latestTs) scaleEventsSinceRef.current = res.latestTs;
+        if (typeof res?.latestEventId === 'number' && res.latestEventId > scaleEventsSinceIdRef.current) {
+          scaleEventsSinceIdRef.current = res.latestEventId;
+        }
         for (const ev of events) processScaleEvent(ev);
       } catch {
-        // ignore — SSE is primary, this is just a safety net
+        // ignore — SSE is primary
       }
     };
 
     pollRef.current = setInterval(tick, 5000);
     return () => clearInterval(pollRef.current);
-  }, [machineId, processScaleEvent]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Pause order ───────────────────────────────────────────────────────────
-  const handlePauseOrder = () => {
-    if (!window.confirm(t('production.confirmPauseOrder', { orderId: machineState.orderId })))
-      return;
-    onPauseOrder();
-  };
+  }, [machineId, machineState?.sessionRunUlid, machineState?.orderId, processScaleEvent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-6 w-full">
@@ -1044,17 +1043,6 @@ const LiveMonitoring = ({
           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
           {t('production.autoFromScale')}
         </div>
-
-        {/* Pause Order */}
-        <button
-          onClick={handlePauseOrder}
-          className="flex items-center gap-2 bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/40 hover:border-yellow-400 text-yellow-300 hover:text-yellow-100 font-semibold py-2.5 px-5 rounded-xl transition-all"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          {t('production.pauseOrder')}
-        </button>
 
         {/* Finished Order */}
         <button

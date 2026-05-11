@@ -398,13 +398,24 @@ const HistoryView = ({ machines }) => {
     setDetailLoading(true);
     setDetailSortDir('desc');
 
+    const runUlid = row.sessionRunUlid ?? row.session_run_ulid ?? '';
+    if (!runUlid) {
+      setDetailError(t('production.historyMissingRunUlid'));
+      setDetailLoading(false);
+      return;
+    }
+
     try {
       const machineKey =
         row.machine_id
         ?? machines.find((m) => String(m.sheetName ?? '') === String(row.machine ?? ''))?.id
         ?? machines.find((m) => String(m.id ?? '') === String(row.machine ?? ''))?.id
         ?? row.machine;
-      const detail = await fetchOrderDetail(machineKey, row.orderId, row.timestamp || null);
+      const detail = await fetchOrderDetail(
+        machineKey,
+        row.orderId,
+        runUlid,
+      );
       setDetailData(detail);
     } catch (err) {
       setDetailError(err?.message ?? String(err));

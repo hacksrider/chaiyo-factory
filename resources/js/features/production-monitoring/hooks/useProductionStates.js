@@ -43,8 +43,8 @@ export const DEFAULT_MACHINE_STATE = {
   ngEvents:   [],   // [{ weight, pressedAt, seq }]
   // Timestamp ของ mutation ล่าสุด — ใช้ตัดสินว่า server หรือ local ใหม่กว่า
   _ts: 0,
-  // orderId ของงานที่เพิ่งปิด — ใช้กัน stale 'live' push จาก browser อื่นหลัง Finish Order
-  finishedOrderId: null,
+  // Per Start Now run — aligns with Laravel production_sessions.session_run_ulid
+  sessionRunUlid: null,
 };
 
 // State is server-only. localStorage has been removed as primary storage

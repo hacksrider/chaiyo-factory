@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 class ProductionMonitorController extends Controller
 {
@@ -739,8 +741,15 @@ class ProductionMonitorController extends Controller
      */
     public function storeScaleConfirm(Request $request, string $machineId): JsonResponse
     {
-        $payload = $request->only(['shift', 'employeeId']);
-        Cache::put("scale_confirm_{$machineId}", $payload, now()->addMinutes(5));
+        $shift      = (string) $request->input('shift', '');
+        $employeeId = (string) ($request->input('employeeId') ?? '');
+        ProductionSession::where('machine_id', $machineId)
+            ->whereIn('status', ['live', 'paused'])
+            ->update([
+                'shift'       => $shift,
+                'employee_id' => $employeeId,
+                'ts'          => (int) (now()->timestamp * 1000),
+            ]);
 
         return response()->json(['success' => true]);
     }
@@ -749,7 +758,7 @@ class ProductionMonitorController extends Controller
      * POST /api/production-monitor/session-confirm/{machineId}
      *
      * NEW: Called by Scale ESP32 when operator confirms (shift + employee id).
-     * Stores confirmation in cache and broadcasts SSE `session_confirmed` to all browsers.
+     * บันทึกกะ+รหัสพนักงานจากตาชั่งลง DB เท่านั้น และ broadcast SSE
      *
      * Body: { shift, employee_id, confirmed_at }
      * (firmware may also send employeeId for legacy compatibility)
@@ -774,15 +783,7 @@ class ProductionMonitorController extends Controller
             'confirmed_at'  => is_numeric($confirmedAt) ? (int) $confirmedAt : null,
         ];
 
-        Cache::put("session_confirm_{$machineId}", $data, now()->addHours(12));
-
-        // Keep legacy polling flow working (SetupMode polls /scale-confirm).
-        Cache::put("scale_confirm_{$machineId}", [
-            'shift'      => $shift,
-            'employeeId' => $employeeId,
-        ], now()->addMinutes(5));
-
-        // DB write: update active session with shift/employeeId from scale
+        // DB เท่านั้น — canonical session
         try {
             ProductionSession::where('machine_id', $machineId)
                 ->whereNotIn('status', ['finished', 'cancelled'])
@@ -794,17 +795,6 @@ class ProductionMonitorController extends Controller
         } catch (\Throwable $e) {
             Log::warning("sessionConfirm DB update failed for {$machineId}: " . $e->getMessage());
         }
-
-        // Defensive: mark scale-live as live=true immediately so the ESP32 does NOT
-        // reset back to IDLE if the web browser crashes before its useEffect fires
-        // storeScaleLive(). We merge over the existing payload to preserve orderId,
-        // targetQty, stdWeight etc. that were already stored by the web on Start Now.
-        $existingLive = Cache::get("scale_live_{$machineId}") ?? [];
-        Cache::put("scale_live_{$machineId}", array_merge($existingLive, [
-            'live'        => true,
-            'shift'       => $shift,
-            'employee_id' => $employeeId,
-        ]), now()->addDays(1));
 
         $this->publishEvent('session_confirmed', $data);
 
@@ -820,103 +810,82 @@ class ProductionMonitorController extends Controller
      */
     public function fetchScaleConfirm(string $machineId): JsonResponse
     {
-        $confirm = Cache::pull("scale_confirm_{$machineId}");
+        $session = ProductionSession::where('machine_id', $machineId)->first();
 
-        if ($confirm) {
-            return response()->json(array_merge(['pending' => true], $confirm));
+        if (! $session || ! in_array($session->status, ['live', 'paused'], true)) {
+            return response()->json(['pending' => false, 'shift' => '', 'employeeId' => '']);
         }
 
-        return response()->json(['pending' => false]);
+        $shift       = trim((string) ($session->shift ?? ''));
+        $employeeId  = trim((string) ($session->employee_id ?? ''));
+        // เก็บ semantics เดิมกับฟิร์มแวร์/SetupMode: pending = true เมื่อยืนยันแล้ว (มีครบ)
+        $hasConfirm  = ($shift !== '' && $employeeId !== '');
+
+        return response()->json([
+            'pending'    => $hasConfirm,
+            'shift'      => $session->shift      ?? '',
+            'employeeId' => $session->employee_id ?? '',
+        ]);
     }
 
     /**
      * POST /api/production-monitor/scale-live/{machineId}
      *
-     * Web ซิงค์สถานะ Live ของเครื่องพร้อม session ข้อมูลงานปัจจุบัน
-     * ตาชั่ง ESP32 ดึงข้อมูลนี้เพื่อ restore หลัง reboot / WiFi หลุด
-     *
-     * Body (live=true):  { live:true, orderId, productCode, productName, targetQty,
-     *                      pipeCounter, shift, employeeId, sheetName }
-     * Body (live=false): { live:false }
+     * Legacy: เว็บเคย mirror state ใน cache — ตอนนี้ความจริงจาก production_sessions เท่านั้น (GET scale-live อ่าน DB).
      */
     public function storeScaleLive(Request $request, string $machineId): JsonResponse
     {
-        $live = $request->boolean('live');
-
-        if ($live) {
-            $session = array_merge(
-                ['live' => true],
-                $request->only([
-                    'orderId', 'productCode', 'productName',
-                    'targetQty', 'pipeCounter',
-                    'shift', 'employeeId', 'sheetName',
-                    'stdWeight', 'minWeight', 'maxWeight', 'productLen',
-                ])
-            );
-            Cache::put("scale_live_{$machineId}", $session, now()->addDays(7));
-        } else {
-            Cache::put("scale_live_{$machineId}", ['live' => false], now()->addDays(7));
-        }
-
         return response()->json(['success' => true]);
     }
 
     /**
      * GET /api/production-monitor/scale-live/{machineId}
      *
-     * Scale ESP32 poll ว่าเว็บยังถือว่าผลิตอยู่ไหม + ดึง session ข้อมูลงาน
-     *
-     * Bug 3 fix: ถ้า scale_live cache miss → fallback ไป machine_session cache
-     * เพื่อป้องกัน scale ล้าง NVS เมื่อ cache หมดอายุหรือ server restart
-     *
+     * Scale ESP32 poll — ข้อมูลจาก production_sessions เท่านั้น (ไม่ใช้ cache)
      * Response (live):    { live:true, orderId, ..., pipeCounter, ... }
      * Response (stopped): { live:false }
-     * Response (unknown): { live:null }  ← ไม่มีข้อมูลพอ อย่าเพิ่งลบ NVS
+     * Response (unknown): { live:null }  ← ไม่มีแถวเซสชัน
      */
     public function fetchScaleLive(string $machineId): JsonResponse
     {
-        $key = "scale_live_{$machineId}";
+        $session = ProductionSession::where('machine_id', $machineId)->first();
 
-        if (Cache::has($key)) {
-            $data = Cache::get($key);
-            // รองรับ cache รูปแบบเก่า (เก็บ bool ตรงๆ)
-            if (is_bool($data)) {
-                return response()->json(['live' => $data]);
-            }
-            return response()->json($data);
+        if (! $session) {
+            return response()->json(['live' => null]);
         }
 
-        // Bug 3 fix: scale_live หาย → fallback ไป machine_session
-        // machine_session มี TTL 7 วัน (นานกว่า scale_live เดิมที่ 72h)
-        $sessionKey = "machine_session_{$machineId}";
-        if (Cache::has($sessionKey)) {
-            $session = Cache::get($sessionKey);
-            if (is_array($session) && ($session['mode'] ?? '') === 'live') {
-                // Reconstruct scale-live payload จาก machine_session
-                $restored = [
-                    'live'        => true,
-                    'orderId'     => $session['orderId']     ?? '',
-                    'productCode' => $session['productCode'] ?? '',
-                    'productName' => $session['productName'] ?? '',
-                    'targetQty'   => $session['targetQty']   ?? 0,
-                    'pipeCounter' => $session['pipeCounter'] ?? 0,
-                    'shift'       => $session['shift']       ?? '',
-                    'employeeId'  => $session['employeeId']  ?? '',
-                    'sheetName'   => $session['sheetName']   ?? '',
-                ];
-                // เขียนกลับ scale_live เพื่อให้ poll ครั้งต่อไปเร็วขึ้น
-                Cache::put($key, $restored, now()->addDays(7));
-                return response()->json($restored);
-            }
-            // session มีอยู่แต่ mode != live → หยุดผลิตแล้ว
-            if (is_array($session) && isset($session['mode'])) {
-                return response()->json(['live' => false]);
-            }
+        $st = $session->status ?? '';
+        if (in_array($st, ['cancelled', 'finished'], true)) {
+            return response()->json(['live' => false]);
         }
 
-        // ไม่มีข้อมูลเลย → return null แทน false เพื่อกัน scale ล้าง NVS โดยไม่จำเป็น
-        // (scale firmware ควร treat live:null ว่า "ยังไม่รู้ อย่าเพิ่งทำอะไร")
-        return response()->json(['live' => null]);
+        if ($st === 'paused') {
+            return response()->json(['live' => false]);
+        }
+
+        if ($st !== 'live') {
+            return response()->json(['live' => false]);
+        }
+
+        $remain = (int) ($session->remaining_qty ?? 0);
+        $tgt    = $remain > 0 ? $remain : (int) ($session->target_qty ?? 0);
+
+        return response()->json([
+            'live'           => true,
+            'orderId'        => $session->order_id,
+            'productCode'    => $session->product_code,
+            'productName'    => $session->product_name,
+            'targetQty'      => $tgt,
+            'pipeCounter'    => (int) $session->pipe_counter,
+            'shift'          => $session->shift       ?? '',
+            'employeeId'     => $session->employee_id ?? '',
+            'sheetName'      => $session->sheet_name,
+            'sessionRunUlid' => $session->session_run_ulid,
+            'stdWeight'      => $session->std_weight !== null ? (float) $session->std_weight : null,
+            'minWeight'      => $session->min_weight !== null ? (float) $session->min_weight : null,
+            'maxWeight'      => $session->max_weight !== null ? (float) $session->max_weight : null,
+            'productLen'     => $session->length !== null ? (float) $session->length : null,
+        ]);
     }
 
     /**
@@ -946,14 +915,24 @@ class ProductionMonitorController extends Controller
         // เก็บเวลา server ด้วยเสมอ (ใช้ debug / ตรวจ latency)
         $payload['receivedAt'] = now()->toISOString();
 
-        // ป้องกัน ESP32 flush pending events จาก session ก่อนหน้า:
-        // ถ้า pressedAt เก่ากว่าเวลาที่ web กด Start Now → ทิ้งทิ้งทิ้ง (stale event)
-        $sessionStart = Cache::get("scale_session_start_{$machineId}");
-        if ($sessionStart && $payload['pressedAt'] !== now()->toISOString()) {
-            $pressedTs = strtotime($payload['pressedAt']);
-            $startTs   = strtotime($sessionStart);
-            if ($pressedTs !== false && $startTs !== false && $pressedTs < $startTs) {
-                Log::info("storeScaleWeight: rejected stale event for {$machineId} (pressedAt={$payload['pressedAt']} < sessionStart={$sessionStart})");
+        // pressedAt millis:xxx — เทียบ started_at เซสชัน DB ไม่ได้ → อย่ายิงทิ้ง
+        // เก่ากว่า DB started_at เซสชัน live/paused ปัจจุบัน → stale
+        $activeStale = ProductionSession::where('machine_id', $machineId)
+            ->whereNotIn('status', ['finished', 'cancelled'])
+            ->first();
+        $paStale = $payload['pressedAt'] ?? '';
+        $isMillis = is_string($paStale) && str_starts_with($paStale, 'millis:');
+        if (
+            !$isMillis
+            && $activeStale?->started_at
+            && is_string($paStale)
+            && $paStale !== ''
+        ) {
+            $pressedTs = strtotime($paStale);
+            $startTs = $activeStale->started_at->getTimestamp();
+            if ($pressedTs !== false && $pressedTs + 120 < $startTs) {
+                Log::info("storeScaleWeight: rejected stale event for {$machineId} (pressedAt={$paStale} < db started_at)");
+
                 return response()->json(['success' => true, 'stale' => true]);
             }
         }
@@ -1004,23 +983,34 @@ class ProductionMonitorController extends Controller
                         ->lockForUpdate()
                         ->first();
 
-                    $seq = (int) ProductionWeightEvent::where('machine_id', $machineId)
-                        ->where('order_id', $orderId)
-                        ->max('seq') + 1;
+                    $runUlid = $session?->session_run_ulid;
+
+                    $seqQ = ProductionWeightEvent::where('machine_id', $machineId)
+                        ->where('order_id', $orderId);
+                    if ($runUlid !== null && $runUlid !== '') {
+                        $seqQ->where('session_run_ulid', $runUlid);
+                    }
+                    $seq = (int) $seqQ->max('seq') + 1;
 
                     // คอลัมลำดับของดี/ของเสียใน Sheet และในประวัติ: เรียง 1…n ภายใน type (ไม่กระโดดเพราะของเสียคั่น)
                     $goodSeq = null;
                     $ngSeq   = null;
                     if ($type === 'good') {
-                        $goodSeq = (int) ProductionWeightEvent::where('machine_id', $machineId)
+                        $gq = ProductionWeightEvent::where('machine_id', $machineId)
                             ->where('order_id', $orderId)
-                            ->where('type', 'good')
-                            ->max('good_seq') + 1;
+                            ->where('type', 'good');
+                        if ($runUlid !== null && $runUlid !== '') {
+                            $gq->where('session_run_ulid', $runUlid);
+                        }
+                        $goodSeq = (int) $gq->max('good_seq') + 1;
                     } else {
-                        $ngSeq = (int) ProductionWeightEvent::where('machine_id', $machineId)
+                        $nq = ProductionWeightEvent::where('machine_id', $machineId)
                             ->where('order_id', $orderId)
-                            ->where('type', 'ng')
-                            ->max('ng_seq') + 1;
+                            ->where('type', 'ng');
+                        if ($runUlid !== null && $runUlid !== '') {
+                            $nq->where('session_run_ulid', $runUlid);
+                        }
+                        $ngSeq = (int) $nq->max('ng_seq') + 1;
                     }
 
                     $pressedAtDb = $payload['pressedAt'] ?? null;
@@ -1029,7 +1019,8 @@ class ProductionMonitorController extends Controller
                     }
 
                     $weightEvent = ProductionWeightEvent::create([
-                        'machine_id'      => $machineId,
+                        'machine_id'       => $machineId,
+                        'session_run_ulid' => $runUlid,
                         'order_id'        => $orderId,
                         'sheet_name'      => $sheetName,
                         'type'            => $type,
@@ -1075,17 +1066,8 @@ class ProductionMonitorController extends Controller
             ], 500);
         }
 
-        // เก็บ event ต่อท้าย list — ใช้ Cache::get (ไม่ใช่ pull) เพื่อให้ทุก browser รับได้
-        // events จะหมดอายุเองใน 2 ชั่วโมง หรือถูก reset เมื่อ scale-command ใหม่มา
+        // ความจริงอยู่ที่ DB เท่านั้น — ไม่ mirror events ใน cache
         $payloadOut = $payload + ($createdEventId !== null ? ['eventId' => $createdEventId] : []);
-
-        $events   = Cache::get("scale_events_{$machineId}", []);
-        $events[] = $payloadOut;
-        // Ring buffer: เก็บสูงสุด 500 events (~1 วันของการผลิต)
-        if (count($events) > 500) {
-            $events = array_slice($events, -500);
-        }
-        Cache::put("scale_events_{$machineId}", $events, now()->addHours(2));
 
         // Broadcast ทันที → browsers รับ scale_weight event โดยไม่ต้องรอ poll รอบถัดไป
         $this->publishEvent('scale_weight', [
@@ -1093,57 +1075,46 @@ class ProductionMonitorController extends Controller
             'event'     => $payloadOut,
         ]);
 
-        // ซิงก์เลขจาก DB เข้ากับป้ายไฟและตาชั่ง (ไม่เชื่อ actualCount จาก ESP32 เท่ากับแหล่งจริง)
+        // ซิงก์เลขจาก DB เข้ากับป้ายไฟ (ESP ยัง poll led_cmd queue)
         $pipeFromDb       = $sessionAfter ? (int) $sessionAfter->pipe_counter : (int) ($payload['actualCount'] ?? 0);
         $remainingFromDb  = $sessionAfter ? (int) $sessionAfter->remaining_qty : -1;
 
-        Cache::put("scale_count_{$machineId}", $pipeFromDb, now()->addHours(24));
-
-        if (($payload['type'] ?? '') === 'good') {
-
+        if (($payload['type'] ?? '') === 'good' && $sessionAfter) {
             $ledState = Cache::get("led_state_{$machineId}");
 
-            // Bug 5 fix: ถ้า led_state ไม่มี (ยังไม่เคย set จากหน้าเว็บ)
-            // ให้สร้าง default จาก machine_session หรือ scale_live session
-            // เพื่อให้ LED อัปเดต actualCount ได้แม้ไม่เคยผ่าน /led-cmd
-            if (! $ledState) {
-                $session = Cache::get("machine_session_{$machineId}")
-                        ?? Cache::get("scale_live_{$machineId}");
-                if (is_array($session) && ($session['live'] ?? $session['mode'] ?? '') !== false) {
-                    $orderId     = $session['orderId']     ?? '';
-                    $productCode = $session['productCode'] ?? '';
-                    $productName = $session['productName'] ?? '';
-                    // target / ค้าง: จาก DB session เป็นหลัก
-                    $ledTarget =
-                        ($sessionAfter && $remainingFromDb >= 0)
-                        ? $remainingFromDb
-                        : (int) ($session['remainingQty'] ?? $session['targetQty'] ?? 0);
-                    $displayText = $productCode
-                        ? "{$productCode} {$productName}"
-                        : "Order: {$orderId}";
-                    $ledState = [
-                        'text'      => $displayText,
-                        'r'         => 0,
-                        'g'         => 255,
-                        'b'         => 255,
-                        'fontSize'  => 1,
-                        'speed'     => 50,
-                        'actual'    => (string) $pipeFromDb,
-                        'target'    => (string) $ledTarget,
-                    ];
-                    Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
-                }
-            }
+            $orderIdLc     = $sessionAfter->order_id ?? '';
+            $productCodeLc = $sessionAfter->product_code ?? '';
+            $productNameLc = $sessionAfter->product_name ?? '';
+            $ledTarget = ($remainingFromDb >= 0)
+                ? $remainingFromDb
+                : (($sessionAfter->remaining_qty ?? $sessionAfter->target_qty) ?? 0);
+            $displayText = ($productCodeLc !== '')
+                ? "{$productCodeLc} {$productNameLc}"
+                : "Order: {$orderIdLc}";
 
-            if ($ledState) {
+            if (! $ledState) {
+                $ledState = [
+                    'text'      => $displayText,
+                    'r'         => 0,
+                    'g'         => 255,
+                    'b'         => 255,
+                    'fontSize'  => 1,
+                    'speed'     => 50,
+                    'actual'    => (string) $pipeFromDb,
+                    'target'    => (string) $ledTarget,
+                ];
+            } else {
                 $ledState['actual'] = (string) $pipeFromDb;
                 if ($remainingFromDb >= 0) {
                     $ledState['target'] = (string) $remainingFromDb;
                 }
-                $ledState['updatedAt'] = now()->toISOString();
-                Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
-                Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
+                if (($ledState['text'] ?? '') === '' && $displayText !== '') {
+                    $ledState['text'] = $displayText;
+                }
             }
+            $ledState['updatedAt'] = now()->toISOString();
+            Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
+            Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
         }
 
         if ($sessionAfter) {
@@ -1164,35 +1135,74 @@ class ProductionMonitorController extends Controller
     /**
      * GET /api/production-monitor/scale-weight/{machineId}
      *
-     * Web poll รับ weight events สะสม (READ-ONLY — ไม่ลบ)
-     * ใช้ since={timestamp} เพื่อรับเฉพาะ events ใหม่ (ป้องกัน process ซ้ำ)
+     * Web poll รับ weight events — อ่านจาก production_weight_events (ไม่ใช้ cache)
+     * Query: sinceId={int} หรือ since={ISO} (legacy)
      *
-     * Response: { events: [...], latestTs: string|null }
-     *
-     * NOTE: เปลี่ยนจาก Cache::pull() เป็น Cache::get() เพื่อแก้ bug ที่ทำให้
-     * browser tab อื่นไม่ได้รับ events (pull ลบข้อมูลทันทีที่ browser แรกอ่าน)
+     * Response: { events: [...], latestTs, latestEventId }
      */
     public function fetchScaleWeights(Request $request, string $machineId): JsonResponse
     {
-        $since  = $request->input('since', null); // ISO timestamp — คืนเฉพาะ events ที่ receivedAt > since
-        $events = Cache::get("scale_events_{$machineId}", []);
+        $session = ProductionSession::where('machine_id', $machineId)->first();
 
-        if ($since) {
-            $sinceTs = strtotime($since);
-            if ($sinceTs !== false) {
-                $events = array_values(array_filter($events, function ($ev) use ($sinceTs) {
-                    $ts = strtotime($ev['receivedAt'] ?? $ev['pressedAt'] ?? '');
-                    return $ts !== false && $ts > $sinceTs;
-                }));
+        if (! $session || $session->status !== 'live' || empty($session->session_run_ulid)) {
+            return response()->json([
+                'events'         => [],
+                'latestTs'       => null,
+                'latestEventId'  => 0,
+            ]);
+        }
+
+        $runUlid = (string) $session->session_run_ulid;
+        $q       = ProductionWeightEvent::query()
+            ->where('machine_id', $machineId)
+            ->where('session_run_ulid', $runUlid)
+            ->orderBy('id');
+
+        $sinceId = null;
+        if ($request->has('sinceId')) {
+            $sinceId = max(0, (int) $request->query('sinceId'));
+        }
+        if ($sinceId !== null && $sinceId > 0) {
+            $q->where('id', '>', $sinceId);
+        } elseif ($request->filled('since')) {
+            $since = (string) $request->query('since');
+            if ($since !== '') {
+                try {
+                    $cutoff = Carbon::parse($since);
+                    $q->whereRaw('COALESCE(received_at, pressed_at, created_at) > ?', [$cutoff]);
+                } catch (\Throwable $e) {
+                    // malformed since
+                }
             }
         }
 
-        $latestTs = null;
-        if (!empty($events)) {
-            $latestTs = end($events)['receivedAt'] ?? end($events)['pressedAt'] ?? null;
+        $models = $q->get();
+
+        $events = $models->map(static function (ProductionWeightEvent $e) {
+            return [
+                'eventId'    => $e->id,
+                'weight'     => (float) $e->weight,
+                'type'       => $e->type,
+                'pressedAt'  => $e->pressed_at ? $e->pressed_at->toISOString() : ($e->received_at ? $e->received_at->toISOString() : ''),
+                'receivedAt' => $e->received_at ? $e->received_at->toISOString() : '',
+            ];
+        })->values()->all();
+
+        $latestTs      = null;
+        $latestEventId = 0;
+        if ($models->isNotEmpty()) {
+            $last = $models->last();
+            $latestEventId = (int) $last->id;
+            $latestTs      = $last->received_at
+                ? $last->received_at->toISOString()
+                : ($last->pressed_at ? $last->pressed_at->toISOString() : null);
         }
 
-        return response()->json(['events' => $events, 'latestTs' => $latestTs]);
+        return response()->json([
+            'events'        => $events,
+            'latestTs'      => $latestTs,
+            'latestEventId' => $latestEventId,
+        ]);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -1689,11 +1699,10 @@ class ProductionMonitorController extends Controller
      */
     private function finalizeScaleCachesForIdle(string $machineId): void
     {
-        Cache::put("scale_live_{$machineId}", ['live' => false], now()->addDays(7));
         Cache::forget("scale_events_{$machineId}");
         Cache::forget("scale_count_{$machineId}");
         Cache::forget("scale_confirm_{$machineId}");
-        Cache::put("scale_session_start_{$machineId}", now()->toIso8601String(), now()->addHours(24));
+        Cache::forget("scale_live_{$machineId}");
     }
 
     /**
@@ -1907,11 +1916,23 @@ class ProductionMonitorController extends Controller
         $ts  = (int) ($now->timestamp * 1000);
 
         if ($session) {
-            $session->update([
-                'status'      => 'cancelled',
-                'finished_at' => $now,
-                'ts'          => $ts,
-            ]);
+            $runUlid = $session->session_run_ulid;
+            DB::transaction(function () use ($session, $machineId, $now, $ts, $runUlid) {
+                if ($runUlid) {
+                    ProductionWeightEvent::where('machine_id', $machineId)
+                        ->where('session_run_ulid', $runUlid)
+                        ->delete();
+                    ProductionOrder::where('machine_id', $machineId)
+                        ->where('session_run_ulid', $runUlid)
+                        ->where('status', 'active')
+                        ->delete();
+                }
+                $session->update([
+                    'status'       => 'cancelled',
+                    'finished_at'=> $now,
+                    'ts'           => $ts,
+                ]);
+            });
         }
 
         Cache::forget("machine_session_{$machineId}");
@@ -1960,6 +1981,7 @@ class ProductionMonitorController extends Controller
 
         $sessionData = [
             'machine_id'   => $machineId,
+            'session_run_ulid' => (string) Str::ulid(),
             'order_id'     => $data['orderId'],
             'product_code' => $data['productCode'] ?? '',
             'product_name' => $data['productName'] ?? '',
@@ -1981,6 +2003,10 @@ class ProductionMonitorController extends Controller
             'source'       => 'web',
             'started_at'   => $now,
             'paused_at'    => null,
+            'finished_at'  => null,
+            'paused_order' => null,
+            'shift'        => '',
+            'employee_id'  => '',
             'pipe_counter' => 0,
             'ng_count'     => 0,
             'total_good_weight' => 0,
@@ -2014,18 +2040,19 @@ class ProductionMonitorController extends Controller
         if ($session) {
             // Create a temporary ProductionOrder record for the GAS createOrder call
             $tmpOrder = ProductionOrder::create([
-                'machine_id'   => $machineId,
-                'order_id'     => $session->order_id,
-                'product_code' => $session->product_code,
-                'product_name' => $session->product_name,
-                'target_qty'   => $session->target_qty,
-                'remaining_qty'=> $session->remaining_qty,
-                'plan_date'    => $session->plan_date,
-                'sheet_name'   => $session->sheet_name,
-                'led_ip'       => $session->led_ip,
-                'started_at'   => $session->started_at,
-                'status'       => 'active',
-                'gas_sync_status' => 'pending',
+                'machine_id'        => $machineId,
+                'session_run_ulid'  => $session->session_run_ulid,
+                'order_id'          => $session->order_id,
+                'product_code'      => $session->product_code,
+                'product_name'      => $session->product_name,
+                'target_qty'        => $session->target_qty,
+                'remaining_qty'     => $session->remaining_qty,
+                'plan_date'         => $session->plan_date,
+                'sheet_name'        => $session->sheet_name,
+                'led_ip'            => $session->led_ip,
+                'started_at'        => $session->started_at,
+                'status'            => 'active',
+                'gas_sync_status'   => 'pending',
             ]);
             SyncOrderToGas::dispatch($tmpOrder->id, 'createOrder', $this->gasUrl)
                 ->onQueue('gas-sync');
@@ -2099,9 +2126,19 @@ class ProductionMonitorController extends Controller
         $ngCount         = (int) ($request->input('ngCount',         $session->ng_count));
         $totalGoodWeight = (float) ($request->input('totalGoodWeight', $session->total_good_weight));
         $totalNgWeight   = (float) ($request->input('totalNgWeight',  $session->total_ng_weight));
+        $sessionRunUlid  = $session->session_run_ulid;
 
         $prodOrder = null;
-        DB::transaction(function () use ($session, $machineId, $now, $goodCount, $ngCount, $totalGoodWeight, $totalNgWeight, $skipGasDispatch, &$prodOrder) {
+        DB::transaction(function () use ($session, $machineId, $now, $goodCount, $ngCount, $totalGoodWeight, $totalNgWeight, $skipGasDispatch, &$prodOrder, $sessionRunUlid) {
+            $session->refresh();
+
+            if ($sessionRunUlid) {
+                ProductionOrder::where('machine_id', $machineId)
+                    ->where('session_run_ulid', $sessionRunUlid)
+                    ->where('status', 'active')
+                    ->delete();
+            }
+
             $session->update([
                 'status'      => 'finished',
                 'finished_at' => $now,
@@ -2115,6 +2152,7 @@ class ProductionMonitorController extends Controller
             // Write summary to production_orders (for history queries)
             $prodOrder = ProductionOrder::create([
                 'machine_id'        => $machineId,
+                'session_run_ulid'  => $sessionRunUlid,
                 'order_id'          => $session->order_id,
                 'product_code'      => $session->product_code,
                 'product_name'      => $session->product_name,
@@ -2142,13 +2180,16 @@ class ProductionMonitorController extends Controller
             ]);
         });
 
-        // การบันทึกรายการน้ำหนักลงตารางเป็นรายเหตุการณ์ (ตามกะ/order) เมื่อกดจากตาชั่งอยู่แล้ว — เสร็จสิ้นงานเหลือแค่ summary ใน production_orders
-        // ถ้ามีความไม่ตรงกัน ช่วย debug (เดิมอาจมาจาก retry ซ้ำ / บั๊กเก่า)
+        // ถ้ามีความไม่ตรงกัน ช่วย debug — ผูกกับ session_run_ulid ของรอบนั้นเท่านั้น
         $liveOrderId = (string) $session->order_id;
-        $dbGood        = ProductionWeightEvent::where('machine_id', $machineId)->where('order_id', $liveOrderId)->where('type', 'good')->count();
-        $dbNg          = ProductionWeightEvent::where('machine_id', $machineId)->where('order_id', $liveOrderId)->where('type', 'ng')->count();
-        if ($dbGood !== $goodCount || $dbNg !== $ngCount) {
-            Log::info("[finishSession] session counters vs DB weight_events counts — machine={$machineId}, order={$liveOrderId}, session good/ng={$goodCount}/{$ngCount}, db good/ng={$dbGood}/{$dbNg}");
+        if ($sessionRunUlid) {
+            $dbGood = ProductionWeightEvent::where('machine_id', $machineId)
+                ->where('session_run_ulid', $sessionRunUlid)->where('type', 'good')->count();
+            $dbNg = ProductionWeightEvent::where('machine_id', $machineId)
+                ->where('session_run_ulid', $sessionRunUlid)->where('type', 'ng')->count();
+            if ($dbGood !== $goodCount || $dbNg !== $ngCount) {
+                Log::info("[finishSession] session counters vs DB weight_events counts — machine={$machineId}, run={$sessionRunUlid}, order={$liveOrderId}, session good/ng={$goodCount}/{$ngCount}, db good/ng={$dbGood}/{$dbNg}");
+            }
         }
 
         $this->finalizeScaleCachesForIdle($machineId);
@@ -2208,8 +2249,9 @@ class ProductionMonitorController extends Controller
             $ngC       = (int) $o->ng_count;
 
             return [
-                'id'           => $o->id,
-                'machine_id'   => $o->machine_id,
+                'id'               => $o->id,
+                'sessionRunUlid'   => $o->session_run_ulid,
+                'machine_id'       => $o->machine_id,
                 'machine'      => $o->sheet_name !== '' ? $o->sheet_name : $o->machine_id,
                 'timestamp'    => $o->started_at?->toISOString(),
                 'finishedAt'   => $o->finished_at?->toISOString(),
@@ -2249,13 +2291,15 @@ class ProductionMonitorController extends Controller
     {
         $machineId = trim((string) $request->input('machineId', ''));
         $orderId   = trim((string) $request->input('orderId', ''));
+        $sessionRunUlid = trim((string) $request->input('sessionRunUlid', ''));
 
-        if ($machineId === '' || $orderId === '') {
-            return response()->json(['message' => 'machineId and orderId required'], 422);
+        if ($machineId === '' || $orderId === '' || $sessionRunUlid === '') {
+            return response()->json(['message' => 'machineId, orderId และ sessionRunUlid จำเป็น'], 422);
         }
 
         $events = ProductionWeightEvent::where('machine_id', $machineId)
             ->where('order_id', $orderId)
+            ->where('session_run_ulid', $sessionRunUlid)
             ->orderByRaw('COALESCE(received_at, pressed_at, created_at) ASC')
             ->orderBy('id')
             ->get()

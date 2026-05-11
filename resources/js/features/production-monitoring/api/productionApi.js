@@ -256,11 +256,13 @@ export const fetchHistory = async (machineFilter = null, dateOpts = {}) => {
  *
  * @param {string} machineIdKey machine_id เช่น EM 08 (ห้ามเป็น label อย่างเดียว)
  * @param {string} orderId
+ * @param {string} sessionRunUlid แยกรอบ Start Now (บังคับ)
  */
-export const fetchOrderDetail = async (machineIdKey, orderId /* startedAt ไม่ใช้จาก DB path */) => {
+export const fetchOrderDetail = async (machineIdKey, orderId, sessionRunUlid) => {
   const qs = new URLSearchParams({
     machineId: String(machineIdKey ?? ''),
     orderId: String(orderId ?? ''),
+    sessionRunUlid: String(sessionRunUlid ?? ''),
   });
   const raw = await get(`/order-detail-db?${qs.toString()}`);
   return raw?.detail ?? raw?.data ?? { events: [] };
@@ -620,18 +622,30 @@ export const storeScaleWeight = (machineId, payload) =>
   post(`/scale-weight/${encodeURIComponent(machineId)}`, payload);
 
 /**
- * GET /api/production-monitor/scale-weight/{machineId}[?since=<ISO>]
+ * GET /api/production-monitor/scale-weight/{machineId}
  *
- * Web poll รับ weight events จาก Scale ESP32 (READ-ONLY — server ไม่ลบ events)
- * ส่ง since=<ISO timestamp> เพื่อรับเฉพาะ events ที่ใหม่กว่านั้น
+ * Poll รายการจาก production_weight_events (อ่านจาก DB)
+ * — ส่ง { sinceId } แนะนำ หรือ since เป็น ISO string (legacy)
  *
- * Response: { events: [...], latestTs: string|null }
+ * Response: { events, latestTs, latestEventId }
  *
  * @param {string} machineId
- * @param {string|null} [since]  ISO timestamp — ถ้าส่งมา จะรับเฉพาะ events ใหม่กว่านี้
+ * @param {string|null|{ sinceId?: number, since?: string }} [sinceOrOpts]
  */
-export const fetchScaleWeights = (machineId, since = null) => {
-  const qs = since ? `?since=${encodeURIComponent(since)}` : '';
+export const fetchScaleWeights = (machineId, sinceOrOpts = null) => {
+  let qs = '';
+  if (sinceOrOpts != null && typeof sinceOrOpts === 'object') {
+    if (Object.prototype.hasOwnProperty.call(sinceOrOpts, 'sinceId')) {
+      const n = Number(sinceOrOpts.sinceId);
+      if (!Number.isNaN(n) && n >= 0) {
+        qs = `?sinceId=${encodeURIComponent(String(n))}`;
+      }
+    } else if (typeof sinceOrOpts.since === 'string' && sinceOrOpts.since) {
+      qs = `?since=${encodeURIComponent(sinceOrOpts.since)}`;
+    }
+  } else if (typeof sinceOrOpts === 'string' && sinceOrOpts) {
+    qs = `?since=${encodeURIComponent(sinceOrOpts)}`;
+  }
   return get(`/scale-weight/${encodeURIComponent(machineId)}${qs}`);
 };
 

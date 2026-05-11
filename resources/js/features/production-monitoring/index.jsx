@@ -1328,14 +1328,6 @@ const ProductionMonitoring = () => {
                           .catch(() => {});
                       }, 50);
                     }}
-                    onPauseOrder={() => {
-                      pauseLiveToSetup(selectedMachineId);
-                      logPauseOrClose({
-                        machineLabel: selectedMachine.label,
-                        productCode:  machineState?.productCode ?? '',
-                        shift:        machineState?.shift       ?? '',
-                      });
-                    }}
                     onPauseAndStart={(item) => {
                       pauseLiveToSetup(selectedMachineId, {
                         ...item,

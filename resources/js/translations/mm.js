@@ -388,6 +388,8 @@ export default {
         historyEventColTime: 'အချိန်',
         historyEventColType: 'အမျိုးအစား',
         historyEventColWeight: 'အလေးချိန် (kg)',
+        historyMissingRunUlid:
+          'မှတ်တမ်းဟောင်းမှာ session run ဖော်ပြချက် မပါ — စနစ် အသစ်ပေါ်မှာ ပြီးခဲ့သော သီးခြားမှာ သာ အသေးစိတ် ပြပါ',
         historyTypeGood: 'ကောင်းသော',
         historyTypeNg: 'ညံ့ဖျင်းသော',
         historyLoadingSheets: 'မှတ်တမ်းတွက်ဖက်ရထားပါ…',

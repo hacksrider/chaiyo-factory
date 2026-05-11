@@ -388,6 +388,8 @@ export default {
         historyEventColTime: 'เวลา',
         historyEventColType: 'ประเภท',
         historyEventColWeight: 'น้ำหนัก (kg)',
+        historyMissingRunUlid:
+          'รายการเก่านี้ไม่มีรหัสรอบผลิต (session run) — เปิดรายละเอียดเหตุการณ์ได้เฉพาะงานที่จบหลังอัปเกรดระบบ',
         historyTypeGood: 'ของดี',
         historyTypeNg: 'ของเสีย',
         historyLoadingSheets: 'กำลังโหลดประวัติจากระบบ…',

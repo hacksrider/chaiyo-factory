@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class ProductionSession extends Model
 {
     protected $fillable = [
-        'machine_id', 'order_id', 'product_code', 'product_name',
+        'machine_id', 'session_run_ulid', 'order_id', 'product_code', 'product_name',
         'target_qty', 'remaining_qty', 'plan_date', 'sheet_name', 'led_ip',
         'shift', 'employee_id',
         'pipe_counter', 'ng_count', 'total_good_weight', 'total_ng_weight',
@@ -41,6 +41,7 @@ class ProductionSession extends Model
     public function toFrontendState(): array
     {
         return [
+            'sessionRunUlid' => $this->session_run_ulid,
             'mode'           => $this->status === 'live' ? 'live' : 'setup',
             'orderId'        => $this->order_id,
             'productCode'    => $this->product_code,
