@@ -53,19 +53,19 @@ const MachineDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="h-full bg-gray-50">
-                <div className="container mx-auto px-4 py-4">
+            <div className="min-h-0 bg-gray-50">
+                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-6">
                     <div className="mb-4">
                         <BackButton to="/machines" label="Back" className="mb-4" />
-                        <h1 className="text-2xl font-bold mb-2">{machine.code} - {getLocalized(machine, 'name', language)}</h1>
+                        <h1 className="mb-2 text-xl font-bold sm:text-2xl">{machine.code} - {getLocalized(machine, 'name', language)}</h1>
                     </div>
 
-                    <div className="flex flex-col lg:flex-row gap-6">
+                    <div className="flex flex-col gap-5 lg:flex-row lg:gap-6">
                         {/* Machine Layout Image */}
                         <div className="w-full lg:w-8/12">
                             {machine.layout_image && (
-                                <div className="bg-white rounded-xl shadow-xl p-6 mb-6 lg:mb-0 border border-gray-100">
-                                    <h2 className="text-2xl font-semibold mb-4">{t('machines.machineLayout')}</h2>
+                                <div className="mb-6 rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6 lg:mb-0">
+                                    <h2 className="mb-4 text-xl font-semibold sm:text-2xl">{t('machines.machineLayout')}</h2>
                                     <div className="relative w-full bg-gray-100 rounded-lg overflow-hidden">
                                         <img
                                             src={`/storage/${machine.layout_image}`}
@@ -79,14 +79,14 @@ const MachineDetail = () => {
 
                         {/* Zones */}
                         <div className="w-full lg:w-4/12">
-                            <div className="bg-white rounded-xl shadow-xl p-6 border border-gray-100 h-full flex flex-col">
-                                <h2 className="text-2xl font-semibold mb-6">{t('machines.zones')}</h2>
+                            <div className="flex h-full flex-col rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6">
+                                <h2 className="mb-6 text-xl font-semibold sm:text-2xl">{t('machines.zones')}</h2>
                                 {machine.zones && machine.zones.length === 0 ? (
                                     <div className="text-center py-12 text-gray-500 flex-grow">
                                         {t('machines.noZones')}
                                     </div>
                                 ) : (
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    <div className="grid grid-cols-1 gap-4 min-[520px]:grid-cols-2 lg:grid-cols-3">
                                         {machine.zones.map((zone) => (
                                             <button
                                                 key={zone.id}

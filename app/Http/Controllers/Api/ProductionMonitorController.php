@@ -1135,6 +1135,15 @@ class ProductionMonitorController extends Controller
         // ความจริงอยู่ที่ DB เท่านั้น — ไม่ mirror events ใน cache
         $payloadOut = $payload + ($createdEventId !== null ? ['eventId' => $createdEventId] : []);
 
+        // ยิง session_updated ก่อน scale_weight — ให้เว็บได้ pipeCounter/น้ำหนักจาก DB ก่อน แล้วค่อย merge รายการกด
+        // (กันค่า +1 บน client ซ้อนกับค่าที่ merge จาก session แล้ว → เลขดีเบิ้ล)
+        if ($sessionAfter) {
+            $this->publishEvent('session_updated', [
+                'machineId' => $machineId,
+                'session'   => $sessionAfter->toFrontendState(),
+            ]);
+        }
+
         // Broadcast ทันที → browsers รับ scale_weight event โดยไม่ต้องรอ poll รอบถัดไป
         $this->publishEvent('scale_weight', [
             'machineId' => $machineId,
@@ -1181,13 +1190,6 @@ class ProductionMonitorController extends Controller
             $ledState['updatedAt'] = now()->toISOString();
             Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
             Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
-        }
-
-        if ($sessionAfter) {
-            $this->publishEvent('session_updated', [
-                'machineId' => $machineId,
-                'session'   => $sessionAfter->toFrontendState(),
-            ]);
         }
 
         return response()->json([

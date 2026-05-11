@@ -47,29 +47,29 @@ const StatCard = ({ label, value, unit, accent = 'cyan', subtext, numeric = true
   const colors = ACCENT[accent] ?? ACCENT.cyan;
 
   return (
-    <div className={`rounded-xl border ${colors.border} ${colors.bg} p-4`}>
-      <p className={`text-[11px] font-semibold tracking-widest uppercase ${colors.label} mb-3`}>
+    <div className={`rounded-xl border ${colors.border} ${colors.bg} p-3 sm:p-4`}>
+      <p className={`text-[10px] sm:text-[11px] font-semibold tracking-widest uppercase ${colors.label} mb-2 sm:mb-3`}>
         {label}
       </p>
 
-      <div className="flex items-end gap-2 min-h-[2rem]">
+      <div className="flex min-h-[1.75rem] items-end gap-1.5 sm:gap-2 sm:min-h-[2rem]">
         <span
           className={[
             'font-bold leading-none break-all',
             numeric
-              ? `text-4xl font-mono ${colors.value}`
-              : `text-4xl ${colors.value}`,
+              ? `font-mono text-2xl sm:text-3xl lg:text-4xl ${colors.value}`
+              : `text-xl sm:text-2xl lg:text-4xl ${colors.value}`,
           ].join(' ')}
         >
           {value !== null && value !== undefined && value !== '' ? value : '—'}
         </span>
         {unit && (
-          <span className="text-lg text-gray-400 font-mono mb-0.5 flex-shrink-0">{unit}</span>
+          <span className="mb-0.5 flex-shrink-0 font-mono text-sm text-gray-400 sm:text-lg">{unit}</span>
         )}
       </div>
 
       {subtext && (
-        <p className="text-lg text-gray-500 mt-2 leading-snug">{subtext}</p>
+        <p className="mt-1.5 text-sm leading-snug text-gray-500 sm:mt-2 sm:text-base lg:text-lg">{subtext}</p>
       )}
     </div>
   );

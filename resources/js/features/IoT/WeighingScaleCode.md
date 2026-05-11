@@ -28,7 +28,7 @@
   │ 1 │ 2 │ 3 │ A │ ← กะ A
   │ 4 │ 5 │ 6 │ B │ ← กะ B
   │ 7 │ 8 │ 9 │ C │ ← กะ C
-  │ * │ 0 │ # │ D │ ← # ลบทีละตัว / D ยืนยัน
+  │ * │ 0 │ # │ D │ ← หน้าผลิต: * เคลียร์แถว 4+ปลดล็อก; # ลบทีละตัว / D ยืนยัน
   └───┴───┴───┴───┘
 
   State Machine (ใช้คำนำหน้า ST_ เพื่อไม่ชนกับ KeyState::IDLE ใน Keypad.h):
@@ -37,6 +37,11 @@
   ST_WAIT_EMPLOYEE → รอพิมพ์รหัสพนักงาน (max 14 หลัก) + D ยืนยัน
   ST_CONFIRMING → กำลังส่งยืนยันไป server (รอครู่เดียว)
   ST_PRODUCTION → ผลิต: อ่านน้ำหนัก / กด BTN_GREEN ส่งของดี
+  
+  User error — ห้ามกดรัวภายใน 5 วินาทีหลังกดติดครั้งหนึ่ง (ส่ง Laravel ครั้งเดียว):
+  → ครั้งแรกกด GREEN/RED → ล็อก 5 วิ + โชว์ผลที่บรรทัดที่ 4 (ซอฟแวร์ = setCursor แถว 3)
+  → ถ้ากดซ้ำระหว่างล็อก = ถูกบล็อก ไม่ยิง HTTP
+  → ปลดล็อกเมื่อครบ 5 วิ (บรรทัด 4 ถูกล้างอัตโนมัติ) — หรือกด * ที่คีย์แพดเพื่อล้างบรรทัด 4 + เปิดให้กด GREEN/RED ใหม่ได้ทันที หากยืนยันว่าอ่านผลแล้ว
 
   Dependencies (Library Manager):
   - LiquidCrystal I2C (by Frank de Brabander)
@@ -604,14 +609,13 @@ void renderLcd() {
       lcd.setCursor(0, 2); lcd.print("---");
     }
 
-    // บรรทัด 3: แสดง status เฉพาะช่วง lock (5 วิ) — ปกติว่างเปล่า
+    // บรรทัดที่ 4 บนจอ (index 3): OK/NG/G:R ระหว่างล็อก 5 วิ — เมื่อว่าง = พร้อมกด GREEN/RED ใหม่ (หรือใช้ * ลบล่วงหน้า)
     lcd.setCursor(0, 3);
-    if (g_btnLockUntil > 0 && millis() < g_btnLockUntil) {
+    if (g_btnLockUntil > 0 && millis() < g_btnLockUntil && g_lastStatus.length() > 0) {
       String statusLine = g_lastStatus;
       while (statusLine.length() < 20) statusLine += ' ';
       lcd.print(statusLine);
     }
-    // else: ว่างเปล่า
   }
 }
 
@@ -619,7 +623,18 @@ void renderLcd() {
 //  handleKeypad — ประมวลผลปุ่มที่กด
 // ======================================================================
 void handleKeypad(char key) {
-  // ช่วงหลังส่งน้ำหนัก: ห้าม keypad ยิงรหัสใหม่ (ครอบเวลา LCD บรรทัด 3 เช่นเดียวกับปุ่มกด)
+  // ── PRODUCTION: กด * = ผู้ใช้ยืนยันว่าอ่านผลครั้งแล้ว → ล้างบรรทัดที่ 4 + ปลดล็อก (ไม่ต้องรอ 5 วิ)
+  if (g_state == ST_PRODUCTION && key == '*') {
+    Serial.println("[KEY] * → clear LCD row 4 + unlock GREEN/RED");
+    g_btnLockUntil = 0;
+    g_lastStatus   = "";
+    lcd.setCursor(0, 3);
+    lcd.print("                    ");
+    return;
+  }
+
+  // ช่วงหลังส่งน้ำหนัก: ห้าม keypad อื่น (ยกเว้น * ข้างบน)
+  // — ครอบเวลาเดียวกับบล็อกปุ่ม GREEN/RED บนบรรทัดที่ 4
   if (g_state == ST_PRODUCTION && millis() < g_btnLockUntil) {
     Serial.println("[KEY] ignored (post-weight lock)");
     return;
@@ -868,7 +883,7 @@ bool doPostWeight(const String& type, const String& weight, const String& presse
 
   // ── อ่าน response เพื่อรับ qty_remaining + qty_good ──────────────────
   // Response shape: { success, qty_good, qty_remaining, order_id }
-  // ถ้า server ส่งมา → แสดงบน LCD บรรทัด 3 ทันที (ไม่ต้องรอ poll)
+  // ถ้า server ส่งมา → แสดงบนบรรทัดที่ 4 (ช่องว่างจาก renderLcd) ทันที (ไม่ต้องรอ poll)
   if (code == 200 || code == 201) {
     String respBody = http.getString();
     StaticJsonDocument<256> respDoc;
@@ -883,11 +898,13 @@ bool doPostWeight(const String& type, const String& weight, const String& presse
       else if (srvAc >= 0) g_qtyGood = srvAc;
       if (newRem >= 0) g_qtyRemaining = newRem;
       if (newGood >= 0 || srvAc >= 0 || newRem >= 0) {
-        // แสดง "ดี X / ค้าง Y" ชั่วคราวบรรทัด 3 (ระหว่าง lock ครบแล้ว clear)
+        // ชั่วคราวบนบรรทัดที่ 4 — เซ็ต g_lastStatus ให้ตรงกับสิ่งที่วาด (renderLcd ไม่โชว์ "OK-..." เก่าทับ G:R)
         String qtyLine = "G:" + String(g_qtyGood) + " R:" + String(g_qtyRemaining >= 0 ? g_qtyRemaining : 0);
         while (qtyLine.length() < 20) qtyLine += ' ';
+        qtyLine = qtyLine.substring(0, 20);
+        g_lastStatus = qtyLine;
         lcd.setCursor(0, 3);
-        lcd.print(qtyLine.substring(0, 20));
+        lcd.print(qtyLine);
         Serial.printf("[Scale] qty_good=%d qty_remaining=%d actual=%d\n", g_qtyGood, g_qtyRemaining, g_actualCount);
       }
     }

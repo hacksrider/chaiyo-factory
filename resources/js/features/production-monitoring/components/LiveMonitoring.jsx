@@ -670,15 +670,12 @@ const LiveMonitoring = ({
   const onWeightUpdateRef = useRef(onWeightUpdate);
   useEffect(() => { onWeightUpdateRef.current = onWeightUpdate; });
 
-  // dedup — ป้องกัน server คืน event เดิมซ้ำ (pressedAt เป็น unique key ต่อ session)
+  // dedup — ป้องกัน server คืน event เดิมซ้ำ (pressedAt / eventId)
   const seenEventsRef = useRef(new Set());
-  // ล้าง seen set เมื่อเปลี่ยน machine หรือ order (orderId เปลี่ยน = session ใหม่)
-  const prevOrderIdRef = useRef(null);
-  const curOrderId = machineState?.orderId ?? null;
-  if (curOrderId !== prevOrderIdRef.current) {
-    prevOrderIdRef.current = curOrderId;
+  const sessionDedupKey = `${machineState?.orderId ?? ''}|${machineState?.sessionRunUlid ?? ''}`;
+  useEffect(() => {
     seenEventsRef.current.clear();
-  }
+  }, [sessionDedupKey]);
 
   const elapsed = useElapsedTime(machineState.startedAt);
   const queue   = machineState.queue ?? [];
@@ -894,20 +891,20 @@ const LiveMonitoring = ({
       )}
 
       {/* ── Header ── */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="flex items-center gap-2.5 mb-1">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          <div className="mb-1 flex items-center gap-2.5">
             <div className="relative flex-shrink-0">
-              <span className="block w-3 h-3 rounded-full bg-green-400" />
-              <span className="absolute inset-0 w-3 h-3 rounded-full bg-green-400 animate-ping opacity-60" />
+              <span className="block h-3 w-3 rounded-full bg-green-400" />
+              <span className="absolute inset-0 h-3 w-3 animate-ping rounded-full bg-green-400 opacity-60" />
             </div>
-            <span className="text-[11px] font-semibold tracking-widest text-green-400 uppercase">{t('production.liveMonitoring')}</span>
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-green-400">{t('production.liveMonitoring')}</span>
           </div>
-          <h2 className="text-2xl font-bold text-white">{machineLabel}</h2>
-          <p className="text-sm text-gray-400 mt-1">
-            {t('production.order')}: <span className="text-white font-mono">{machineState.orderId}</span>
+          <h2 className="text-xl font-bold text-white sm:text-2xl">{machineLabel}</h2>
+          <p className="mt-1 text-sm text-gray-400">
+            {t('production.order')}: <span className="font-mono text-white">{machineState.orderId}</span>
             {machineState.startedAt && (
-              <span className="ml-3 text-gray-600">
+              <span className="mt-1 block text-gray-600 sm:ml-3 sm:mt-0 sm:inline">
                 {t('production.started')}{' '}
                 {formatProductionTimeBangkok(machineState.startedAt)}
               </span>
@@ -951,9 +948,9 @@ const LiveMonitoring = ({
         </div>
 
         {/* Elapsed timer */}
-        <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl px-5 py-3 text-right">
-          <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-1">{t('production.runtime')}</p>
-          <p className="text-3xl font-mono font-bold text-gray-200 tabular-nums">{elapsed}</p>
+        <div className="w-full shrink-0 rounded-xl border border-gray-700/50 bg-gray-800/60 px-4 py-3 text-center sm:w-auto sm:px-5 sm:text-right">
+          <p className="mb-1 text-[11px] uppercase tracking-wider text-gray-500">{t('production.runtime')}</p>
+          <p className="font-mono text-2xl font-bold tabular-nums text-gray-200 sm:text-3xl">{elapsed}</p>
         </div>
       </div>
 
@@ -961,9 +958,9 @@ const LiveMonitoring = ({
       <Toast toast={toast} />
 
       {/* ── Stat cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* Product */}
-        <div className="col-span-2 sm:col-span-2">
+        <div className="col-span-1 sm:col-span-2 lg:col-span-2">
           <StatCard
             label={t('production.productCodeLabel')}
             value={String(machineState.productCode || '').trim() || '—'}
@@ -983,7 +980,7 @@ const LiveMonitoring = ({
 
         {/* น้ำหนักมาตรฐาน — แสดงเฉพาะเมื่อมีข้อมูล */}
         {machineState.stdWeight != null && (
-          <div className="col-span-2 sm:col-span-4">
+          <div className="col-span-1 sm:col-span-2 lg:col-span-4">
             <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-4 py-2.5 flex items-center gap-4 flex-wrap">
               <span className="text-[10px] font-semibold tracking-widest text-amber-500/70 uppercase">น้ำหนักมาตรฐาน</span>
               <span className="text-sm font-mono font-bold text-amber-300">
@@ -1037,7 +1034,7 @@ const LiveMonitoring = ({
 
       {/* ── Progress bar ── */}
       <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
-        <div className="flex justify-between items-center mb-2">
+        <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <span className="text-sm text-gray-400">{t('production.progressLabel')}</span>
           <span className={`text-sm font-mono font-bold tabular-nums ${isComplete ? 'text-green-400' : 'text-cyan-400'}`}>
             {goodCount} / {displayTarget} &nbsp;({progress}%)
@@ -1060,9 +1057,9 @@ const LiveMonitoring = ({
       </div>
 
       {/* ── Action buttons (ของดี/ของเสียถูกลบออก — รับจากตาชั่ง Scale ESP32 โดยตรง) ── */}
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
         {/* Scale status indicator */}
-        <div className="flex items-center gap-2 bg-cyan-500/8 border border-cyan-500/20 text-cyan-400/70 text-xs font-mono px-4 py-2.5 rounded-xl">
+        <div className="flex min-h-[44px] items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/8 px-4 py-2.5 font-mono text-xs text-cyan-400/70">
           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
           {t('production.autoFromScale')}
         </div>
@@ -1070,7 +1067,7 @@ const LiveMonitoring = ({
         {/* Finished Order */}
         <button
           onClick={() => setShowFinish(true)}
-          className="flex items-center gap-2 bg-green-500/15 hover:bg-green-500/25 border border-green-500/50 hover:border-green-400 text-green-300 hover:text-green-100 font-semibold py-2.5 px-5 rounded-xl transition-all"
+          className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-green-500/50 bg-green-500/15 py-2.5 pl-4 pr-5 font-semibold text-green-300 transition-all hover:border-green-400 hover:bg-green-500/25 hover:text-green-100 sm:flex-initial"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
@@ -1081,7 +1078,7 @@ const LiveMonitoring = ({
         {/* Cancel Production */}
         <button
           onClick={() => setShowCancelConfirm(true)}
-          className="flex items-center gap-2 bg-red-500/8 hover:bg-red-500/15 border border-red-500/30 hover:border-red-500/60 text-red-400/80 hover:text-red-300 font-medium py-2.5 px-4 rounded-xl transition-all"
+          className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-red-500/30 bg-red-500/8 py-2.5 px-4 font-medium text-red-400/80 transition-all hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300 sm:flex-initial"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1091,7 +1088,7 @@ const LiveMonitoring = ({
       </div>
 
       {/* ── Queue panel (always visible while live) ── */}
-      <div className="bg-gray-800/40 border border-gray-700/40 rounded-2xl p-5">
+      <div className="rounded-2xl border border-gray-700/40 bg-gray-800/40 p-4 sm:p-5">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">

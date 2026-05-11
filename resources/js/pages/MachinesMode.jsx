@@ -41,15 +41,15 @@ const MachinesMode = () => {
 
     return (
         <PublicLayout>
-            <div className="h-full bg-gray-50">
-                <div className="container mx-auto px-4 py-3">
+            <div className="min-h-0 bg-gray-50">
+                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
                         <BackButton to="/" label="Back" className="mb-4" />
                     
-                    <div className="flex flex-col lg:flex-row gap-8 mb-8">
+                    <div className="mb-8 flex flex-col gap-6 lg:flex-row lg:gap-8">
                         {/* Factory Layout Image - 9 columns on lg+ */}
                         <div className="w-full lg:w-9/12">
-                            <div className="bg-white rounded-xl shadow-xl p-6 h-full border border-gray-100">
-                                <h2 className="text-2xl font-semibold mb-4">{t('machines.factoryLayout')}</h2>
+                            <div className="h-full rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6">
+                                <h2 className="mb-4 text-xl font-semibold sm:text-2xl">{t('machines.factoryLayout')}</h2>
                                 <div className="relative w-full flex justify-center bg-gray-100 rounded-lg overflow-hidden">
                                     <img
                                         src="/images/Factory-layout.png"
@@ -69,21 +69,21 @@ const MachinesMode = () => {
 
                         {/* Machines List - 3 columns on lg+ */}
                         <div className="w-full lg:w-3/12">
-                            <div className="bg-white rounded-xl shadow-xl p-6 border border-gray-100 h-full flex flex-col">
-                                <h2 className="text-2xl font-semibold mb-6">{t('machines.allMachines')}</h2>
+                            <div className="flex h-full flex-col rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6">
+                                <h2 className="mb-4 text-xl font-semibold sm:mb-6 sm:text-2xl">{t('machines.allMachines')}</h2>
                                 {machines.length === 0 ? (
                                     <div className="text-center py-12 text-gray-500 flex-grow">
                                         {t('machines.noMachines')}
                                     </div>
                                 ) : (
                                     // NOTE: ตรงนี้ flex-wrap, gap, และปุ่มไม่ได้สูงเต็มพื้นที่
-                                    <div className="flex flex-wrap gap-3 justify-center">
+                                    <div className="flex flex-wrap justify-center gap-3 sm:gap-3 lg:justify-start">
                                         {machines.map((machine) => (
                                             <button
+                                                type="button"
                                                 key={machine.id}
                                                 onClick={() => navigate(`/machines/${machine.id}`)}
-                                                className="bg-blue-50 hover:bg-blue-100 border-2 border-blue-300 rounded-xl p-4 text-center transition-all duration-300 hover:shadow-lg hover:-translate-y-1 min-w-[120px] max-w-full"
-                                                style={{ flex: '0 1 45%' }}
+                                                className="min-h-[88px] w-full rounded-xl border-2 border-blue-300 bg-blue-50 px-4 py-3 text-center transition-all duration-300 hover:-translate-y-1 hover:bg-blue-100 hover:shadow-lg sm:w-[calc(50%-0.375rem)] lg:w-full"
                                             >
                                                 <div className="text-lg font-semibold text-blue-700 mb-1">
                                                     {machine.code}

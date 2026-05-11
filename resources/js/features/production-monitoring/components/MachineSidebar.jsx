@@ -44,7 +44,7 @@ const MachineSidebar = ({ machines, selectedMachineId, onSelectMachine, allState
   const zoneGroups = groupByZone(machines, UNZONED);
 
   return (
-    <aside className="w-72 sm:w-64 flex-shrink-0 bg-gray-900 border-r border-gray-700/50 flex flex-col overflow-hidden h-full">
+    <aside className="flex h-full w-[min(100%,20rem)] shrink-0 flex-col overflow-hidden border-r border-gray-700/50 bg-gray-900 shadow-2xl pb-[env(safe-area-inset-bottom)] md:w-64 md:max-w-none md:pb-0 md:shadow-none lg:w-72">
       {/* Sidebar header */}
       <div className="px-4 py-4 border-b border-gray-700/50">
         <div className="flex items-center gap-2 mb-1">
@@ -60,7 +60,7 @@ const MachineSidebar = ({ machines, selectedMachineId, onSelectMachine, allState
           {onClose && (
             <button
               onClick={onClose}
-              className="md:hidden -mr-1 p-1 rounded text-gray-500 hover:text-white hover:bg-gray-700 transition-colors"
+              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-700 hover:text-white md:hidden"
               aria-label={t('production.ariaCloseSidebar')}
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

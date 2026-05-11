@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { publicAPI } from '../api';
 import PublicLayout from '../components/PublicLayout';
@@ -9,13 +9,21 @@ import { useTranslation } from '../utils/translations';
 import { getLocalized } from '../utils/languageHelper';
 
 const MachineZoneProblemDetail = () => {
-    const navigate = useNavigate();
     const { id } = useParams();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const [problem, setProblem] = useState(null);
     const [loading, setLoading] = useState(true);
     const [showQR, setShowQR] = useState(false);
+    const [qrSize, setQrSize] = useState(256);
+
+    useEffect(() => {
+        const mq = window.matchMedia('(max-width: 419px)');
+        const apply = () => setQrSize(mq.matches ? 200 : 256);
+        apply();
+        mq.addEventListener('change', apply);
+        return () => mq.removeEventListener('change', apply);
+    }, []);
 
     useEffect(() => {
         fetchProblem();
@@ -64,40 +72,41 @@ const MachineZoneProblemDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="h-full bg-gray-50">
-                <div className="container mx-auto px-4 py-4">
-                    <div className="mb-4 flex justify-between items-center">
+            <div className="min-h-0 bg-gray-50">
+                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <BackButton to={`/machine-zones/${problem.machine_zone_id}`} />
                         <button
+                            type="button"
                             onClick={() => setShowQR(!showQR)}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200 shadow-md hover:shadow-lg"
+                            className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-center text-sm text-white shadow-md transition-colors duration-200 hover:bg-blue-700 hover:shadow-lg sm:w-auto sm:py-2"
                         >
                             {showQR ? t('common.hide') : t('common.show')} {t('qrCode.title')}
                         </button>
-                        {/* QR Code Modal */}
-                        {showQR && (
-                            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                                <div className="bg-white rounded-lg p-8 max-w-md">
-                                    <h3 className="text-2xl font-bold mb-4 text-center">{t('qrCode.title')}</h3>
-                                    <div className="flex justify-center mb-4">
-                                        <QRCodeSVG value={getQRCodeUrl()} size={256} />
-                                    </div>
-                                    <p className="text-center text-gray-600 mb-4">
-                                        {t('qrCode.scanToOpen')}
-                                    </p>
-                                    <button
-                                        onClick={() => setShowQR(false)}
-                                        className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700"
-                                    >
-                                        {t('common.close')}
-                                    </button>
-                                </div>
-                            </div>
-                        )}
                     </div>
+                    {showQR && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                            <div className="w-full max-w-md rounded-lg bg-white p-5 sm:p-8">
+                                <h3 className="mb-4 text-center text-xl font-bold sm:text-2xl">{t('qrCode.title')}</h3>
+                                <div className="mb-4 flex justify-center">
+                                    <QRCodeSVG value={getQRCodeUrl()} size={qrSize} />
+                                </div>
+                                <p className="mb-4 text-center text-sm text-gray-600 sm:text-base">
+                                    {t('qrCode.scanToOpen')}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowQR(false)}
+                                    className="w-full rounded-lg bg-blue-600 py-2.5 text-white hover:bg-blue-700"
+                                >
+                                    {t('common.close')}
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     {/* ส่วนที่ 1: ข้อมูลปัญหา */}
-                    <div className="bg-red-100 rounded-xl shadow-xl p-8 border border-gray-100 mb-8">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="mb-6 rounded-xl border border-gray-100 bg-red-100 p-4 shadow-xl sm:mb-8 sm:p-6 lg:p-8">
+                        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
                             {/* คอลัมน์ที่ 1: วิดีโอ (Problem Video) */}
                             <div className="flex flex-col justify-center">
                                 {/* Problem Video */}
@@ -123,8 +132,8 @@ const MachineZoneProblemDetail = () => {
                             {/* คอลัมน์ที่ 2: ข้อความรายละเอียด */}
                             <div>
                                 {/* Machine and Zone Info and Views */}
-                                <div className="flex items-center justify-between mb-4">
-                                    <span className="text-sm text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
+                                <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <span className="min-w-0 break-words rounded-full bg-blue-50 px-3 py-1 text-sm text-blue-600">
                                         {problem.zone?.machine?.code} → {getLocalized(problem.zone, 'code', language) || getLocalized(problem.zone, 'name', language)}
                                     </span>
                                     <span className="text-sm text-gray-500">
@@ -132,7 +141,7 @@ const MachineZoneProblemDetail = () => {
                                     </span>
                                 </div>
                                 {/* Title */}
-                                <h2 className="text-3xl font-bold mb-4">{getLocalized(problem, 'title', language)}</h2>
+                                <h2 className="mb-4 text-2xl font-bold leading-tight sm:text-3xl">{getLocalized(problem, 'title', language)}</h2>
                                 {/* Description */}
                                 <div className="mb-8">
                                     <h3 className="text-xl font-semibold mb-2">{t('problems.problemDescription')}</h3>
@@ -144,8 +153,8 @@ const MachineZoneProblemDetail = () => {
 
                     {/* ส่วนที่ 2: การแก้ปัญหา (Solution) */}
                     {(getLocalized(problem, 'solution_text', language) || problem.solution_video_path) && (
-                        <div className="bg-green-100 rounded-xl shadow-xl p-8 border border-gray-100">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="rounded-xl border border-gray-100 bg-green-100 p-4 shadow-xl sm:p-6 lg:p-8">
+                            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
                                 {/* คอลัมน์ที่ 1: Solution Video */}
                                 <div className="flex flex-col justify-center">
                                     {problem.solution_video_path ? (
@@ -173,7 +182,7 @@ const MachineZoneProblemDetail = () => {
                                         {t('problems.solution')}
                                     </h3>
                                     {getLocalized(problem, 'solution_text', language) && (
-                                        <div className="mb-6 bg-gray-100 p-6 rounded-lg">
+                                        <div className="mb-6 rounded-lg bg-gray-100 p-4 sm:p-6">
                                             <h3 className="text-xl font-semibold mb-2">{t('problems.solutionText')}</h3>
                                             <p className="text-gray-700 whitespace-pre-line">
                                                 {getLocalized(problem, 'solution_text', language)}

@@ -4,8 +4,6 @@ import { publicAPI } from '../api';
 import PublicLayout from '../components/PublicLayout';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTranslation } from '../utils/translations';
-import { getLocalized } from '../utils/languageHelper';
-
 const Landing = () => {
     const navigate = useNavigate();
     const { language } = useLanguage();
@@ -38,7 +36,7 @@ const Landing = () => {
 
     return (
         <PublicLayout>
-            <div className="h-full bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 relative overflow-hidden">
+            <div className="relative h-full min-h-0 overflow-hidden bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
                 {/* Decorative background elements */}
                 <div className="absolute inset-0 overflow-hidden pointer-events-none">
                     <div className="absolute top-20 left-10 w-72 h-72 bg-blue-200 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -47,9 +45,9 @@ const Landing = () => {
                 </div>
 
                 {/* Main Content Container */}
-                <div className="relative h-full flex items-center justify-center">
-                    <div className="container mx-auto px-4 py-8">
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-center">
+                <div className="relative flex min-h-0 flex-1 items-center justify-center py-6 sm:py-10">
+                    <div className="mx-auto w-full max-w-[1920px] px-3 sm:px-5 lg:px-8 xl:px-10">
+                        <div className="grid grid-cols-1 items-center gap-6 md:gap-8 lg:grid-cols-3">
                             {/* Left Image */}
                             <div className="hidden lg:flex justify-center items-center animate-fade-in-left">
                                 <div className="relative">
@@ -66,20 +64,21 @@ const Landing = () => {
                             <div className="text-center space-y-6 animate-fade-in-up">
                                 <div className="space-y-3">
                                     <h2
-                                        className="text-4xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 drop-shadow-lg pb-2"
+                                        className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text pb-2 text-3xl font-extrabold text-transparent drop-shadow-lg sm:text-4xl md:text-5xl xl:text-6xl"
                                         style={{ paddingTop: '0.5em', paddingBottom: '0.5em', lineHeight: 1.1 }}
                                     >
                                         {t('landing.title')}
                                     </h2>
-                                    <div className="text-lg md:text-xl text-gray-700 font-medium max-w-2xl mx-auto leading-relaxed">
+                                    <div className="mx-auto max-w-2xl text-base font-medium leading-relaxed text-gray-700 sm:text-lg md:text-xl">
                                         {t('landing.subtitle')}
                                     </div>
                                 </div>
                                 
-                                <div className="flex flex-col sm:flex-row gap-4 justify-center pt-4">
+                                <div className="flex flex-col justify-center gap-3 pt-4 sm:flex-row sm:gap-4">
                                     <button
+                                        type="button"
                                         onClick={() => navigate('/problems')}
-                                        className="group relative bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-10 py-5 rounded-2xl text-lg font-bold hover:from-blue-700 hover:to-indigo-700 transition-all duration-300 shadow-2xl hover:shadow-blue-500/50 hover:-translate-y-2 transform overflow-hidden"
+                                        className="group relative transform overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-blue-700 hover:to-indigo-700 hover:shadow-blue-500/50 sm:px-10 sm:py-5 sm:text-lg"
                                     >
                                         <span className="relative z-10 flex items-center justify-center gap-2">
                                             {t('nav.problems')}
@@ -90,8 +89,9 @@ const Landing = () => {
                                         <div className="absolute inset-0 bg-gradient-to-r from-blue-400 to-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"></div>
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={() => navigate('/machines')}
-                                        className="group relative bg-gradient-to-r from-green-600 to-emerald-600 text-white px-10 py-5 rounded-2xl text-lg font-bold hover:from-green-700 hover:to-emerald-700 transition-all duration-300 shadow-2xl hover:shadow-green-500/50 hover:-translate-y-2 transform overflow-hidden"
+                                        className="group relative transform overflow-hidden rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-4 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-green-700 hover:to-emerald-700 hover:shadow-green-500/50 sm:px-10 sm:py-5 sm:text-lg"
                                     >
                                         <span className="relative z-10 flex items-center justify-center gap-2">
                                             {t('landing.machineMode')}

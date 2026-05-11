@@ -80,33 +80,33 @@ const ProblemsList = () => {
 
     return (
         <PublicLayout>
-            <div className="h-full bg-gray-50">
-                <div className="container mx-auto px-4 py-4">
+            <div className="min-h-0 bg-gray-50">
+                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
                     <div className="mb-4">
                         <BackButton to="/" label="Back" className="mb-4" />
-                        <h1 className="text-2xl font-bold text-gray-800 mb-2">{t('problems.title')}</h1>
+                        <h1 className="mb-2 text-xl font-bold text-gray-800 sm:text-2xl">{t('problems.title')}</h1>
                     </div>
                 {/* Search and Filter */}
-                <div className="bg-white rounded-xl shadow-lg p-6 mb-4 border border-gray-100">
+                <div className="mb-4 rounded-xl border border-gray-100 bg-white p-4 shadow-lg sm:p-6">
                     <form onSubmit={handleSearch} className="mb-4">
-                        <div className="flex gap-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
                             <input
                                 type="text"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 placeholder={t('problems.searchPlaceholder')}
-                                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full flex-1 rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500 sm:py-2"
                             />
                             <button
                                 type="submit"
-                                className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700"
+                                className="w-full shrink-0 rounded-lg bg-blue-600 px-6 py-2.5 text-white hover:bg-blue-700 sm:w-auto"
                             >
                                 {t('common.search')}
                             </button>
                         </div>
                     </form>
 
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-2 sm:gap-2">
                         <button
                             onClick={() => {
                                 setSelectedCategory('');
@@ -146,7 +146,7 @@ const ProblemsList = () => {
                         <div className="text-xl text-gray-500">{t('problems.noProblems')}</div>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3 3xl:grid-cols-4 xl:gap-6">
                         {problems.map((problem) => {
                             // Check if this is a machine zone problem
                             const isMachineZoneProblem = problem.is_machine_zone_problem === true;
@@ -192,7 +192,7 @@ const ProblemsList = () => {
                                     onClick={handleClick}
                                     className="bg-white rounded-xl shadow-md overflow-hidden cursor-pointer hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-gray-100"
                                 >
-                                    <div className="grid grid-cols-2 gap-0">
+                                    <div className="grid grid-cols-1 min-[480px]:grid-cols-2 gap-0">
                                         {/* คอลัมน์แรก: วิดีโอปัญหา */}
                                         <div className="relative bg-gray-100" style={{ paddingBottom: '75%' }}>
                                             {problem.video_path ? (

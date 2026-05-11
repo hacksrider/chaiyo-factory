@@ -113,18 +113,20 @@ const PageContentsManagement = () => {
 
     return (
         <AdminLayout>
-            <div className="container mx-auto px-4 py-8">
-                <div className="flex justify-between items-center mb-6">
-                    <h1 className="text-2xl font-bold">จัดการเนื้อหา</h1>
+            <div className="mx-auto w-full max-w-[1920px] px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+                <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <h1 className="text-xl font-bold sm:text-2xl">จัดการเนื้อหา</h1>
                     <button
+                        type="button"
                         onClick={() => handleOpenModal()}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-white hover:bg-blue-700 sm:w-auto"
                     >
                         + เพิ่มเนื้อหา
                     </button>
                 </div>
-                <div className="bg-white rounded-lg shadow-md overflow-hidden">
-                    <table className="min-w-full divide-y divide-gray-200">
+                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
+                    <div className="overflow-x-auto">
+                    <table className="min-w-[720px] w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Page Key</th>
@@ -165,6 +167,7 @@ const PageContentsManagement = () => {
                             ))}
                         </tbody>
                     </table>
+                    </div>
                 </div>
             </div>
 

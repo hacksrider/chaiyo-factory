@@ -926,7 +926,7 @@ const ControlPanel = ({
       {/* ── Machine Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5 min-w-0">
-          <h3 className="text-5xl font-bold text-white leading-none">{machine?.label || machine?.id}</h3>
+          <h3 className="truncate text-2xl font-bold leading-none text-white sm:text-3xl md:text-4xl lg:text-5xl">{machine?.label || machine?.id}</h3>
           {hasIp ? (
             <div className="flex flex-wrap gap-1">
               {String(machine.ledIp).split(',').map((ip) => ip.trim()).filter(Boolean).map((ip) => (
@@ -940,7 +940,7 @@ const ControlPanel = ({
           )}
         </div>
         {/* WiFi status badge + Force Sync */}
-        <div className="flex flex-col items-end gap-1.5">
+        <div className="flex flex-col items-start gap-1.5 sm:items-end">
           <WiFiBadge status={wifiStatus} onPing={onPing} />
           {hasIp && config.text && (
             <button
@@ -1018,7 +1018,7 @@ const ControlPanel = ({
       {/* ── Color Picker ── */}
       <div>
         <label className="text-xs text-gray-400 mb-2 block font-medium">{t('production.ledTextColor')}</label>
-        <div className="flex items-start gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
           {/* Native color picker */}
           <label className="cursor-pointer flex-shrink-0">
             <input type="color" value={colorHex} onChange={(e) => onChange('colorHex', e.target.value)} className="sr-only" />
@@ -1044,7 +1044,7 @@ const ControlPanel = ({
           </div>
 
           {/* RGB readout */}
-          <span className="text-[11px] text-gray-600 font-mono flex-shrink-0 self-center">
+          <span className="w-full text-left text-[11px] font-mono text-gray-600 sm:w-auto sm:self-center sm:text-right">
             {r},{g},{b}
           </span>
         </div>
@@ -1580,8 +1580,8 @@ const LedSignView = ({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900/20">
-      <div className="flex-shrink-0 px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-800 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex-shrink-0 flex flex-col gap-3 border-b border-gray-800 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6 sm:py-4">
+        <div className="flex min-w-0 items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
             <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1595,7 +1595,7 @@ const LedSignView = ({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex w-full flex-wrap items-stretch gap-2 sm:w-auto sm:items-center sm:justify-end">
           <button
             type="button"
             onClick={handleCopyLink}
@@ -1624,7 +1624,7 @@ const LedSignView = ({
           const paused = mState?.pausedOrder;
           if (!paused || !sid) return null;
           return (
-            <div className="mb-4 flex items-center gap-3 bg-yellow-500/8 border border-yellow-500/30 rounded-xl px-4 py-3">
+            <div className="mb-4 flex flex-col gap-3 rounded-xl border border-yellow-500/30 bg-yellow-500/8 px-3 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-4">
               <svg className="w-4 h-4 text-yellow-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
@@ -1649,7 +1649,7 @@ const LedSignView = ({
                       /* non-critical */
                     }
                   }}
-                  className="flex-shrink-0 flex items-center gap-1.5 bg-yellow-500/15 hover:bg-yellow-500/25 border border-yellow-500/40 text-yellow-300 font-semibold text-xs px-3 py-1.5 rounded-lg transition-all"
+                  className="flex min-h-[44px] w-full flex-shrink-0 items-center justify-center gap-1.5 rounded-lg border border-yellow-500/40 bg-yellow-500/15 px-3 py-2 text-xs font-semibold text-yellow-300 transition-all hover:bg-yellow-500/25 sm:w-auto"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />

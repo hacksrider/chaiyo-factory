@@ -1052,18 +1052,18 @@ const ProductionMonitoring = () => {
     <div className="flex flex-col h-[100dvh] bg-gray-950 text-white overflow-hidden">
 
       {/* ── Top bar ───────────────────────────────────────────────────────── */}
-      <header className="flex-shrink-0 bg-gray-900 border-b border-gray-700/50">
+      <header className="flex-shrink-0 border-b border-gray-700/50 bg-gray-900 pt-[env(safe-area-inset-top)]">
 
         {/* ── Row 1: brand + hamburger + back ── */}
-        <div className="h-12 sm:h-14 px-3 sm:px-5 flex items-center gap-2">
+        <div className="flex h-12 items-center gap-2 px-3 sm:h-14 sm:px-5">
           {/* Hamburger — mobile only */}
           {hasSidebar && (
             <button
               onClick={() => setSidebarOpen((v) => !v)}
-              className="md:hidden flex-shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+              className="-ml-1 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-800 hover:text-white md:hidden"
               aria-label={t('production.ariaToggleMachineList')}
             >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
@@ -1361,8 +1361,8 @@ const ProductionMonitoring = () => {
           {!loading && machines.length > 0 && selectedMachine && machineState && (
             <>
               {/* Content sub-header */}
-              <div className="flex-shrink-0 bg-gray-900/50 border-b border-gray-700/30 px-4 sm:px-6 md:px-8 py-3 flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex-shrink-0 flex flex-col gap-2 border-b border-gray-700/30 bg-gray-900/50 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-2 sm:px-6 md:px-8">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-semibold text-gray-300">
                     {selectedMachine.label}
                   </span>
@@ -1403,7 +1403,9 @@ const ProductionMonitoring = () => {
                   )}
                 </div>
                 {isLive && (
-                  <p className="text-xs text-gray-500 font-mono truncate max-w-[50%]">{machineState.productName}</p>
+                  <p className="w-full truncate text-left text-xs text-gray-500 font-mono sm:max-w-[50%] sm:text-right">
+                    {machineState.productName}
+                  </p>
                 )}
               </div>
 
@@ -1449,21 +1451,33 @@ const ProductionMonitoring = () => {
                       const snapBefore = getMachineState(mid);
 
                       if (type === 'good') {
-                        updateMachineState(mid, (prev) => ({
-                          pipeCounter:      (prev.pipeCounter      ?? 0) + 1,
-                          totalGoodWeight:  (prev.totalGoodWeight  ?? 0) + weight,
-                          lastGoodWeight:   weight,
-                          lastGoodAt:       pressedAt,
-                          goodEvents:       [...(prev.goodEvents ?? []), entry],
-                        }));
+                        updateMachineState(mid, (prev) => {
+                          const goods = [...(prev.goodEvents ?? []), entry];
+                          const pipeCounter = Math.max(prev.pipeCounter ?? 0, goods.length);
+                          const sumListed = goods.reduce((s, g) => s + (parseFloat(g.weight) || 0), 0);
+                          const totalGoodWeight = Math.max(prev.totalGoodWeight ?? 0, sumListed);
+                          return {
+                            pipeCounter,
+                            totalGoodWeight,
+                            lastGoodWeight: weight,
+                            lastGoodAt:     pressedAt,
+                            goodEvents:     goods,
+                          };
+                        });
                       } else {
-                        updateMachineState(mid, (prev) => ({
-                          ngCount:          (prev.ngCount          ?? 0) + 1,
-                          totalNgWeight:    (prev.totalNgWeight    ?? 0) + weight,
-                          lastNgWeight:     weight,
-                          lastNgAt:         pressedAt,
-                          ngEvents:         [...(prev.ngEvents ?? []), entry],
-                        }));
+                        updateMachineState(mid, (prev) => {
+                          const ngs = [...(prev.ngEvents ?? []), entry];
+                          const ngCount = Math.max(prev.ngCount ?? 0, ngs.length);
+                          const sumListed = ngs.reduce((s, x) => s + (parseFloat(x.weight) || 0), 0);
+                          const totalNgWeight = Math.max(prev.totalNgWeight ?? 0, sumListed);
+                          return {
+                            ngCount,
+                            totalNgWeight,
+                            lastNgWeight: weight,
+                            lastNgAt:     pressedAt,
+                            ngEvents:     ngs,
+                          };
+                        });
                       }
 
                       // Laravel เก็บ DB + SyncWeightEventToGas เมื่อตาชั่ง POST มี eventId — อย่ายิง logWeightEvent ซ้ำ (เดิมทำแถวใน Sheet เท่าทวีคู่ และคอลัมลำดับเพี้ยน)

@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTranslation } from '../utils/translations';
 import LanguageSwitcher from './LanguageSwitcher';
-import { adminAPI, publicAPI } from '../api';
+import { adminAPI } from '../api';
 import { useAlert } from '../contexts/AlertContext';
 
 const AdminLayout = ({ children }) => {
@@ -26,10 +26,35 @@ const AdminLayout = ({ children }) => {
         is_active: true,
     });
     const aiDropdownRef = useRef(null);
+    const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+    const sortedActiveGems = useMemo(() => {
+        return [...aiGems]
+            .filter((gem) => gem.is_active)
+            .sort((a, b) => {
+                const orderA = a.order ?? 999;
+                const orderB = b.order ?? 999;
+                if (orderA !== orderB) return orderA - orderB;
+                return (a.name || '').localeCompare(b.name || '');
+            });
+    }, [aiGems]);
 
     useEffect(() => {
         fetchAiGems();
     }, []);
+
+    useEffect(() => {
+        setMobileNavOpen(false);
+    }, [location.pathname]);
+
+    useEffect(() => {
+        if (!mobileNavOpen) return;
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = prev;
+        };
+    }, [mobileNavOpen]);
 
     useEffect(() => {
         const handleClickOutside = (event) => {
@@ -150,18 +175,27 @@ const AdminLayout = ({ children }) => {
 
     return (
         <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
-            {/* Top Navigation Bar - Fixed */}
-            <nav className="flex-shrink-0 bg-white shadow-sm border-b">
-                <div className="container mx-auto px-4">
-                    <div className="flex items-center justify-between h-16">
-                        <div className="flex items-center gap-6">
+            <nav className="z-30 flex-shrink-0 border-b bg-white shadow-sm">
+                <div className="mx-auto max-w-[1920px] px-3 sm:px-4 lg:px-6">
+                    <div className="flex h-14 items-center justify-between gap-2 sm:h-16">
+                        <div className="flex min-w-0 flex-1 items-center gap-2 xl:gap-6">
+                            <button
+                                type="button"
+                                aria-label="Menu"
+                                className="inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 xl:hidden"
+                                onClick={() => setMobileNavOpen(true)}
+                            >
+                                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                </svg>
+                            </button>
                             <h1
                                 onClick={() => navigate('/')}
-                                className="text-xl font-bold text-blue-600 cursor-pointer hover:text-blue-800 transition"
+                                className="cursor-pointer truncate text-lg font-bold text-blue-600 transition hover:text-blue-800 sm:text-xl"
                             >
                                 Home
                             </h1>
-                            <div className="flex gap-1 text-[15px]">
+                            <div className="hidden flex-shrink-0 gap-1 text-[15px] xl:flex">
                                 <button
                                     onClick={() => navigate('/problems')}
                                     className={`px-3 py-1 text-sm rounded transition ${location.pathname.startsWith('/problems') && !location.pathname.startsWith('/machine')
@@ -210,20 +244,9 @@ const AdminLayout = ({ children }) => {
                                                 <div className="px-4 py-2 text-sm text-gray-500 text-center">
                                                     {t('common.loading')}
                                                 </div>
-                                            ) : aiGems.length > 0 ? (
+                                            ) : sortedActiveGems.length > 0 ? (
                                                 <>
-                                                    {aiGems
-                                                        .filter(gem => gem.is_active)
-                                                        .sort((a, b) => {
-                                                            const orderA = a.order ?? 999;
-                                                            const orderB = b.order ?? 999;
-                                                            if (orderA !== orderB) {
-                                                                return orderA - orderB;
-                                                            }
-                                                            // If order is same, sort by name
-                                                            return (a.name || '').localeCompare(b.name || '');
-                                                        })
-                                                        .map((gem) => (
+                                                    {sortedActiveGems.map((gem) => (
                                                             <div key={gem.id} className="flex items-center group">
                                                                 <button
                                                                     onClick={() => {
@@ -298,9 +321,8 @@ const AdminLayout = ({ children }) => {
                                 </div>
                             </div>
                         </div>
-                        <div className="flex items-center gap-4">
-                            {/* User Pages Links */}
-                            <div className="flex gap-2">
+                        <div className="flex flex-shrink-0 items-center gap-2 sm:gap-4">
+                            <div className="hidden flex-wrap gap-2 xl:flex">
 
                                 <button
                                     onClick={() => navigate('/admin/problems')}
@@ -332,22 +354,23 @@ const AdminLayout = ({ children }) => {
                                 >
                                     {t('admin.manageContent')}
                                 </button> */}
-                                
                             </div>
                             <LanguageSwitcher />
                             <div className="relative group">
                                 <button
-                                    className="text-gray-700 font-semibold px-3 py-1 text-sm rounded hover:bg-gray-100 focus:outline-none flex items-center gap-1"
+                                    type="button"
+                                    className="flex max-w-[9rem] items-center gap-1 rounded px-2 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none sm:max-w-xs sm:px-3"
                                 >
-                                    <span>{user?.name}</span>
-                                    <svg className="w-4 h-4 ml-1 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <span className="truncate">{user?.name}</span>
+                                    <svg className="ml-1 h-4 w-4 flex-shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                     </svg>
                                 </button>
-                                <div className="absolute right-0 top-full mt-2 bg-white border border-gray-200 rounded-md shadow-lg min-w-[150px] z-50 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-opacity">
+                                <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 min-w-[150px] rounded-md border border-gray-200 bg-white opacity-0 shadow-lg transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
                                     <button
+                                        type="button"
                                         onClick={handleLogout}
-                                        className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-b"
+                                        className="w-full rounded-b px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50"
                                     >
                                         {t('nav.logout')}
                                     </button>
@@ -356,10 +379,167 @@ const AdminLayout = ({ children }) => {
                         </div>
                     </div>
                 </div>
+                {mobileNavOpen && (
+                    <div className="fixed inset-0 z-40 xl:hidden" role="dialog" aria-modal="true">
+                        <button
+                            type="button"
+                            className="absolute inset-0 bg-black/40"
+                            aria-label="Close menu"
+                            onClick={() => setMobileNavOpen(false)}
+                        />
+                        <div className="absolute inset-y-0 right-0 flex w-[min(100%,21rem)] flex-col bg-white shadow-xl">
+                            <div className="flex items-center justify-between border-b px-4 py-3">
+                                <span className="font-semibold text-gray-900">Menu</span>
+                                <button
+                                    type="button"
+                                    className="flex h-10 w-10 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100"
+                                    aria-label="Close"
+                                    onClick={() => setMobileNavOpen(false)}
+                                >
+                                    <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <nav className="flex-1 overflow-y-auto p-3">
+                                <div className="flex flex-col gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/problems');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="rounded-lg bg-blue-50 px-4 py-3 text-left text-sm font-medium text-blue-800"
+                                    >
+                                        {t('nav.problems')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/machines');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="rounded-lg bg-green-50 px-4 py-3 text-left text-sm font-medium text-green-800"
+                                    >
+                                        {t('nav.machines')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/production-monitoring');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="rounded-lg bg-orange-50 px-4 py-3 text-left text-sm font-medium text-orange-900"
+                                    >
+                                        Production
+                                    </button>
+                                    <p className="mt-2 px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">{t('nav.askAI')}</p>
+                                    {loadingAiGems ? (
+                                        <div className="text-sm text-gray-500">{t('common.loading')}</div>
+                                    ) : sortedActiveGems.length > 0 ? (
+                                        sortedActiveGems.map((gem) => (
+                                            <div key={gem.id} className="flex items-stretch gap-1 rounded-lg border border-purple-100 p-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        window.open(gem.gem_url, '_blank');
+                                                        setMobileNavOpen(false);
+                                                    }}
+                                                    className="min-w-0 flex-1 px-2 py-2 text-left text-sm text-purple-700"
+                                                >
+                                                    {gem.name}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded text-blue-600 hover:bg-blue-50"
+                                                    title={t('common.edit')}
+                                                    onClick={() => {
+                                                        handleOpenAiModal(gem);
+                                                        setMobileNavOpen(false);
+                                                    }}
+                                                >
+                                                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-50"
+                                                    title={t('common.delete')}
+                                                    onClick={() => {
+                                                        handleDeleteAiGem(gem);
+                                                        setMobileNavOpen(false);
+                                                    }}
+                                                >
+                                                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div className="text-sm text-gray-500">{t('admin.noAiGems')}</div>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            handleOpenAiModal();
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="mt-1 rounded-lg border border-purple-200 px-4 py-2.5 text-left text-sm font-medium text-purple-700"
+                                    >
+                                        + {t('admin.addAiGem')}
+                                    </button>
+                                    <p className="mt-4 px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Admin</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/admin/problems');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className={`rounded-lg px-4 py-3 text-left text-sm ${isActive('/admin/problems')}`}
+                                    >
+                                        {t('admin.manageProblems')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/admin/machines');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className={`rounded-lg px-4 py-3 text-left text-sm ${isActive('/admin/machines')}`}
+                                    >
+                                        {t('admin.manageMachines')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/admin/categories');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className={`rounded-lg px-4 py-3 text-left text-sm ${isActive('/admin/categories')}`}
+                                    >
+                                        {t('admin.manageCategories')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/admin/users');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className={`rounded-lg px-4 py-3 text-left text-sm ${isActive('/admin/users')}`}
+                                    >
+                                        {t('admin.manageUsers')}
+                                    </button>
+                                </div>
+                            </nav>
+                        </div>
+                    </div>
+                )}
             </nav>
 
             {/* Page Content */}
-            <main className="flex-1 overflow-y-auto">{children}</main>
+            <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
 
             {/* AI Gem Modal */}
             {showAiModal && (

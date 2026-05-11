@@ -288,19 +288,21 @@ const MachinesManagement = () => {
 
     return (
         <AdminLayout>
-            <div className="container mx-auto px-4 py-8">
-                <div className="flex justify-between items-center mb-6">
-                    <h1 className="text-2xl font-bold">{t('admin.manageMachines')}</h1>
+            <div className="mx-auto w-full max-w-[1920px] px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+                <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageMachines')}</h1>
                     <button
+                        type="button"
                         onClick={() => handleOpenModal()}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-white hover:bg-blue-700 sm:w-auto"
                     >
                         + {t('admin.addMachine')}
                     </button>
                 </div>
 
-                <div className="bg-white rounded-lg shadow-md overflow-hidden">
-                    <table className="min-w-full divide-y divide-gray-200">
+                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
+                    <div className="overflow-x-auto">
+                    <table className="min-w-[640px] w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.code')}</th>
@@ -351,6 +353,7 @@ const MachinesManagement = () => {
                             ))}
                         </tbody>
                     </table>
+                    </div>
                 </div>
 
                 {/* Modal */}
@@ -493,11 +496,11 @@ const MachinesManagement = () => {
                     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
                         <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
                             <div className="p-6">
-                                <div className="flex justify-between items-center mb-6">
-                                    <h2 className="text-2xl font-bold">
+                                <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <h2 className="break-words pr-2 text-lg font-bold sm:text-2xl">
                                         {t('admin.manageZonesFor')} {selectedMachine.code} ({selectedMachine.name})
                                     </h2>
-                                    <div className="flex gap-2">
+                                    <div className="flex w-full shrink-0 flex-col gap-2 sm:flex-row sm:justify-end">
                                         <button
                                             onClick={() => handleOpenZoneModal()}
                                             className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
@@ -513,8 +516,9 @@ const MachinesManagement = () => {
                                     </div>
                                 </div>
 
-                                <div className="bg-white rounded-lg shadow-md overflow-hidden mb-4">
-                                    <table className="min-w-full divide-y divide-gray-200">
+                                <div className="mb-4 overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
+                                    <div className="overflow-x-auto">
+                                    <table className="min-w-[560px] w-full divide-y divide-gray-200">
                                         <thead className="bg-gray-50">
                                             <tr>
                                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
@@ -563,6 +567,7 @@ const MachinesManagement = () => {
                                             )}
                                         </tbody>
                                     </table>
+                                    </div>
                                 </div>
                             </div>
                         </div>

@@ -764,7 +764,7 @@ const SetupMode = ({
             {t('production.setupMode')}
           </span>
         </div>
-        <h2 className="text-2xl font-bold text-white">{machineLabel}</h2>
+        <h2 className="text-xl font-bold text-white sm:text-2xl">{machineLabel}</h2>
         <p className="text-sm text-gray-400 mt-1">
           {t('production.setupHeaderHintPre')} <span className="text-green-400 font-semibold">{t('production.startNow')}</span> {t('production.setupHeaderHintPost')}
         </p>

@@ -9,7 +9,11 @@ export default {
     "./resources/js/**/*.js",
   ],
   theme: {
-    extend: {},
+    extend: {
+      screens: {
+        '3xl': '1600px',
+      },
+    },
   },
   plugins: [],
 }

@@ -27,10 +27,10 @@ const Login = () => {
     };
 
     return (
-        <div className="h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 overflow-hidden">
-            <div className="max-w-md w-full space-y-8 bg-white p-8 rounded-lg shadow-lg">
+        <div className="flex min-h-screen min-h-[100dvh] items-center justify-center overflow-auto bg-gradient-to-br from-blue-50 to-indigo-100 px-3 py-8 sm:px-6 lg:px-8">
+            <div className="w-full max-w-md space-y-8 rounded-xl bg-white p-6 shadow-lg sm:p-8">
                 <div>
-                    <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+                    <h2 className="mt-6 text-center text-2xl font-extrabold text-gray-900 sm:text-3xl">
                         เข้าสู่ระบบ Admin
                     </h2>
                     <p className="mt-2 text-center text-sm text-gray-600">

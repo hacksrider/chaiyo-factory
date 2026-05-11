@@ -363,12 +363,13 @@ const ProblemsManagement = () => {
 
     return (
         <AdminLayout>
-            <div className="container mx-auto px-4 py-8">
-                <div className="flex justify-between items-center mb-6">
-                    <h1 className="text-2xl font-bold">{t('admin.manageProblems')}</h1>
+            <div className="mx-auto w-full max-w-[1920px] px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+                <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageProblems')}</h1>
                     <button
+                        type="button"
                         onClick={() => handleOpenModal()}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-white hover:bg-blue-700 sm:w-auto"
                     >
                         + {t('admin.addProblem')}
                     </button>
@@ -381,11 +382,12 @@ const ProblemsManagement = () => {
                         placeholder={t('admin.searchProblems')}
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full max-w-md rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                 </div>
-                <div className="bg-white rounded-lg shadow-md overflow-hidden">
-                    <table className="min-w-full divide-y divide-gray-200">
+                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
+                    <div className="overflow-x-auto">
+                    <table className="min-w-[900px] w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.problemTitle')}</th>
@@ -456,6 +458,7 @@ const ProblemsManagement = () => {
                             })}
                         </tbody>
                     </table>
+                    </div>
                 </div>
             </div>
 

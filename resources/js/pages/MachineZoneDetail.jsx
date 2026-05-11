@@ -133,15 +133,15 @@ const MachineZoneDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="h-full bg-gray-50">
-                <div className="container mx-auto px-4 py-4">
+            <div className="min-h-0 bg-gray-50">
+                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
                     <div className="mb-4">
                         <BackButton 
                             to={`/machines/${zone.machine?.id || zone.machine_id}`} 
                             label="Back" 
                             className="mb-4" 
                         />
-                        <h1 className="text-3xl font-bold mb-2">
+                        <h1 className="text-2xl font-bold leading-tight sm:text-3xl">
                             {zone.code ? `${zone.code} - ` : ''}{getLocalized(zone, 'name', language)}
                         </h1>
                         {getLocalized(zone, 'description', language) && (
@@ -149,7 +149,7 @@ const MachineZoneDetail = () => {
                         )}
                     </div>
 
-                    <div className="flex flex-col lg:flex-row gap-6 mb-6">
+                    <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:gap-6">
                         {/* Zone Layout Image (Left Column) */}
                         {zone.layout_image && (
                             <div className="w-full lg:w-5/12">
@@ -169,12 +169,13 @@ const MachineZoneDetail = () => {
                         {/* Problems Section (Right Column) */}
                         <div className={`w-full ${zone.layout_image ? "lg:w-7/12" : ""}`}>
                             <div className="bg-white rounded-xl shadow-xl p-6 h-full border border-gray-100 flex flex-col">
-                                <div className="flex justify-between items-center mb-6">
-                                    <h2 className="text-xl font-semibold">{t('machines.zoneProblems')}</h2>
+                                <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <h2 className="text-lg font-semibold sm:text-xl">{t('machines.zoneProblems')}</h2>
                                     {isAdmin && (
                                         <button
+                                            type="button"
                                             onClick={handleOpenModal}
-                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                            className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-sm text-white hover:bg-blue-700 sm:w-auto"
                                         >
                                             + {t('machines.addProblem')}
                                         </button>
@@ -186,14 +187,14 @@ const MachineZoneDetail = () => {
                                         {t('machines.noZoneProblems')}
                                     </div>
                                 ) : (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4">
                                         {problems.map((problem) => (
                                             <div
                                                 key={problem.id}
                                                 onClick={() => navigate(`/machine-zone-problems/${problem.id}`)}
                                                 className="bg-white rounded-xl shadow-md overflow-hidden cursor-pointer hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-gray-100"
                                             >
-                                                <div className="grid grid-cols-2 gap-0">
+                                                <div className="grid grid-cols-1 min-[520px]:grid-cols-2 gap-0">
                                                     {/* คอลัมน์แรก: วิดีโอปัญหา */}
                                                     <div className="relative bg-gray-100" style={{ paddingBottom: '75%' }}>
                                                         {problem.video_path ? (

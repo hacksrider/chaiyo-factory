@@ -34,7 +34,7 @@ const LanguageSwitcher = ({ variant = 'light' }) => {
     };
 
     return (
-        <div className={`relative ${isDark ? 'border-l border-gray-700/50 pl-3' : 'border-l pl-4'}`} ref={dropdownRef}>
+        <div className={`relative border-l ${isDark ? 'border-gray-700/50 pl-2 sm:pl-3' : 'pl-2 sm:pl-4'}`} ref={dropdownRef}>
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className={`flex items-center gap-2 px-1 py-1 rounded-md text-sm focus:outline-none focus:ring-2 transition-colors duration-200 ${
@@ -46,7 +46,7 @@ const LanguageSwitcher = ({ variant = 'light' }) => {
                 <span className="w-8 h-6 flex-shrink-0 overflow-hidden">
                     <FlagIcon countryCode={currentLanguage.code} className="w-full h-full" />
                 </span>
-                <span>{currentLanguage.name}</span>
+                <span className="hidden sm:inline">{currentLanguage.name}</span>
                 <svg
                     className={`w-4 h-4 transition-transform duration-200 ${isOpen ? 'transform rotate-180' : ''}`}
                     fill="none"

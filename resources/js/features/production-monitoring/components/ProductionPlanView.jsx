@@ -189,7 +189,7 @@ const PlanOrderCard = ({ order, machineId, onAddToQueue, isHistory, productDetai
 
   return (
     <div className={`rounded-2xl border transition-all ${cardBorder}`}>
-      <div className="p-5">
+      <div className="p-4 sm:p-5">
 
         {/* ── Row 1: Job no + badges + actions ── */}
         <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
@@ -560,10 +560,10 @@ const DailyScheduleView = ({ machineId }) => {
             }`}
           >
             {/* Date header */}
-            <div className={`flex items-center justify-between px-4 py-3 ${
+            <div className={`flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-4 ${
               isToday ? 'border-b border-cyan-500/20' : 'border-b border-gray-700/20'
             }`}>
-              <div className="flex items-center gap-2.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                 {isToday && (
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-300">
                     {t('production.planDailyToday')}
@@ -577,7 +577,7 @@ const DailyScheduleView = ({ machineId }) => {
                 </span>
               </div>
               {/* Day total */}
-              <div className="flex items-center gap-3 text-[11px] font-mono">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono sm:justify-end">
                 <span className="text-blue-400">A: {fmtNum(totalA)}</span>
                 <span className="text-purple-400">B: {fmtNum(totalB)}</span>
                 <span className="text-orange-400">C: {fmtNum(totalC)}</span>
@@ -696,8 +696,8 @@ const ProductionPlanView = ({ selectedMachine, onAddToQueue, planData }) => {
     <div className="flex-1 flex flex-col overflow-hidden">
 
       {/* ── Sub-header ── */}
-      <div className="flex-shrink-0 bg-gray-900/50 border-b border-gray-700/30 px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex-shrink-0 flex flex-col gap-3 border-b border-gray-700/30 bg-gray-900/50 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-3 sm:px-6">
+        <div className="flex min-w-0 w-full flex-col gap-3 sm:flex-1 sm:flex-row sm:flex-wrap sm:items-center">
 
           {/* Tabs */}
           <div className="flex items-center gap-1 bg-gray-800/60 rounded-lg p-1">
@@ -762,7 +762,7 @@ const ProductionPlanView = ({ selectedMachine, onAddToQueue, planData }) => {
                 <select
                   value={filterMonth}
                   onChange={(e) => setFilterMonth(e.target.value)}
-                  className="text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500"
+                  className="w-full min-w-0 text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500 sm:w-auto sm:min-w-[11rem]"
                 >
                   <option value="">{t('production.planMonthAll')}</option>
                   {availableMonths.map((m) => (
@@ -777,14 +777,14 @@ const ProductionPlanView = ({ selectedMachine, onAddToQueue, planData }) => {
                 placeholder={t('production.planSearchPlaceholder')}
                 value={searchJob}
                 onChange={(e) => setSearchJob(e.target.value)}
-                className="text-xs bg-gray-800 border border-gray-700 text-gray-300 placeholder-gray-600 rounded-lg px-3 py-1.5 w-48 focus:outline-none focus:border-cyan-500"
+                className="w-full min-w-0 text-xs bg-gray-800 border border-gray-700 text-gray-300 placeholder-gray-600 rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500 sm:w-48 lg:w-56"
               />
             </>
           )}
         </div>
 
         {/* Right: sync */}
-        <div className="flex items-center gap-3">
+        <div className="flex w-full shrink-0 items-center gap-3 sm:w-auto">
           {lastSyncAt && !loading && (
             <span className="text-[11px] text-gray-600 hidden lg:block">
               {t('production.planSynced')}{lastSyncAt.toLocaleTimeString()}
@@ -809,7 +809,7 @@ const ProductionPlanView = ({ selectedMachine, onAddToQueue, planData }) => {
       </div>
 
       {/* ── Content ── */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-5 lg:p-6">
 
         {/* Loading */}
         {loading && (

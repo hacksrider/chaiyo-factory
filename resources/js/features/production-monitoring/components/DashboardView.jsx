@@ -120,8 +120,8 @@ const MachineCard = ({ machine, state }) => {
       {isLive && (
         <div className="flex flex-col gap-1 flex-1 min-h-0">
           {/* Order ID */}
-          {s.orderId && (
-            <p className="text-[20px] font-mono text-cyan-400/80 truncate flex-shrink-0">
+            {s.orderId && (
+            <p className="truncate flex-shrink-0 font-mono text-base text-cyan-400/80 sm:text-lg md:text-[20px]">
               {s.orderId}
             </p>
           )}
@@ -184,12 +184,14 @@ const MachineCard = ({ machine, state }) => {
 
 // ─── ZonePanel ────────────────────────────────────────────────────────────────
 
-const ZonePanel = ({ zone, machines, allStates, getMachineState }) => {
+const ZonePanel = ({ zone, machines, allStates, getMachineState, maxGridCols }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
   const liveCnt = machines.filter((m) => allStates[m.id]?.mode === 'live').length;
-  const cols    = zoneCols(machines.length);
+  const baseCols = zoneCols(machines.length);
+  const cols =
+    maxGridCols != null ? Math.min(baseCols, maxGridCols) : baseCols;
 
   return (
     <div className="flex flex-col bg-gray-900/40 rounded-2xl border border-gray-700/30 p-2.5 min-h-0 min-w-0 overflow-hidden w-full">
@@ -334,6 +336,7 @@ const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClo
               machines={zm}
               allStates={allStates}
               getMachineState={getMachineState}
+              maxGridCols={2}
             />
           ))}
         </div>
