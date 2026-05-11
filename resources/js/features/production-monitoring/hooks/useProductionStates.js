@@ -31,6 +31,8 @@ export const DEFAULT_MACHINE_STATE = {
   lastNgWeight: null,
   lastNgAt: null,
   startedAt: null,
+  /** true เมื่อ DB status = awaiting_scale (รอยืนยันที่ตาชั่งหลัง Start Now) */
+  waitingScale: false,
   // Stored at order-start so live actions work even if settings re-fetch fails
   sheetName: null,
   ledIp: null,

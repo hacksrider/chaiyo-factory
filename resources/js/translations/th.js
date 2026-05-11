@@ -234,7 +234,13 @@ export default {
         productCode: 'รหัส',
         items: 'รายการ',
         pieces: 'ชิ้น',
-        waitingConfirm: 'กำลังรอการยืนยัน...',
+        waitingConfirm: 'กำลังรอการยืนยันที่ตาชั่ง…',
+        scaleWaitingDetail:
+          'กรุณายืนยันที่ตาชั่งภายใน 10 นาที — ครบเวลาแล้วระบบจะยกเลิกคำสั่งและคืนรายการในคิวอัตโนมัติ',
+        machineWaitingScaleTitle: 'เครื่องนี้กำลังรอยืนยันที่ตาชั่ง',
+        machineWaitingScaleOrder: ({ orderId, label }) =>
+          `เลขใบขอ ${orderId}${label ? ` · ${label}` : ''}`,
+        scaleConfirmCountdown: ({ mm, ss }) => `เหลือเวลา ${mm}:${ss}`,
         scaleInstruction: 'กด A/B/C เลือกกะ → ใส่รหัสพนักงาน → กด D',
         cancel: 'ยกเลิก',
         startNow: 'Start Now',
@@ -252,7 +258,8 @@ export default {
         resumeWithScale: 'กรอกข้อมูลใหม่ที่ตาชั่ง',
         scaleResumeInstruction: 'ส่งไปตาชั่ง → กด A/B/C + รหัสพนักงาน → D',
         scaleSendFailed: (params) => `ส่งไปตาชั่งไม่สำเร็จ (${params.msg})`,
-        scaleConfirmTimeout: 'ไม่ได้รับการยืนยันจากตาชั่งภายใน 3 นาที',
+        scaleConfirmTimeout:
+          'หมดเวลา 10 นาที — ยกเลิกคำสั่งถึงตาชั่งแล้ว และคืนคิวเป็นรอเริ่ม กด「ลองอีกครั้ง」เพื่อส่งใหม่',
         titleRemoveFromQueue: 'ลบออกจากคิว',
         resumeOrderTitle: 'Resume Order',
         setupHeaderHintPre: 'เพิ่มรายการผลิตเข้าคิว แล้วกด',

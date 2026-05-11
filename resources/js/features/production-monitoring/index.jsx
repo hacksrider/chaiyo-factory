@@ -1580,6 +1580,13 @@ const ProductionMonitoring = () => {
                     ledIp={selectedMachine.ledIp}
                     queue={machineState.queue ?? []}
                     pausedOrder={machineState.pausedOrder ?? null}
+                    sessionWait={{
+                      active: Boolean(machineState.waitingScale),
+                      startedAt: machineState.startedAt ?? null,
+                      orderId: machineState.orderId ?? '',
+                      productCode: machineState.productCode ?? '',
+                      productName: machineState.productName ?? '',
+                    }}
                     onAddToQueue={(item) => handleDbAddToQueue(selectedMachineId, item)}
                     onRemoveFromQueue={(queueId) => handleDbRemoveFromQueue(selectedMachineId, queueId)}
                     onResumeOrder={() => { void resumeOrderWithLed(selectedMachineId); }}

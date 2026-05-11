@@ -706,6 +706,8 @@ class ProductionMonitorController extends Controller
             'stdWeight', 'minWeight', 'maxWeight', 'productLen',
         ]);
 
+        // เริ่มคิวใหม่ — ปิด flag เตือนฟิร์มแวร์ว่าเคยยกเลิกการรอยืนยันแล้ว
+        Cache::forget("scale_pending_revoked_{$machineId}");
         Cache::put("scale_cmd_{$machineId}", $payload, now()->addMinutes(10));
         // รีเซ็ตนับของดีของเซสชั่นก่อนหน้า
         Cache::put("scale_count_{$machineId}", 0, now()->addHours(24));
@@ -875,34 +877,38 @@ class ProductionMonitorController extends Controller
      *
      * Scale ESP32 poll — ข้อมูลจาก production_sessions เท่านั้น (ไม่ใช้ cache)
      * Response (live):    { live:true, orderId, ..., pipeCounter, ... }
-     * Response (stopped): { live:false }
+     * Response (stopped): { live:false, pendingStartRevoked?: true } — เมื่อเป็น true =
+     * เว็บยกเลิกการรอยืนยัน (Awaiting_scale / timeout): ฟิร์มแวร์ควรเคลียร์งาน pending ในจอให้เหมือนหยุด
      * Response (unknown): { live:null }  ← ไม่มีแถวเซสชัน
      */
     public function fetchScaleLive(string $machineId): JsonResponse
     {
+        $revokeFlag = Cache::get("scale_pending_revoked_{$machineId}");
+        $revokePayload = $revokeFlag !== null ? ['pendingStartRevoked' => true] : [];
+
         $session = ProductionSession::where('machine_id', $machineId)->first();
 
         if (! $session) {
-            return response()->json(['live' => null]);
+            return response()->json(array_merge(['live' => null], $revokePayload));
         }
 
         $st = $session->status ?? '';
         if (in_array($st, ['cancelled', 'finished'], true)) {
-            return response()->json(['live' => false]);
+            return response()->json(array_merge(['live' => false], $revokePayload));
         }
 
         if ($st === 'paused') {
-            return response()->json(['live' => false]);
+            return response()->json(array_merge(['live' => false], $revokePayload));
         }
 
         if ($st !== 'live') {
-            return response()->json(['live' => false]);
+            return response()->json(array_merge(['live' => false], $revokePayload));
         }
 
         $remain = (int) ($session->remaining_qty ?? 0);
         $tgt    = $remain > 0 ? $remain : (int) ($session->target_qty ?? 0);
 
-        return response()->json([
+        return response()->json(array_merge([
             'live'           => true,
             'orderId'        => $session->order_id,
             'productCode'    => $session->product_code,
@@ -917,7 +923,7 @@ class ProductionMonitorController extends Controller
             'minWeight'      => $session->min_weight !== null ? (float) $session->min_weight : null,
             'maxWeight'      => $session->max_weight !== null ? (float) $session->max_weight : null,
             'productLen'     => $session->length !== null ? (float) $session->length : null,
-        ]);
+        ], $revokePayload));
     }
 
     /**
@@ -2003,7 +2009,16 @@ class ProductionMonitorController extends Controller
 
         if ($session) {
             $runUlid = $session->session_run_ulid;
-            DB::transaction(function () use ($session, $machineId, $now, $ts, $runUlid) {
+            $wasAwaiting = ((string) ($session->status ?? '')) === 'awaiting_scale';
+            $queueOrderId = (string) ($session->order_id ?? '');
+
+            DB::transaction(function () use ($session, $machineId, $now, $ts, $runUlid, $wasAwaiting, $queueOrderId) {
+                if ($wasAwaiting && $queueOrderId !== '') {
+                    ProductionQueueItem::where('machine_id', $machineId)
+                        ->where('status', 'started')
+                        ->where('order_id', $queueOrderId)
+                        ->update(['status' => 'queued']);
+                }
                 if ($runUlid) {
                     ProductionWeightEvent::where('machine_id', $machineId)
                         ->where('session_run_ulid', $runUlid)
@@ -2019,6 +2034,15 @@ class ProductionMonitorController extends Controller
                     'ts'           => $ts,
                 ]);
             });
+
+            if ($wasAwaiting) {
+                // ฟิร์มแวร์ ESP32 poll scale-live เห็นแล้วเคลียร์งานที่รอจากเว็บได้ (TTL พอให้โหลดทัน)
+                Cache::put(
+                    "scale_pending_revoked_{$machineId}",
+                    ['reason' => 'abort', 'at' => $ts],
+                    now()->addMinutes(15)
+                );
+            }
         }
 
         Cache::forget("machine_session_{$machineId}");

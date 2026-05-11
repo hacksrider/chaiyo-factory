@@ -5,6 +5,7 @@ import {
   storeScaleCommand,
   fetchScaleConfirm,
   dbStartSession,
+  dbCancelSession,
 } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
@@ -43,17 +44,74 @@ const NoticeBanner = ({ notice }) =>
 
 // ─── Queue row ────────────────────────────────────────────────────────────────
 
-const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000; // 3 นาที
+/** เวลาสูงสุดรอกดยืนยันที่ตาชั่ง (นับจากเวลาเริ่มเซสชันฝั่งเซิร์ฟเวอร์ หรือจากครั้งที่กด Start Now) */
+const SCALE_CONFIRM_WAIT_MS = 10 * 60 * 1000;
 
-const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemove }) => {
+/** แถบด้านบนเมื่อมีเซสชัน awaiting_scale — ให้เห็นชัดระหว่างรอตาชั่งหลังรีเฟรช */
+const MachineScaleWaitBanner = ({ t, sessionWait }) => {
+  const [, pulse] = useState(0);
+  useEffect(() => {
+    if (!sessionWait?.active) return undefined;
+    const id = setInterval(() => pulse((x) => x + 1), 1000);
+
+    return () => clearInterval(id);
+  }, [sessionWait?.active]);
+
+  if (!sessionWait?.active) return null;
+
+  const parsed = sessionWait.startedAt ? Date.parse(sessionWait.startedAt) : NaN;
+  const end = Number.isFinite(parsed)
+    ? parsed + SCALE_CONFIRM_WAIT_MS
+    : Date.now() + SCALE_CONFIRM_WAIT_MS;
+  const sec = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+  const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+  const ss = String(sec % 60).padStart(2, '0');
+
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-3">
+      <Spinner />
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-amber-200">{t('production.machineWaitingScaleTitle')}</p>
+        <p className="text-[11px] text-amber-300/85 mt-0.5">
+          {(sessionWait.orderId ?? '') !== ''
+            ? t('production.machineWaitingScaleOrder', {
+              orderId: sessionWait.orderId,
+              label: sessionWait.productName || sessionWait.productCode || '',
+            })
+            : t('production.scaleWaitingDetail')}
+        </p>
+        <p className="text-[11px] font-mono text-amber-300/75 mt-0.5">
+          {t('production.scaleConfirmCountdown', { mm, ss })}
+        </p>
+        <p className="text-[11px] text-amber-400/65 mt-0.5">{t('production.scaleInstruction')}</p>
+      </div>
+    </div>
+  );
+};
+
+const QueueRow = ({
+  item,
+  position,
+  machineId,
+  sheetName,
+  ledIp,
+  onStart,
+  onRemove,
+  serverAwaitingScale = false,
+  serverSessionStartedAt = null,
+}) => {
   // 'idle' | 'waiting' | 'timeout'
   const [phase, setPhase]   = useState('idle');
   const [notice, setNotice] = useState(null);
+  const [, setTickPulse] = useState(0); // รีเรนเดอร์เหลือเวลาเมื่อ phase = waiting
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
   const pollRef    = useRef(null);
   const timeoutRef = useRef(null);
+  const waitEndsAtRef = useRef(0);
+  /** true = เริ่มรอจาก UI ครั้งนี้แล้ว — อย่านับ polling/timeout ซ้ำจาก useEffect hydrate */
+  const hydratedAwaitingRef = useRef(false);
 
   // หยุด polling ทั้งหมด
   const stopPolling = () => {
@@ -66,13 +124,93 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
   // cleanup เมื่อ unmount
   useEffect(() => () => stopPolling(), []);
 
+  const scheduleWaitExpiry = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    const delay = Math.max(0, waitEndsAtRef.current - Date.now());
+    if (delay === 0) {
+      timeoutRef.current = null;
+      void handleWaitExpired();
+
+      return;
+    }
+    timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      void handleWaitExpired();
+    }, delay);
+  };
+
+  // countdown ในเฟส waiting
+  useEffect(() => {
+    if (phase !== 'waiting') return undefined;
+    const id = setInterval(() => setTickPulse((x) => x + 1), 1000);
+
+    return () => clearInterval(id);
+  }, [phase]);
+
+  // รีเฟรช / ผสานจาก DB: มี awaiting_scale — ฟื้น polling เว้นแต่เริ่มจากปุ่ม Start แล้ว
+  useEffect(() => {
+    if (!serverAwaitingScale) {
+      hydratedAwaitingRef.current = false;
+
+      return;
+    }
+    if (hydratedAwaitingRef.current) return;
+    hydratedAwaitingRef.current = true;
+    setPhase('waiting');
+    setNotice(null);
+    const parsed = serverSessionStartedAt ? Date.parse(serverSessionStartedAt) : NaN;
+    waitEndsAtRef.current = Number.isFinite(parsed)
+      ? parsed + SCALE_CONFIRM_WAIT_MS
+      : Date.now() + SCALE_CONFIRM_WAIT_MS;
+    scheduleWaitExpiry();
+
+    const tickPoll = async () => {
+      try {
+        const res = await fetchScaleConfirm(machineId);
+        if (res?.pending) {
+          stopPolling();
+          hydratedAwaitingRef.current = false;
+          await handleConfirmed(res.shift, res.employeeId);
+        }
+      } catch {
+        /* รอ tick ถัดไป */
+      }
+    };
+
+    pollRef.current = setInterval(() => void tickPoll(), 2500);
+    void tickPoll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate one-shot when serverAwaitingScale flips true
+  }, [serverAwaitingScale, serverSessionStartedAt]);
+
+  const handleWaitExpired = async () => {
+    stopPolling();
+    hydratedAwaitingRef.current = false;
+    try {
+      const last = await fetchScaleConfirm(machineId);
+      if (last?.pending) {
+        await handleConfirmed(last.shift, last.employeeId);
+
+        return;
+      }
+    } catch {
+      /* เดินหน้ายกเลิก */
+    }
+    try {
+      await dbCancelSession(machineId);
+    } catch (err) {
+      console.warn('[QueueRow] dbCancelSession after timeout:', err?.message);
+    }
+    setPhase('timeout');
+    setNotice({ type: 'warn', text: t('production.scaleConfirmTimeout') });
+  };
+
   // ─── กดปุ่ม Start Now ──────────────────────────────────────────────
   const handleStart = async () => {
+    hydratedAwaitingRef.current = true;
     setPhase('waiting');
     setNotice(null);
 
-    // สร้างเซสชัน live ใน DB ก่อน — GET scale-confirm อ่านจาก production_sessions เท่านั้น
-    // ถ้าไม่มีแถวนี้ ตาชั่งกด D แล้วเว็บจะ poll ไม่เจอ pending ตลอด
+    // สร้างเซสชันใน DB ก่อน — GET scale-confirm อ่านจาก production_sessions เท่านั้น
     try {
       await dbStartSession(machineId, {
         queueItemId:  item.id ?? null,
@@ -99,9 +237,7 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
       setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
     }
 
-    // ส่งข้อมูลงานไปที่ตาชั่ง ESP32 ผ่าน Laravel
     try {
-      // ส่ง remainingQty เป็น target ถ้ามี (ยอดค้างผลิตจริง) — ถ้าไม่มีใช้ targetQty (เป้า/กะ)
       const scaleTarget = (item.remainingQty > 0) ? item.remainingQty : item.targetQty;
       await storeScaleCommand(machineId, {
         orderId:     item.orderId,
@@ -115,33 +251,40 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
       });
     } catch (err) {
       console.warn('[QueueRow] storeScaleCommand error:', err.message);
-      // ถ้า server ไม่มี — ยังรอ keypad ได้ แต่แจ้งเตือน
       setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
     }
 
-    // poll ทุก 2.5 วินาทีรอการยืนยันจาก Scale ESP32
-    pollRef.current = setInterval(async () => {
+    waitEndsAtRef.current = Date.now() + SCALE_CONFIRM_WAIT_MS;
+    scheduleWaitExpiry();
+
+    const tickPoll = async () => {
       try {
         const res = await fetchScaleConfirm(machineId);
         if (res?.pending) {
           stopPolling();
+          hydratedAwaitingRef.current = false;
           await handleConfirmed(res.shift, res.employeeId);
         }
       } catch {
-        // ไม่สนใจ error ชั่วคราว — รอต่อ
+        /* ชั่วคราว — ข้าม */
       }
-    }, 2500);
+    };
 
-    // timeout 3 นาที → ยกเลิกอัตโนมัติ
-    timeoutRef.current = setTimeout(() => {
-      stopPolling();
-      setPhase('timeout');
-      setNotice({ type: 'warn', text: t('production.scaleConfirmTimeout') });
-    }, CONFIRM_TIMEOUT_MS);
+    pollRef.current = setInterval(() => void tickPoll(), 2500);
+    void tickPoll();
   };
+
+  const secondsLeftWaiting = phase === 'waiting'
+    ? Math.max(0, Math.ceil((waitEndsAtRef.current - Date.now()) / 1000))
+    : 0;
+
+  const mmLeft = String(Math.floor(secondsLeftWaiting / 60)).padStart(2, '0');
+  const ssLeft = String(secondsLeftWaiting % 60).padStart(2, '0');
 
   // ─── ยืนยันแล้ว (กะ + รหัสพนักงาน) ──────────────────────────────
   const handleConfirmed = async (shift, employeeId) => {
+    hydratedAwaitingRef.current = false;
+    stopPolling();
     // บันทึกแถวหัวออเดอร์ลงชีต GAS (วันที่ | เลขใบขอ | รหัสสินค้า | ชื่อสินค้า | เป้า/กะ | กะ | รหัสพนักงาน)
     try {
       await createOrder({
@@ -164,14 +307,21 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
   };
 
   // ─── ยกเลิกการรอ ──────────────────────────────────────────────────
-  const handleCancel = () => {
+  const handleCancel = async () => {
     stopPolling();
+    hydratedAwaitingRef.current = false;
+    try {
+      await dbCancelSession(machineId);
+    } catch (err) {
+      console.warn('[QueueRow] cancel wait:', err?.message);
+    }
     setPhase('idle');
     setNotice(null);
   };
 
   // ─── เริ่มใหม่หลัง timeout ────────────────────────────────────────
   const handleRetry = () => {
+    hydratedAwaitingRef.current = false;
     setPhase('idle');
     setNotice(null);
   };
@@ -266,6 +416,10 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
           <Spinner />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-amber-300">{t('production.waitingConfirm')}</p>
+            <p className="text-[11px] text-amber-400/80 mt-0.5">{t('production.scaleWaitingDetail')}</p>
+            <p className="text-[11px] font-mono text-amber-300/70 mt-0.5">
+              {t('production.scaleConfirmCountdown', { mm: mmLeft, ss: ssLeft })}
+            </p>
             <p className="text-[11px] text-amber-400/60 mt-0.5">{t('production.scaleInstruction')}</p>
           </div>
           <button
@@ -327,8 +481,6 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
 };
 
 // ─── Paused Order banner ──────────────────────────────────────────────────────
-
-const RESUME_TIMEOUT_MS = 3 * 60 * 1000;
 
 const PausedOrderBanner = ({
   pausedOrder,
@@ -397,7 +549,7 @@ const PausedOrderBanner = ({
       stopPolling();
       setPhase('timeout');
       setNotice({ type: 'warn', text: t('production.scaleConfirmTimeout') });
-    }, RESUME_TIMEOUT_MS);
+    }, SCALE_CONFIRM_WAIT_MS);
   };
 
   return (
@@ -544,7 +696,13 @@ const PausedOrderBanner = ({
   );
 };
 
-// ─── Main component ───────────────────────────────────────────────────────────
+const DEFAULT_SESSION_WAIT = Object.freeze({
+  active: false,
+  orderId: '',
+  productCode: '',
+  productName: '',
+  startedAt: null,
+});
 
 const SetupMode = ({
   machineId,
@@ -553,6 +711,7 @@ const SetupMode = ({
   ledIp,
   queue,
   pausedOrder,
+  sessionWait = DEFAULT_SESSION_WAIT,
   onAddToQueue,
   onRemoveFromQueue,
   onStartProduction,
@@ -610,6 +769,8 @@ const SetupMode = ({
           {t('production.setupHeaderHintPre')} <span className="text-green-400 font-semibold">{t('production.startNow')}</span> {t('production.setupHeaderHintPost')}
         </p>
       </div>
+
+      <MachineScaleWaitBanner t={t} sessionWait={sessionWait} />
 
       {/* ── Paused Order banner ── */}
       {pausedOrder && (
@@ -723,6 +884,10 @@ const SetupMode = ({
                 machineId={machineId}
                 sheetName={sheetName}
                 ledIp={ledIp}
+                serverAwaitingScale={Boolean(sessionWait.active && sessionWait.orderId === item.orderId)}
+                serverSessionStartedAt={
+                  sessionWait.active && sessionWait.orderId === item.orderId ? sessionWait.startedAt : null
+                }
                 onStart={(queueItem, confirmation = {}) => onStartProduction({
                   queueItemId:  queueItem.id ?? null,
                   orderId:     queueItem.orderId,

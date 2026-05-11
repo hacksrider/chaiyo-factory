@@ -234,7 +234,13 @@ export default {
         productCode: 'ကုဒ်',
         items: 'ခု',
         pieces: 'ချောင်း',
-        waitingConfirm: 'အတည်ပြုချက်စောင့်နေသည်...',
+        waitingConfirm: 'ချိန်ခွင်မှအတည်ပြုချက်စောင့်နေသည်…',
+        scaleWaitingDetail:
+          'မိနစ် ၁၀ ပြည့်မီ ချိန်ခွင်မှ အတည်ပြုပါ — အချိန် ကုန်လျှင် အမိန့်ပယ်ရှားသွားပါမည်',
+        machineWaitingScaleTitle: 'ဤစက်မှာ ချိန်ခွင်အတည်ပြုချက် စောင့်နေသည်',
+        machineWaitingScaleOrder: ({ orderId, label }) =>
+          `Order ${orderId}${label ? ` · ${label}` : ''}`,
+        scaleConfirmCountdown: ({ mm, ss }) => `ကျန်ချိန် ${mm}:${ss}`,
         scaleInstruction: 'A/B/C နှိပ်ပြီး ကျပ်ရွေး → ဝန်ထမ်းကုဒ်ထည့် → D နှိပ်',
         cancel: 'ပယ်ဖျက်ရန်',
         startNow: 'ယခုစတင်',
@@ -252,7 +258,8 @@ export default {
         resumeWithScale: 'ချိန်ခွင်တွင် ဒေတာသစ်ထည့်ရန်',
         scaleResumeInstruction: 'ချိန်ခွင်သို့ပို့ → A/B/C + ဝန်ထမ်းကုဒ် → D',
         scaleSendFailed: (params) => `ချိန်ခွင်သို့မပို့နိုင်ပါ (${params.msg})`,
-        scaleConfirmTimeout: 'မိနစ် ၃ ပတ်တွင် ချိန်ခွင်မှ အတည်မပြုပါ',
+        scaleConfirmTimeout:
+          'မိနစ် ၁၀ ကုန်သွားပြီ — ချိန်ခွင်အမိန့်ပယ်ပြီး ကိစ္စထပ်စတင်ရန်「ထပ်ကြိုးစားရန်」ကိုနှိပ်ပါ',
         titleRemoveFromQueue: 'Queue မှဖယ်ရှားရန်',
         resumeOrderTitle: 'Order ပြန်စတင်ရန်',
         setupHeaderHintPre: 'ထုတ်လုပ်မှုကိုစာရင်းထဲထည့်ပြီး',

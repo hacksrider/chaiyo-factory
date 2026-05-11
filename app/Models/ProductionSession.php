@@ -66,6 +66,8 @@ class ProductionSession extends Model
             'stdWeight'      => $this->std_weight,
             'minWeight'      => $this->min_weight,
             'maxWeight'      => $this->max_weight,
+            // true เมื่อรอกด D ที่ตาชั่ง (Start Now แต่ยังไม่ live)
+            'waitingScale'   => $this->status === 'awaiting_scale',
             'startedAt'      => $this->started_at?->toISOString(),
             'pausedAt'       => $this->paused_at?->toISOString(),
             'finishedAt'     => $this->finished_at?->toISOString(),
