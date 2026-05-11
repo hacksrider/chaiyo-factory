@@ -1961,7 +1961,7 @@ class ProductionMonitorController extends Controller
      *
      * Body: { queueItemId?, orderId, productCode, productName, targetQty, remainingQty,
      *         planDate, sheetName, ledIp, peType?, size?, length?, pn?, brand?,
-     *         colorStripe?, stdWeight?, minWeight?, maxWeight? }
+     *         colorStripe?, stdWeight?, minWeight?, maxWeight?, shift?, employeeId? }
      */
     public function startSession(Request $request, string $machineId): JsonResponse
     {
@@ -1969,49 +1969,60 @@ class ProductionMonitorController extends Controller
             'queueItemId', 'orderId', 'productCode', 'productName',
             'targetQty', 'remainingQty', 'planDate', 'sheetName', 'ledIp',
             'peType', 'size', 'length', 'pn', 'brand', 'colorStripe',
-            'stdWeight', 'minWeight', 'maxWeight',
+            'stdWeight', 'minWeight', 'maxWeight', 'shift', 'employeeId', 'employee_id',
         ]);
 
         if (empty($data['orderId'])) {
             return response()->json(['success' => false, 'message' => 'orderId required'], 422);
         }
 
+        $shiftIn = trim((string) ($data['shift'] ?? ''));
+        $empIn   = trim((string) ($data['employeeId'] ?? $data['employee_id'] ?? ''));
+
+        $existing = ProductionSession::where('machine_id', $machineId)->first();
+        $sameOrder = $existing && (string) ($existing->order_id ?? '') === (string) $data['orderId'];
+        $continuing = $sameOrder && $existing && in_array((string) ($existing->status ?? ''), ['live', 'paused'], true);
+
+        $sessionRunUlid = ($continuing && ! empty($existing->session_run_ulid))
+            ? (string) $existing->session_run_ulid
+            : (string) Str::ulid();
+
         $now = now();
         $ts  = (int) ($now->timestamp * 1000);
 
         $sessionData = [
-            'machine_id'   => $machineId,
-            'session_run_ulid' => (string) Str::ulid(),
-            'order_id'     => $data['orderId'],
-            'product_code' => $data['productCode'] ?? '',
-            'product_name' => $data['productName'] ?? '',
-            'target_qty'   => (int) ($data['targetQty'] ?? 0),
-            'remaining_qty'=> (int) ($data['remainingQty'] ?? $data['targetQty'] ?? 0),
-            'plan_date'    => $data['planDate'] ?? '',
-            'sheet_name'   => $data['sheetName'] ?? '',
-            'led_ip'       => $data['ledIp'] ?? '',
-            'pe_type'      => $data['peType'] ?? null,
-            'size'         => isset($data['size']) ? (float) $data['size'] : null,
-            'length'       => isset($data['length']) ? (float) $data['length'] : null,
-            'pn'           => isset($data['pn']) ? (float) $data['pn'] : null,
-            'brand'        => $data['brand'] ?? null,
-            'color_stripe' => $data['colorStripe'] ?? null,
-            'std_weight'   => isset($data['stdWeight']) ? (float) $data['stdWeight'] : null,
-            'min_weight'   => isset($data['minWeight']) ? (float) $data['minWeight'] : null,
-            'max_weight'   => isset($data['maxWeight']) ? (float) $data['maxWeight'] : null,
-            'status'       => 'live',
-            'source'       => 'web',
-            'started_at'   => $now,
-            'paused_at'    => null,
-            'finished_at'  => null,
-            'paused_order' => null,
-            'shift'        => '',
-            'employee_id'  => '',
-            'pipe_counter' => 0,
-            'ng_count'     => 0,
-            'total_good_weight' => 0,
-            'total_ng_weight'   => 0,
-            'ts'           => $ts,
+            'machine_id'        => $machineId,
+            'session_run_ulid'  => $sessionRunUlid,
+            'order_id'          => $data['orderId'],
+            'product_code'      => $data['productCode'] ?? '',
+            'product_name'      => $data['productName'] ?? '',
+            'target_qty'        => (int) ($data['targetQty'] ?? 0),
+            'remaining_qty'     => (int) ($data['remainingQty'] ?? $data['targetQty'] ?? 0),
+            'plan_date'         => $data['planDate'] ?? '',
+            'sheet_name'        => $data['sheetName'] ?? '',
+            'led_ip'            => $data['ledIp'] ?? '',
+            'pe_type'           => $data['peType'] ?? null,
+            'size'              => isset($data['size']) ? (float) $data['size'] : null,
+            'length'            => isset($data['length']) ? (float) $data['length'] : null,
+            'pn'                => isset($data['pn']) ? (float) $data['pn'] : null,
+            'brand'             => $data['brand'] ?? null,
+            'color_stripe'      => $data['colorStripe'] ?? null,
+            'std_weight'        => isset($data['stdWeight']) ? (float) $data['stdWeight'] : null,
+            'min_weight'        => isset($data['minWeight']) ? (float) $data['minWeight'] : null,
+            'max_weight'        => isset($data['maxWeight']) ? (float) $data['maxWeight'] : null,
+            'status'            => 'live',
+            'source'            => 'web',
+            'started_at'        => ($continuing && $existing->started_at) ? $existing->started_at : $now,
+            'paused_at'         => null,
+            'finished_at'       => null,
+            'paused_order'      => null,
+            'shift'             => $shiftIn,
+            'employee_id'       => $empIn,
+            'pipe_counter'      => $continuing ? (int) ($existing->pipe_counter ?? 0) : 0,
+            'ng_count'          => $continuing ? (int) ($existing->ng_count ?? 0) : 0,
+            'total_good_weight' => $continuing ? (float) ($existing->total_good_weight ?? 0) : 0,
+            'total_ng_weight'   => $continuing ? (float) ($existing->total_ng_weight ?? 0) : 0,
+            'ts'                => $ts,
         ];
 
         // IMPORTANT: uniq_session_machine = ONE row per machine_id (not historical rows).
@@ -2022,7 +2033,7 @@ class ProductionMonitorController extends Controller
                 $sessionData
             );
 
-            if (!empty($data['queueItemId'])) {
+            if (! empty($data['queueItemId'])) {
                 ProductionQueueItem::where('id', (int) $data['queueItemId'])
                     ->where('machine_id', $machineId)
                     ->update(['status' => 'started']);
@@ -2036,26 +2047,35 @@ class ProductionMonitorController extends Controller
 
         $frontendState = $session ? $session->toFrontendState() : $sessionData;
 
-        // Async dual-write to Google Sheet (create-order header row)
+        // Async dual-write: เมื่อมีกะ+รหัสครบแล้วเท่านั้น (ยืนยันจากตาชั่งแล้ว) — ไม่ซ้ำเมื่อเรียก start ซ้ำระหว่างรอ D
         if ($session) {
-            // Create a temporary ProductionOrder record for the GAS createOrder call
-            $tmpOrder = ProductionOrder::create([
-                'machine_id'        => $machineId,
-                'session_run_ulid'  => $session->session_run_ulid,
-                'order_id'          => $session->order_id,
-                'product_code'      => $session->product_code,
-                'product_name'      => $session->product_name,
-                'target_qty'        => $session->target_qty,
-                'remaining_qty'     => $session->remaining_qty,
-                'plan_date'         => $session->plan_date,
-                'sheet_name'        => $session->sheet_name,
-                'led_ip'            => $session->led_ip,
-                'started_at'        => $session->started_at,
-                'status'            => 'active',
-                'gas_sync_status'   => 'pending',
-            ]);
-            SyncOrderToGas::dispatch($tmpOrder->id, 'createOrder', $this->gasUrl)
-                ->onQueue('gas-sync');
+            $hasIdentity = trim((string) ($session->shift ?? '')) !== ''
+                && trim((string) ($session->employee_id ?? '')) !== '';
+            if ($hasIdentity) {
+                $dupOrder = ProductionOrder::where('machine_id', $machineId)
+                    ->where('session_run_ulid', $session->session_run_ulid)
+                    ->where('status', 'active')
+                    ->exists();
+                if (! $dupOrder) {
+                    $tmpOrder = ProductionOrder::create([
+                        'machine_id'       => $machineId,
+                        'session_run_ulid' => $session->session_run_ulid,
+                        'order_id'         => $session->order_id,
+                        'product_code'     => $session->product_code,
+                        'product_name'     => $session->product_name,
+                        'target_qty'       => $session->target_qty,
+                        'remaining_qty'    => $session->remaining_qty,
+                        'plan_date'        => $session->plan_date,
+                        'sheet_name'       => $session->sheet_name,
+                        'led_ip'           => $session->led_ip,
+                        'started_at'       => $session->started_at,
+                        'status'           => 'active',
+                        'gas_sync_status'  => 'pending',
+                    ]);
+                    SyncOrderToGas::dispatch($tmpOrder->id, 'createOrder', $this->gasUrl)
+                        ->onQueue('gas-sync');
+                }
+            }
         }
 
         // Broadcast as production_updated to match existing frontend SSE handler

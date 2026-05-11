@@ -1,5 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { createOrder, closeOrder, storeScaleCommand, fetchScaleConfirm } from '../api/productionApi';
+import {
+  createOrder,
+  closeOrder,
+  storeScaleCommand,
+  fetchScaleConfirm,
+  dbStartSession,
+} from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 
@@ -64,6 +70,34 @@ const QueueRow = ({ item, position, machineId, sheetName, ledIp, onStart, onRemo
   const handleStart = async () => {
     setPhase('waiting');
     setNotice(null);
+
+    // สร้างเซสชัน live ใน DB ก่อน — GET scale-confirm อ่านจาก production_sessions เท่านั้น
+    // ถ้าไม่มีแถวนี้ ตาชั่งกด D แล้วเว็บจะ poll ไม่เจอ pending ตลอด
+    try {
+      await dbStartSession(machineId, {
+        queueItemId:  item.id ?? null,
+        orderId:      item.orderId,
+        productCode:  item.productCode || '',
+        productName:  item.productName,
+        targetQty:    item.targetQty,
+        remainingQty: item.remainingQty ?? 0,
+        planDate:     item.planDate ?? '',
+        sheetName,
+        ledIp,
+        peType:       item.peType ?? '',
+        size:         item.size ?? null,
+        length:       item.length ?? null,
+        pn:           item.pn ?? null,
+        brand:        item.brand ?? '',
+        colorStripe:  item.colorStripe ?? '',
+        stdWeight:    item.stdWeight ?? null,
+        minWeight:    item.minWeight ?? null,
+        maxWeight:    item.maxWeight ?? null,
+      });
+    } catch (err) {
+      console.warn('[QueueRow] dbStartSession error:', err.message);
+      setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
+    }
 
     // ส่งข้อมูลงานไปที่ตาชั่ง ESP32 ผ่าน Laravel
     try {
