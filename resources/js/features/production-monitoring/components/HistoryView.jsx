@@ -2,27 +2,19 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import { fetchHistory, fetchOrderDetail } from '../api/productionApi';
+import {
+  formatProductionDateTimeBangkok,
+  formatProductionTimeBangkok,
+  bangkokDayStartUtcMs,
+  bangkokDayEndUtcMs,
+} from '../utils/formatProductionBangkok';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const toLocalDate = (v) => {
-  if (!v) return null;
-  const s = String(v);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + 'T00:00:00');
-  return new Date(s);
-};
-
-const fmtDateTime = (v) => {
-  const d = toLocalDate(v);
-  if (!d || isNaN(d)) return '—';
-  return d.toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' });
-};
-
-const fmtTimeOnly = (v) => {
-  const d = toLocalDate(v);
-  if (!d || isNaN(d)) return '—';
-  return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-};
+/** เวลาที่ใช้ในแถวประวัติเหตุ (รวมได้จาก API occurredAt) */
+function eventHistoryInstant(ev) {
+  return ev?.occurredAt ?? ev?.pressedAt ?? ev?.receivedAt ?? null;
+}
 
 const todayStr = () => {
   const d = new Date();
@@ -59,8 +51,8 @@ const exportCsv = (rows, colHeaders, shiftPfx) => {
     colHeaders.map(escape).join(','),
     ...rows.map((r) => [
       r.machine      ?? '',
-      r.timestamp    ? new Date(r.timestamp).toLocaleString('th-TH') : '',
-      r.finishedAt   ? new Date(r.finishedAt).toLocaleString('th-TH') : '',
+      r.timestamp    ? formatProductionDateTimeBangkok(r.timestamp, { dateStyle: 'short', timeStyle: 'short' }) : '',
+      r.finishedAt   ? formatProductionDateTimeBangkok(r.finishedAt, { dateStyle: 'short', timeStyle: 'short' }) : '',
       r.orderId      ?? '',
       r.productCode  ?? '',
       r.productName  ?? '',
@@ -341,19 +333,23 @@ const HistoryView = ({ machines }) => {
     }
 
     if (filters.dateFrom) {
-      const from = new Date(filters.dateFrom + 'T00:00:00').getTime();
-      rows = rows.filter((r) => {
-        if (!r.timestamp) return true;
-        return new Date(r.timestamp).getTime() >= from;
-      });
+      const fromMs = bangkokDayStartUtcMs(filters.dateFrom);
+      if (fromMs != null) {
+        rows = rows.filter((r) => {
+          if (!r.timestamp) return true;
+          return new Date(r.timestamp).getTime() >= fromMs;
+        });
+      }
     }
 
     if (filters.dateTo) {
-      const to = new Date(filters.dateTo + 'T23:59:59').getTime();
-      rows = rows.filter((r) => {
-        if (!r.timestamp) return true;
-        return new Date(r.timestamp).getTime() <= to;
-      });
+      const toMs = bangkokDayEndUtcMs(filters.dateTo);
+      if (toMs != null) {
+        rows = rows.filter((r) => {
+          if (!r.timestamp) return true;
+          return new Date(r.timestamp).getTime() <= toMs;
+        });
+      }
     }
 
     if (filters.search) {
@@ -428,8 +424,8 @@ const HistoryView = ({ machines }) => {
     const events = Array.isArray(detailData?.events) ? detailData.events : [];
     const rows = [...events];
     rows.sort((a, b) => {
-      const ta = a?.receivedAt ?? a?.pressedAt;
-      const tb = b?.receivedAt ?? b?.pressedAt;
+      const ta = eventHistoryInstant(a);
+      const tb = eventHistoryInstant(b);
       const na = ta ? new Date(ta).getTime() : 0;
       const nb = tb ? new Date(tb).getTime() : 0;
       if (na !== nb) {
@@ -456,7 +452,9 @@ const HistoryView = ({ machines }) => {
 
     const rows = events.map((ev) => ({
       [t('production.historyEventColSeq')]: ev?.lineOrdinal ?? ev?.seq ?? '',
-      [t('production.historyEventColTime')]: ev?.pressedAt ? fmtDateTime(ev.pressedAt) : '',
+      [t('production.historyEventColTime')]: eventHistoryInstant(ev)
+        ? formatProductionDateTimeBangkok(eventHistoryInstant(ev), { dateStyle: 'short', timeStyle: 'medium' })
+        : '',
       [t('production.historyEventColType')]: ev?.type === 'good' ? t('production.historyTypeGood') : t('production.historyTypeNg'),
       [t('production.historyEventColWeight')]: ev?.weight ?? '',
       'ProductCode': productCode,
@@ -613,10 +611,10 @@ const HistoryView = ({ machines }) => {
                         {row.machine ?? '—'}
                       </td>
                       <td className="px-2 py-2 text-xs text-gray-500 whitespace-nowrap text-center w-[1%]">
-                        {fmtDateTime(row.timestamp)}
+                        {formatProductionDateTimeBangkok(row.timestamp, { dateStyle: 'short', timeStyle: 'short' })}
                       </td>
                       <td className="px-2 py-2 text-xs text-gray-500 whitespace-nowrap text-center w-[1%]">
-                        {row.finishedAt ? fmtDateTime(row.finishedAt) : (
+                        {row.finishedAt ? formatProductionDateTimeBangkok(row.finishedAt, { dateStyle: 'short', timeStyle: 'short' }) : (
                           String(row.status ?? '').toLowerCase() === 'in-progress'
                             ? <span className="text-amber-400/70">{t('production.historyInProgressCell')}</span>
                             : '—'
@@ -734,9 +732,16 @@ const HistoryView = ({ machines }) => {
 
               {!detailLoading && !detailError && (
                 <div>
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                     <p className="text-xs font-semibold text-gray-400">{t('production.historyEventsTitle')}</p>
-                    <p className="text-xs text-gray-600">{sortedDetailEvents.length} {t('common.times')}</p>
+                    <div className="text-xs text-gray-500 text-right space-x-2">
+                      <span>
+                        {sortedDetailEvents.length} {t('common.times')}
+                        {detailData?.counts
+                          ? ` · ${t('production.historyTypeGood')} ${detailData.counts.good} / ${t('production.historyTypeNg')} ${detailData.counts.ng}`
+                          : ''}
+                      </span>
+                    </div>
                   </div>
 
                   {sortedDetailEvents.length === 0 ? (
@@ -760,9 +765,18 @@ const HistoryView = ({ machines }) => {
                               </td>
                               <td
                                 className="px-2 py-1.5 text-center text-[11px] text-gray-400 whitespace-nowrap"
-                                title={ev?.pressedAt ? fmtDateTime(ev.pressedAt) : ''}
+                                title={
+                                  eventHistoryInstant(ev)
+                                    ? formatProductionDateTimeBangkok(eventHistoryInstant(ev), {
+                                      dateStyle: 'medium',
+                                      timeStyle: 'medium',
+                                    })
+                                    : ''
+                                }
                               >
-                                {ev?.pressedAt ? fmtTimeOnly(ev.pressedAt) : '—'}
+                                {eventHistoryInstant(ev)
+                                  ? formatProductionTimeBangkok(eventHistoryInstant(ev))
+                                  : '—'}
                               </td>
                               <td className="px-2 py-1.5 text-center whitespace-nowrap">
                                 {ev?.type === 'good' ? (

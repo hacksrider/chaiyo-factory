@@ -24,6 +24,7 @@ import {
 } from './api/productionApi';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { SSE_EVENTS } from './SSE_EVENTS';
+import { scaleEventDedupKey } from './utils/scaleEventDedup';
 
 // ─── withRetry — retry async fn สูงสุด N ครั้ง ด้วย delay แบบ linear backoff ──
 const withRetry = async (fn, retries = 3, baseDelayMs = 1500) => {
@@ -572,13 +573,8 @@ const ProductionMonitoring = () => {
   // SSE handler for scale_weight events (real-time weight from scale ESP32)
   const handleSseScaleWeight = useCallback(({ machineId, event: ev }) => {
     if (!machineId || !ev) return;
-    const dedupKey = (() => {
-      if (ev?.eventId != null && ev.eventId !== '') return `eid:${ev.eventId}`;
-      const w = Number(ev.weight);
-      const wKey = Number.isFinite(w) ? w.toFixed(4) : String(ev.weight ?? '');
-      return `${ev.pressedAt || ''}_${wKey}_${ev.type || ''}`;
-    })();
-    if (seenScaleEventsRef.current.has(dedupKey)) return;
+    const dedupKey = scaleEventDedupKey(ev);
+    if (!dedupKey || seenScaleEventsRef.current.has(dedupKey)) return;
     seenScaleEventsRef.current.add(dedupKey);
     window.dispatchEvent(new CustomEvent('sse:scale_weight', {
       detail: { machineId, event: ev },
@@ -1247,27 +1243,19 @@ const ProductionMonitoring = () => {
                         ...(eidNorm !== undefined ? { eventId: eidNorm } : {}),
                       };
                       const mid = selectedMachineId;
-
+                      const live = getMachineState(mid);
+                      const incomingKey = scaleEventDedupKey(type === 'good' ? { ...ev, type: 'good' } : { ...ev, type: 'ng' });
+                      if (!incomingKey) return;
                       if (type === 'good') {
-                        const live = getMachineState(mid);
-                        if (
-                          eidNorm !== undefined &&
-                          (live.goodEvents ?? []).some(
-                            (g) => String(g.eventId) === String(eidNorm),
-                          )
-                        ) {
-                          return;
-                        }
-                      } else if (type === 'ng') {
-                        const live = getMachineState(mid);
-                        if (
-                          eidNorm !== undefined &&
-                          (live.ngEvents ?? []).some(
-                            (g) => String(g.eventId) === String(eidNorm),
-                          )
-                        ) {
-                          return;
-                        }
+                        const dup = (live.goodEvents ?? []).some(
+                          (g) => incomingKey === scaleEventDedupKey({ ...g, type: 'good' }),
+                        );
+                        if (dup) return;
+                      } else {
+                        const dup = (live.ngEvents ?? []).some(
+                          (g) => incomingKey === scaleEventDedupKey({ ...g, type: 'ng' }),
+                        );
+                        if (dup) return;
                       }
 
                       const snapBefore = getMachineState(mid);

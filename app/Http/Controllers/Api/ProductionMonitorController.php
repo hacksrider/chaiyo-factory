@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
 
@@ -1014,8 +1015,13 @@ class ProductionMonitorController extends Controller
                     }
 
                     $pressedAtDb = $payload['pressedAt'] ?? null;
+                    // ESP ยังไม่ sync NTP → millis: uptime — เซิร์ฟเวอร์บันทึกเวลาใกล้เคียง "กดแล้วส่งถึง" เพื่อประวัติไม่เพี้ยน
                     if (is_string($pressedAtDb) && str_starts_with($pressedAtDb, 'millis:')) {
-                        $pressedAtDb = null;
+                        try {
+                            $pressedAtDb = Carbon::parse((string) ($payload['receivedAt'] ?? now()));
+                        } catch (\Throwable $e) {
+                            $pressedAtDb = now();
+                        }
                     }
 
                     $weightEvent = ProductionWeightEvent::create([
@@ -1178,24 +1184,24 @@ class ProductionMonitorController extends Controller
 
         $models = $q->get();
 
-        $events = $models->map(static function (ProductionWeightEvent $e) {
-            return [
-                'eventId'    => $e->id,
-                'weight'     => (float) $e->weight,
-                'type'       => $e->type,
-                'pressedAt'  => $e->pressed_at ? $e->pressed_at->toISOString() : ($e->received_at ? $e->received_at->toISOString() : ''),
-                'receivedAt' => $e->received_at ? $e->received_at->toISOString() : '',
-            ];
-        })->values()->all();
+        $uniq = $this->dedupeWeightEventsPreserveOrder($models);
+        $sorted = $uniq->sortBy(function (ProductionWeightEvent $e) {
+            $t = $e->pressed_at ?? $e->received_at ?? $e->created_at;
+
+            return $t instanceof Carbon ? $t->getTimestamp() : 0;
+        })->values();
+
+        $events = $sorted->map(fn (ProductionWeightEvent $e) => $this->mapWeightEventForApi($e))->all();
 
         $latestTs      = null;
         $latestEventId = 0;
         if ($models->isNotEmpty()) {
-            $last = $models->last();
-            $latestEventId = (int) $last->id;
-            $latestTs      = $last->received_at
-                ? $last->received_at->toISOString()
-                : ($last->pressed_at ? $last->pressed_at->toISOString() : null);
+            /** @var ProductionWeightEvent $rawLast */
+            $rawLast       = $models->last();
+            $latestEventId = (int) $rawLast->id;
+            $latestTs      = $rawLast->received_at
+                ? $rawLast->received_at->toISOString()
+                : ($rawLast->pressed_at ? $rawLast->pressed_at->toISOString() : null);
         }
 
         return response()->json([
@@ -2142,11 +2148,29 @@ class ProductionMonitorController extends Controller
 
         // Allow frontend to override counters (e.g., final sync before finish)
         $skipGasDispatch = $request->boolean('skipGasDispatch');
+        $sessionRunUlid  = $session->session_run_ulid;
+
+        $dbAgg = null;
+        if (is_string($sessionRunUlid) && $sessionRunUlid !== '') {
+            $dbAgg = $this->summarizeDedupedWeightEventsForRun(
+                $machineId,
+                (string) $session->order_id,
+                $sessionRunUlid
+            );
+        }
+
+        // แหล่งจริง: แถวใน production_weight_events (หลัง dedupe) ให้ตรงกับ popup ประวัติ
         $goodCount       = (int) ($request->input('goodCount',       $session->pipe_counter));
         $ngCount         = (int) ($request->input('ngCount',         $session->ng_count));
         $totalGoodWeight = (float) ($request->input('totalGoodWeight', $session->total_good_weight));
         $totalNgWeight   = (float) ($request->input('totalNgWeight',  $session->total_ng_weight));
-        $sessionRunUlid  = $session->session_run_ulid;
+
+        if ($dbAgg !== null && (($dbAgg['totalRows'] ?? 0) > 0 || ($dbAgg['goodCount'] ?? 0) > 0 || ($dbAgg['ngCount'] ?? 0) > 0)) {
+            $goodCount       = $dbAgg['goodCount'];
+            $ngCount         = $dbAgg['ngCount'];
+            $totalGoodWeight = $dbAgg['totalGoodWeight'];
+            $totalNgWeight   = $dbAgg['totalNgWeight'];
+        }
 
         $prodOrder = null;
         DB::transaction(function () use ($session, $machineId, $now, $goodCount, $ngCount, $totalGoodWeight, $totalNgWeight, $skipGasDispatch, &$prodOrder, $sessionRunUlid) {
@@ -2200,15 +2224,16 @@ class ProductionMonitorController extends Controller
             ]);
         });
 
-        // ถ้ามีความไม่ตรงกัน ช่วย debug — ผูกกับ session_run_ulid ของรอบนั้นเท่านั้น
-        $liveOrderId = (string) $session->order_id;
-        if ($sessionRunUlid) {
-            $dbGood = ProductionWeightEvent::where('machine_id', $machineId)
+        $liveOrderIdLog = (string) $session->order_id;
+
+        // แถว raw ใน weight_events อาจมากกว่า (retry) — goodCount ตอน finish อิง dedupe แล้ว
+        if ($sessionRunUlid && $dbAgg !== null) {
+            $rawGood = (int) ProductionWeightEvent::where('machine_id', $machineId)
                 ->where('session_run_ulid', $sessionRunUlid)->where('type', 'good')->count();
-            $dbNg = ProductionWeightEvent::where('machine_id', $machineId)
+            $rawNg = (int) ProductionWeightEvent::where('machine_id', $machineId)
                 ->where('session_run_ulid', $sessionRunUlid)->where('type', 'ng')->count();
-            if ($dbGood !== $goodCount || $dbNg !== $ngCount) {
-                Log::info("[finishSession] session counters vs DB weight_events counts — machine={$machineId}, run={$sessionRunUlid}, order={$liveOrderId}, session good/ng={$goodCount}/{$ngCount}, db good/ng={$dbGood}/{$dbNg}");
+            if ($rawGood !== $goodCount || $rawNg !== $ngCount) {
+                Log::info("[finishSession] weight_events raw vs deduped — machine={$machineId}, order={$liveOrderIdLog}, raw good/ng={$rawGood}/{$rawNg}, folded good/ng={$goodCount}/{$ngCount}");
             }
         }
 
@@ -2317,39 +2342,137 @@ class ProductionMonitorController extends Controller
             return response()->json(['message' => 'machineId, orderId และ sessionRunUlid จำเป็น'], 422);
         }
 
-        $events = ProductionWeightEvent::where('machine_id', $machineId)
+        $models = ProductionWeightEvent::where('machine_id', $machineId)
             ->where('order_id', $orderId)
             ->where('session_run_ulid', $sessionRunUlid)
-            ->orderByRaw('COALESCE(received_at, pressed_at, created_at) ASC')
             ->orderBy('id')
-            ->get()
-            ->map(static function (ProductionWeightEvent $e) {
-                $lineOrd = $e->good_seq ?? $e->ng_seq ?? $e->seq;
+            ->get();
 
-                return [
-                    'id'        => $e->id,
-                    'seq'       => $lineOrd,
-                    'lineOrdinal' => $lineOrd,
-                    'auditSeq'    => $e->seq,
-                    'goodSeq'   => $e->good_seq,
-                    'ngSeq'     => $e->ng_seq,
-                    'type'      => $e->type,
-                    'weight'    => $e->weight,
-                    'pressedAt' => $e->pressed_at
-                        ? $e->pressed_at->toISOString()
-                        : ($e->received_at ? $e->received_at->toISOString() : ''),
-                    'receivedAt' => $e->received_at ? $e->received_at->toISOString() : null,
-                    'employeeId' => $e->employee_id ?? '',
-                    'shift'      => $e->shift ?? '',
-                ];
-            })
-            ->values()
-            ->all();
+        $uniq = $this->dedupeWeightEventsPreserveOrder($models);
+        $sorted = $uniq->sortBy(function (ProductionWeightEvent $e) {
+            $t = $e->pressed_at ?? $e->received_at ?? $e->created_at;
+
+            return $t instanceof Carbon ? $t->getTimestamp() : 0;
+        })->values();
+
+        $events = $sorted->map(fn (ProductionWeightEvent $e) => $this->mapWeightEventForApi($e))->all();
+
+        $goods = collect($events)->where('type', 'good');
+        $ngs = collect($events)->where('type', 'ng');
 
         return response()->json([
             'detail' => [
                 'events' => $events,
+                'counts' => [
+                    'good'       => $goods->count(),
+                    'ng'         => $ngs->count(),
+                    'totalLines' => count($events),
+                ],
             ],
         ]);
+    }
+
+    /**
+     * Dedupe เหตุซ้ำ (retry / POST ซ้ำได้ good_seq หรือ ng_seq เดิม) — เก็บแถว id แรก
+     * แถวที่ไม่มีลำดับ type-specific: dedupe ตาม เวลา(วินาที)+น้ำหนัก+type
+     *
+     * @param  Collection<int, ProductionWeightEvent>  $rows  เรียง id ASC
+     * @return Collection<int, ProductionWeightEvent>
+     */
+    private function dedupeWeightEventsPreserveOrder(Collection $rows): Collection
+    {
+        $seen = [];
+        $out = [];
+
+        foreach ($rows as $e) {
+            $type = (string) ($e->type ?? '');
+
+            if ($type === 'good' && $e->good_seq !== null) {
+                $k = 'seq:g:'.$e->good_seq;
+                if (! empty($seen[$k])) {
+                    continue;
+                }
+                $seen[$k] = true;
+                $out[] = $e;
+
+                continue;
+            }
+
+            if ($type === 'ng' && $e->ng_seq !== null) {
+                $k = 'seq:n:'.$e->ng_seq;
+                if (! empty($seen[$k])) {
+                    continue;
+                }
+                $seen[$k] = true;
+                $out[] = $e;
+
+                continue;
+            }
+
+            $tsMoment = $e->pressed_at ?? $e->received_at ?? $e->created_at;
+            $pfx = 'x';
+            if ($tsMoment instanceof Carbon) {
+                $pfx = substr($tsMoment->clone()->utc()->toISOString(), 0, 19);
+            }
+            $fk = 'fp:'.$type.'|'.number_format((float) $e->weight, 4, '.', '').'|'.$pfx;
+            if (! empty($seen[$fk])) {
+                continue;
+            }
+            $seen[$fk] = true;
+            $out[] = $e;
+        }
+
+        return new Collection($out);
+    }
+
+    /**
+     * @return array{totalRows:int, goodCount:int, ngCount:int, totalGoodWeight:float, totalNgWeight:float}
+     */
+    private function summarizeDedupedWeightEventsForRun(string $machineId, string $orderId, string $runUlid): array
+    {
+        $rows = ProductionWeightEvent::query()
+            ->where('machine_id', $machineId)
+            ->where('order_id', $orderId)
+            ->where('session_run_ulid', $runUlid)
+            ->orderBy('id')
+            ->get();
+
+        $uniq = $this->dedupeWeightEventsPreserveOrder($rows);
+        $goods = $uniq->where('type', 'good');
+        $ngs = $uniq->where('type', 'ng');
+
+        return [
+            'totalRows'       => $uniq->count(),
+            'goodCount'       => $goods->count(),
+            'ngCount'         => $ngs->count(),
+            'totalGoodWeight' => (float) $goods->sum(fn (ProductionWeightEvent $x) => (float) $x->weight),
+            'totalNgWeight'   => (float) $ngs->sum(fn (ProductionWeightEvent $x) => (float) $x->weight),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mapWeightEventForApi(ProductionWeightEvent $e): array
+    {
+        $lineOrd = $e->good_seq ?? $e->ng_seq ?? $e->seq;
+        $occurred = $e->pressed_at ?? $e->received_at;
+
+        return [
+            'id'            => $e->id,
+            'eventId'       => $e->id,
+            'seq'           => $lineOrd,
+            'lineOrdinal'   => $lineOrd,
+            'auditSeq'      => $e->seq,
+            'goodSeq'       => $e->good_seq,
+            'ngSeq'         => $e->ng_seq,
+            'type'          => $e->type,
+            'weight'        => (float) $e->weight,
+            'pressedAt'     => $e->pressed_at ? $e->pressed_at->toISOString() : null,
+            'receivedAt'    => $e->received_at ? $e->received_at->toISOString() : null,
+            'occurredAt'    => $occurred ? $occurred->toISOString() : null,
+            'employeeId'    => $e->employee_id ?? '',
+            'shift'         => $e->shift ?? '',
+        ];
     }
 }

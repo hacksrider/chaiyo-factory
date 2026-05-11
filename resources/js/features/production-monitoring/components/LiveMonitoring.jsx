@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { scaleEventDedupKey } from '../utils/scaleEventDedup';
+import {
+  formatProductionDateBangkok,
+  formatProductionTimeBangkok,
+  parseProductionInstant,
+} from '../utils/formatProductionBangkok';
 import StatCard from './StatCard';
 import { updateWeight, closeOrder, createOrder, fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
@@ -307,6 +313,9 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
   const isGood = type === 'good';
   const { language } = useLanguage();
   const { t } = useTranslation(language);
+
+  const liveEvInstant = (ev) => ev?.occurredAt ?? ev?.pressedAt ?? ev?.receivedAt ?? null;
+
   const title  = isGood ? t('production.goodListTitle') : t('production.ngListTitle');
   const accent = isGood
     ? { bg: 'bg-green-500/8', border: 'border-green-500/25', header: 'bg-green-500/10 border-green-500/20', title: 'text-green-300', badge: 'bg-green-500/15 border-green-500/30 text-green-400', dot: 'bg-green-400', row: 'text-green-200', rowBg: 'bg-green-500/5 border-green-500/15' }
@@ -315,35 +324,32 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
   // sort: 'desc' = ล่าสุดอยู่บน, 'asc' = เวลาเก่าอยู่บน (default)
   const [sortMode, setSortMode] = useState('asc');
 
-  const fmt = (isoStr) => {
-    if (!isoStr) return '—';
-    try {
-      const d = new Date(isoStr);
-      if (isNaN(d.getTime())) return isoStr;
-      return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    } catch { return isoStr; }
+  const toTsEv = (ev) => {
+    const iso = liveEvInstant(ev);
+    const d = parseProductionInstant(iso);
+
+    return d ? d.getTime() : NaN;
   };
 
-  const fmtDate = (isoStr) => {
-    if (!isoStr) return '';
-    try {
-      const d = new Date(isoStr);
-      if (isNaN(d.getTime())) return '';
-      return d.toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' });
-    } catch { return ''; }
-  };
+  const typ = isGood ? 'good' : 'ng';
 
-  const toTs = (isoStr) => {
-    if (!isoStr) return NaN;
-    const d = new Date(isoStr);
-    const t = d.getTime();
-    return isNaN(t) ? NaN : t;
-  };
+  /** ซ้ายขวาเหตุเดียวกันใน state (SSE + poll) — badge/รายการไม่ควรคูณสอง */
+  const uniqueEvents = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const raw of events ?? []) {
+      const k = scaleEventDedupKey({ ...raw, type: typ });
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(raw);
+    }
+    return out;
+  }, [events, typ]);
 
-  const base = [...(events ?? [])];
+  const base = [...uniqueEvents];
   base.sort((a, b) => {
-    const ta = toTs(a?.pressedAt);
-    const tb = toTs(b?.pressedAt);
+    const ta = toTsEv(a);
+    const tb = toTsEv(b);
     // ถ้า parse ไม่ได้ → คงลำดับเดิม
     if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
     return sortMode === 'asc' ? (ta - tb) : (tb - ta);
@@ -364,7 +370,7 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
             <span className={`w-2.5 h-2.5 rounded-full ${accent.dot} flex-shrink-0`} />
             <h3 className={`text-base font-bold ${accent.title}`}>{title}</h3>
             <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${accent.badge}`}>
-              {events?.length ?? 0} {t('production.items')}
+              {uniqueEvents.length} {t('production.items')}
             </span>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -426,9 +432,13 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
               {t('production.noItems')}
             </div>
           ) : (
-            list.map((ev, idx) => (
+            list.map((ev, idx) => {
+              const when = liveEvInstant(ev);
+              const datePart = formatProductionDateBangkok(when);
+
+              return (
               <div
-                key={idx}
+                key={scaleEventDedupKey({ ...ev, type: typ }) || `row-${idx}`}
                 className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 ${accent.rowBg}`}
               >
                 {/* Sequence number */}
@@ -440,14 +450,15 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
                     {parseFloat(ev.weight).toFixed(3)} kg
                   </p>
                   <p className="text-[11px] text-gray-500 mt-0.5">
-                    {fmtDate(ev.pressedAt) && (
-                      <span className="mr-1.5">{fmtDate(ev.pressedAt)}</span>
+                    {datePart && (
+                      <span className="mr-1.5">{datePart}</span>
                     )}
-                    {fmt(ev.pressedAt)}
+                    {formatProductionTimeBangkok(when)}
                   </p>
                 </div>
               </div>
-            ))
+            );
+            })
           )}
         </div>
 
@@ -697,13 +708,8 @@ const LiveMonitoring = ({
 
   // ── Process a single scale weight event (dedup + dispatch) ──────────────
   const processScaleEvent = useCallback((ev) => {
-    const dedupKey = (() => {
-      if (ev?.eventId != null && ev.eventId !== '') return `eid:${ev.eventId}`;
-      const w = Number(ev.weight);
-      const wKey = Number.isFinite(w) ? w.toFixed(4) : String(ev.weight ?? '');
-      return `${ev.pressedAt || ''}_${wKey}_${ev.type || ''}`;
-    })();
-    if (seenEventsRef.current.has(dedupKey)) return;
+    const dedupKey = scaleEventDedupKey(ev);
+    if (!dedupKey || seenEventsRef.current.has(dedupKey)) return;
     seenEventsRef.current.add(dedupKey);
 
     const weight = parseFloat(ev.weight) || 0;
@@ -887,7 +893,10 @@ const LiveMonitoring = ({
           <p className="text-sm text-gray-400 mt-1">
             {t('production.order')}: <span className="text-white font-mono">{machineState.orderId}</span>
             {machineState.startedAt && (
-              <span className="ml-3 text-gray-600">{t('production.started')} {new Date(machineState.startedAt).toLocaleTimeString()}</span>
+              <span className="ml-3 text-gray-600">
+                {t('production.started')}{' '}
+                {formatProductionTimeBangkok(machineState.startedAt)}
+              </span>
             )}
           </p>
           {/* แสดงพนักงานและกะ (จาก Scale ESP32 confirm) */}
