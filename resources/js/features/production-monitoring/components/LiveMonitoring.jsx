@@ -646,6 +646,7 @@ const LiveMonitoring = ({
   machineId,
   machineLabel,
   machineState,
+  resumeScalePollSinceId, // GET scale-weight incremental cursor หลัง hydrate จากหน้า index (กัน poll ซ้ำรายการเก่า)
   onWeightUpdate,   // (type: 'good'|'ng', weight: number, event) → update state
   onCloseOrder,
   onPauseAndStart,
@@ -771,6 +772,19 @@ const LiveMonitoring = ({
   useEffect(() => {
     scaleEventsSinceIdRef.current = 0;
   }, [machineId, machineState?.sessionRunUlid, machineState?.orderId]);
+
+  /** จาก ProductionMonitoring — เริ่ม poll จาก id ล่าสุดที่ hydrate จาก DB แล้ว */
+  useEffect(() => {
+    const n = Number(resumeScalePollSinceId);
+    if (Number.isFinite(n) && n > 0 && n > scaleEventsSinceIdRef.current) {
+      scaleEventsSinceIdRef.current = n;
+    }
+  }, [
+    machineId,
+    machineState?.sessionRunUlid,
+    machineState?.orderId,
+    resumeScalePollSinceId,
+  ]);
 
   useEffect(() => {
     if (!machineId) return;

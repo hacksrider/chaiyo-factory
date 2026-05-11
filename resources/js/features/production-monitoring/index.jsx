@@ -21,10 +21,69 @@ import {
   dbStartSession,
   dbGetSession,
   dbCancelSession,
+  fetchScaleWeights,
 } from './api/productionApi';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { SSE_EVENTS } from './SSE_EVENTS';
 import { scaleEventDedupKey } from './utils/scaleEventDedup';
+
+/**
+ * GET scale-weight rows → เหมือนข้อความใน goodEvents/ngEvents (ไม่แตะเลขใน DB-first)
+ */
+function apiWeightRowsToDedupLists(events) {
+  const goods = [];
+  const ngs = [];
+  const seenG = new Set();
+  const seenN = new Set();
+  for (const raw of events ?? []) {
+    const typ = raw.type === 'ng' ? 'ng' : 'good';
+    const key = scaleEventDedupKey({ ...raw, type: typ });
+    if (!key) continue;
+    const weight = Number(raw.weight) || 0;
+    const pressedAt =
+      raw.occurredAt ?? raw.pressedAt ?? raw.receivedAt ?? new Date().toISOString();
+    const eid = raw.eventId ?? raw.id;
+    const entry = {
+      weight,
+      pressedAt,
+      ...(eid != null ? { eventId: eid } : {}),
+    };
+    if (typ === 'good') {
+      if (seenG.has(key)) continue;
+      seenG.add(key);
+      goods.push(entry);
+    } else {
+      if (seenN.has(key)) continue;
+      seenN.add(key);
+      ngs.push(entry);
+    }
+  }
+  return { goods, ngs };
+}
+
+function mergeDedupGoodNgLists(prevGood, prevNg, addGoods, addNgs) {
+  const mergedG = [...(prevGood ?? [])];
+  const seenG = new Set(
+    mergedG.map((row) => scaleEventDedupKey({ ...row, type: 'good' })).filter(Boolean),
+  );
+  for (const row of addGoods ?? []) {
+    const key = scaleEventDedupKey({ ...row, type: 'good' });
+    if (!key || seenG.has(key)) continue;
+    seenG.add(key);
+    mergedG.push(row);
+  }
+  const mergedN = [...(prevNg ?? [])];
+  const seenN = new Set(
+    mergedN.map((row) => scaleEventDedupKey({ ...row, type: 'ng' })).filter(Boolean),
+  );
+  for (const row of addNgs ?? []) {
+    const key = scaleEventDedupKey({ ...row, type: 'ng' });
+    if (!key || seenN.has(key)) continue;
+    seenN.add(key);
+    mergedN.push(row);
+  }
+  return { mergedG, mergedN };
+}
 
 // ─── withRetry — retry async fn สูงสุด N ครั้ง ด้วย delay แบบ linear backoff ──
 const withRetry = async (fn, retries = 3, baseDelayMs = 1500) => {
@@ -290,6 +349,11 @@ const ProductionMonitoring = () => {
   const [view, setView] = useState('machines'); // 'machines' | 'history' | 'plan' | 'dashboard'
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  /** หลังรีเฟรช: DB ใส่ pipeCounter แล้วแต่ goodEvents=[] → poll ดึงเหตุซ้ำแล้ว onWeightUpdate +1 ซ้ำ (เลขคูณสอง) */
+  const scaleEventsHydratedKeyRef = useRef(new Set());
+  const scaleHydrationInflightRef = useRef(new Set());
+  const [scalePollResumeByMachine, setScalePollResumeByMachine] = useState({});
+
   /** ซิงค์จาก URL เฉพาะเมื่อ segment ใน URL เปลี่ยนจริง (ลิงก์แชร์ / กดปุ่มป้ายไฟ / browser back) — ไม่รันซ้ำทุกครั้งที่ `machines` เป็น array ใหม่ */
   const lastLedUrlSegmentRef = useRef(undefined);
 
@@ -312,29 +376,6 @@ const ProductionMonitoring = () => {
       setSelectedMachineId(machines[0].id);
     }
   }, [machines, selectedMachineId, urlLedMachineId]);
-
-  // Load DB queue and session for each machine once the machine list is ready
-  const dbInitDoneRef = useRef(false);
-  useEffect(() => {
-    if (machines.length === 0 || dbInitDoneRef.current) return;
-    dbInitDoneRef.current = true;
-    Promise.allSettled(
-      machines.map(async (m) => {
-        try {
-          const [qRes, sRes] = await Promise.allSettled([
-            dbGetQueue(m.id),
-            dbGetSession(m.id),
-          ]);
-          if (qRes.status === 'fulfilled' && Array.isArray(qRes.value?.queue)) {
-            setQueueFromDb(m.id, qRes.value.queue);
-          }
-          if (sRes.status === 'fulfilled' && sRes.value?.session) {
-            applyDbSessionUpdate({ machineId: m.id, session: sRes.value.session });
-          }
-        } catch { /* non-critical, cache-based state will still work */ }
-      }),
-    );
-  }, [machines]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // /led-sign/:machineId → เลือกเครื่องตาม URL (เมื่อ URL segment หรือรายการเครื่องพร้อมใช้งาน)
   useEffect(() => {
@@ -368,6 +409,13 @@ const ProductionMonitoring = () => {
   const isLive = machineState?.mode === 'live';
 
   const liveCount = Object.values(allStates).filter((s) => s?.mode === 'live').length;
+
+  const liveScalePollResumeSinceId =
+    selectedMachineId && machineState?.sessionRunUlid
+      ? scalePollResumeByMachine[selectedMachineId]?.ulid === machineState.sessionRunUlid
+        ? scalePollResumeByMachine[selectedMachineId]?.sinceId
+        : undefined
+      : undefined;
 
   /** สร้าง payload สำหรับ scale-live — ถ้า live=true แนบข้อมูล session เต็ม */
   const buildScaleLivePayload = useCallback((machineId, isLive) => {
@@ -467,6 +515,107 @@ const ProductionMonitoring = () => {
   // Dedup tracker for scale_weight events received via SSE
   // (each browser has its own seen-set — server keeps all events, clients dedup locally)
   const seenScaleEventsRef = useRef(new Set());
+
+  /**
+   * โหลดรายการ production_weight_events ใส่ goodEvents/ngEvents (ไม่ใช้ +1 pipeCounter — เก็บตรง DB แล้ว)
+   * + เก็บ sinceId เพื่อ poll อย่ามาอ่านย้อนของเก่ารอบเดียวกัน
+   * @param {{ bypassGate?: boolean }} opts — เวลารีโหลดจาก API ครั้งแรกก่อนที่ ref/state จะทัน sync
+   */
+  const hydrateLiveWeightEventsFromDb = useCallback(
+    async (machineId, sessionRunUlid, opts = {}) => {
+      if (!machineId || !sessionRunUlid) return;
+      const hk = `${machineId}:${sessionRunUlid}`;
+      if (scaleEventsHydratedKeyRef.current.has(hk)) return;
+
+      const { bypassGate = false, pipeAndNgHint } = opts;
+      if (!bypassGate) {
+        const st = allStatesRef.current[machineId];
+        const evt = (st?.goodEvents?.length ?? 0) + (st?.ngEvents?.length ?? 0);
+        const sum = (st?.pipeCounter ?? 0) + (st?.ngCount ?? 0);
+        if (evt > 0 || sum <= 0) return;
+      }
+
+      if (scaleHydrationInflightRef.current.has(hk)) return;
+      scaleHydrationInflightRef.current.add(hk);
+      try {
+        const wRes = await fetchScaleWeights(machineId, { sinceId: 0 });
+        const events = wRes?.events ?? [];
+        let latestId = Number(wRes?.latestEventId);
+        if (!Number.isFinite(latestId)) latestId = 0;
+        if (latestId <= 0) {
+          for (const e of events) {
+            const id = Number(e?.id ?? e?.eventId);
+            if (Number.isFinite(id) && id > latestId) latestId = id;
+          }
+        }
+        const { goods, ngs } = apiWeightRowsToDedupLists(events);
+        updateMachineState(machineId, (prev) => {
+          if (prev.sessionRunUlid !== sessionRunUlid) return null;
+          const { mergedG, mergedN } = mergeDedupGoodNgLists(prev.goodEvents, prev.ngEvents, goods, ngs);
+          const prevGe = prev.goodEvents?.length ?? 0;
+          const prevNe = prev.ngEvents?.length ?? 0;
+          if (mergedG.length === prevGe && mergedN.length === prevNe) return null;
+          return { goodEvents: mergedG, ngEvents: mergedN };
+        });
+        const sumCounts =
+          typeof pipeAndNgHint === 'number' && Number.isFinite(pipeAndNgHint)
+            ? pipeAndNgHint
+            : (allStatesRef.current[machineId]?.pipeCounter ?? 0) +
+              (allStatesRef.current[machineId]?.ngCount ?? 0);
+        const gotRows = events.length > 0;
+        const gotId = Number.isFinite(latestId) && latestId > 0;
+        const inconsistentBackend = !gotRows && !gotId && sumCounts > 0;
+
+        if (!inconsistentBackend) {
+          scaleEventsHydratedKeyRef.current.add(hk);
+        }
+
+        if (gotId && !inconsistentBackend) {
+          setScalePollResumeByMachine((p) => ({
+            ...p,
+            [machineId]: { ulid: sessionRunUlid, sinceId: latestId },
+          }));
+        }
+      } catch {
+        /* allow retry later */
+      } finally {
+        scaleHydrationInflightRef.current.delete(hk);
+      }
+    },
+    [updateMachineState],
+  );
+
+  // Load DB queue and session for each machine once the machine list is ready
+  const dbInitDoneRef = useRef(false);
+  useEffect(() => {
+    if (machines.length === 0 || dbInitDoneRef.current) return;
+    dbInitDoneRef.current = true;
+    Promise.allSettled(
+      machines.map(async (m) => {
+        try {
+          const [qRes, sRes] = await Promise.allSettled([
+            dbGetQueue(m.id),
+            dbGetSession(m.id),
+          ]);
+          if (qRes.status === 'fulfilled' && Array.isArray(qRes.value?.queue)) {
+            setQueueFromDb(m.id, qRes.value.queue);
+          }
+          if (sRes.status === 'fulfilled' && sRes.value?.session) {
+            const sess = sRes.value.session;
+            applyDbSessionUpdate({ machineId: m.id, session: sess });
+            if (sess.mode === 'live' && sess.sessionRunUlid) {
+              queueMicrotask(() => {
+                void hydrateLiveWeightEventsFromDb(m.id, sess.sessionRunUlid, {
+                  bypassGate: true,
+                  pipeAndNgHint: (sess.pipeCounter ?? 0) + (sess.ngCount ?? 0),
+                });
+              });
+            }
+          }
+        } catch { /* non-critical, cache-based state will still work */ }
+      }),
+    );
+  }, [machines, applyDbSessionUpdate, setQueueFromDb, hydrateLiveWeightEventsFromDb]);
 
   const mergeServerStatesRef = useRef(mergeServerStates);
   useEffect(() => { mergeServerStatesRef.current = mergeServerStates; }, [mergeServerStates]);
@@ -606,14 +755,30 @@ const ProductionMonitoring = () => {
   }, [applyDbQueueUpdate]);
 
   // SSE handler for session_updated — DB session changed (start/pause/finish)
-  const handleSseSessionUpdated = useCallback((payload) => {
-    if (!payload?.machineId) return;
-    if (payload.cleared === true || payload.session == null) {
-      resetMachineState(payload.machineId);
-      return;
-    }
-    applyDbSessionUpdate(payload);
-  }, [applyDbSessionUpdate, resetMachineState]);
+  const handleSseSessionUpdated = useCallback(
+    (payload) => {
+      if (!payload?.machineId) return;
+      if (payload.cleared === true || payload.session == null) {
+        resetMachineState(payload.machineId);
+        return;
+      }
+      applyDbSessionUpdate(payload);
+      const sess = payload.session;
+      const mid = payload.machineId;
+      if (sess?.mode === 'live' && sess.sessionRunUlid && sess._db) {
+        const hk = `${mid}:${sess.sessionRunUlid}`;
+        if (!scaleEventsHydratedKeyRef.current.has(hk)) {
+          queueMicrotask(() => {
+            void hydrateLiveWeightEventsFromDb(mid, sess.sessionRunUlid, {
+              bypassGate: true,
+              pipeAndNgHint: (sess.pipeCounter ?? 0) + (sess.ngCount ?? 0),
+            });
+          });
+        }
+      }
+    },
+    [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState],
+  );
 
   // DB-aware add-to-queue: write to DB first, update local state on success
   const handleDbAddToQueue = useCallback(async (machineId, item) => {
@@ -1233,6 +1398,7 @@ const ProductionMonitoring = () => {
                     machineId={selectedMachineId}
                     machineLabel={selectedMachine.label}
                     machineState={machineState}
+                    resumeScalePollSinceId={liveScalePollResumeSinceId}
                     onWeightUpdate={(type, weight, ev) => {
                       const eidRaw =
                         ev?.eventId ??
