@@ -80,6 +80,7 @@ export const useProductionStates = () => {
     setAllStates((prev) => {
       const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
       const changes = typeof patch === 'function' ? patch(current) : patch;
+      if (changes === null) return prev;
       return { ...prev, [machineId]: stamp({ ...current, ...changes }) };
     });
   }, []);
@@ -373,14 +374,11 @@ export const useProductionStates = () => {
           ngCount:         Math.max(session.ngCount         ?? 0, current.ngCount         ?? 0),
           totalGoodWeight: Math.max(session.totalGoodWeight ?? 0, current.totalGoodWeight ?? 0),
           totalNgWeight:   Math.max(session.totalNgWeight   ?? 0, current.totalNgWeight   ?? 0),
-          // ค้างผลิต: เลขลดลงเมื่อผลิดี — ถ้าได้ payload เก่า/ใหม่สลับซับซ้อนให้ใช้ min( session, local )
-          remainingQty: (() => {
-            const s = session.remainingQty;
-            const c = current.remainingQty;
-            if (typeof s === 'number' && typeof c === 'number') return Math.min(s, c);
-            if (typeof s === 'number') return s;
-            return c ?? 0;
-          })(),
+          // ค้างผลิตจากแผน — ไม่ลดเมื่อผลิดี; ค่าใน DB เป็นหลักเมื่อ sync มา
+          remainingQty:
+            typeof session.remainingQty === 'number'
+              ? session.remainingQty
+              : (current.remainingQty ?? 0),
         },
       };
     });

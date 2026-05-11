@@ -666,8 +666,12 @@ const LiveMonitoring = ({
     setTimeout(() => setToast(null), ms);
   };
 
-  // ค้างผลิต: ใช้ remainingQty เสมอ ไม่ fallback targetQty (เป้า/กะ)
-  const displayTarget = machineState.remainingQty ?? 0;
+  // ค้างผลิต: ใช้ remainingQty จากแผน (คงที่) — ถ้าไม่มีใช้ targetQty ให้สอดคล้อง sidebar/แดชบอร์ด
+  const backlog =
+    (machineState.remainingQty ?? 0) > 0
+      ? machineState.remainingQty
+      : (machineState.targetQty ?? 0);
+  const displayTarget = backlog ?? 0;
 
   const progress   = displayTarget > 0
     ? Math.min(100, Math.round((goodCount / displayTarget) * 100))
@@ -678,7 +682,12 @@ const LiveMonitoring = ({
 
   // ── Process a single scale weight event (dedup + dispatch) ──────────────
   const processScaleEvent = useCallback((ev) => {
-    const dedupKey = (ev.pressedAt || '') + '_' + (ev.weight || '') + '_' + (ev.type || '');
+    const dedupKey = (() => {
+      if (ev?.eventId != null && ev.eventId !== '') return `eid:${ev.eventId}`;
+      const w = Number(ev.weight);
+      const wKey = Number.isFinite(w) ? w.toFixed(4) : String(ev.weight ?? '');
+      return `${ev.pressedAt || ''}_${wKey}_${ev.type || ''}`;
+    })();
     if (seenEventsRef.current.has(dedupKey)) return;
     seenEventsRef.current.add(dedupKey);
 

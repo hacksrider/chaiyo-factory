@@ -389,6 +389,10 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
     pipeCounter !== undefined && pipeCounter !== null
       ? String(pipeCounter)
       : String(data?.pipeCounter ?? data?.actual ?? 0);
+  const backlogTarget =
+    typeof data?.remainingQty === 'number' && data.remainingQty > 0
+      ? data.remainingQty
+      : Number(data?.targetQty ?? 0);
   return {
     text,
     r: 0,
@@ -397,8 +401,8 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
     fontSize: 1,
     speed: 50,
     actual,
-    // แสดง remainingQty เสมอ ถ้ายังไม่มีให้แสดง 0 (ไม่ fallback targetQty/กะ)
-    target: String(data?.remainingQty ?? 0),
+    // target = ค้างผลิตจากแผน (คงที่) — เทียบกับของดีสะสมจาก actual
+    target: String(backlogTarget),
   };
 };
 

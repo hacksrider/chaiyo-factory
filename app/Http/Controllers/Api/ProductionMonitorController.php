@@ -935,7 +935,10 @@ class ProductionMonitorController extends Controller
         // เวลากดปุ่มที่ตาชั่ง (ส่งมาจาก ESP32 พร้อม NTP timestamp)
         // ถ้า ESP32 ยังไม่มี NTP (เพิ่ง boot) จะเป็น "millis:xxxxx" → fallback เป็นเวลา server
         $rawPressedAt = $payload['pressedAt'] ?? null;
-        if ($rawPressedAt && !str_starts_with((string)$rawPressedAt, 'millis:')) {
+        // เก็บ millis:... จาก ESP32 — อย่าทับด้วย now() เวลาเรียกซ้ำ ไม่งั้น Cache dedup และ client เห็นเหตุการณ์คนละ key
+        if ($rawPressedAt && str_starts_with((string) $rawPressedAt, 'millis:')) {
+            $payload['pressedAt'] = (string) $rawPressedAt;
+        } elseif ($rawPressedAt) {
             $payload['pressedAt'] = $rawPressedAt;
         } else {
             $payload['pressedAt'] = now()->toISOString();
@@ -980,20 +983,30 @@ class ProductionMonitorController extends Controller
 
         /** @var ProductionSession|null $sessionAfter */
         $sessionAfter = null;
+        $createdEventId = null;
 
         try {
-            DB::transaction(function () use ($machineId, $payload, &$sessionAfter) {
-                $type   = $payload['type']   ?? 'good';
-                $weight = (float) ($payload['weight'] ?? 0);
+            DB::transaction(function () use ($machineId, $payload, &$sessionAfter, &$createdEventId) {
+                $type       = $payload['type']   ?? 'good';
+                $weight     = (float) ($payload['weight'] ?? 0);
                 $orderId    = $payload['orderId']    ?? '';
                 $sheetName  = $payload['sheetName']  ?? '';
                 $employeeId = $payload['employeeId'] ?? '';
                 $shift      = $payload['shift']      ?? '';
 
-                // Determine seq within this order
+                $session = ProductionSession::where('machine_id', $machineId)
+                    ->whereNotIn('status', ['finished', 'cancelled'])
+                    ->lockForUpdate()
+                    ->first();
+
                 $seq = (int) ProductionWeightEvent::where('machine_id', $machineId)
                     ->where('order_id', $orderId)
                     ->max('seq') + 1;
+
+                $pressedAtDb = $payload['pressedAt'] ?? null;
+                if (is_string($pressedAtDb) && str_starts_with($pressedAtDb, 'millis:')) {
+                    $pressedAtDb = null;
+                }
 
                 $weightEvent = ProductionWeightEvent::create([
                     'machine_id'      => $machineId,
@@ -1004,29 +1017,23 @@ class ProductionMonitorController extends Controller
                     'seq'             => $seq,
                     'employee_id'     => $employeeId,
                     'shift'           => $shift,
-                    'pressed_at'      => $payload['pressedAt'],
+                    'pressed_at'      => $pressedAtDb,
                     'received_at'     => $payload['receivedAt'],
                     'raw_payload'     => $payload,
                     'gas_sync_status' => 'pending',
                 ]);
 
-                // Async dual-write to Google Sheet
+                $createdEventId = $weightEvent->id;
+
                 SyncWeightEventToGas::dispatch($weightEvent->id, $this->gasUrl)
                     ->onQueue('gas-sync');
-
-                $session = ProductionSession::where('machine_id', $machineId)
-                    ->whereNotIn('status', ['finished', 'cancelled'])
-                    ->first();
 
                 if ($session) {
                     $tsMs = (int) (now()->timestamp * 1000);
                     if ($type === 'good') {
                         $session->increment('pipe_counter');
                         $session->increment('total_good_weight', $weight);
-                        // ให้การแสดง "ค้างผลิต" จาก DB เดินตามผลิดี — อย่ารอผลจาก GAS
-                        if ($session->remaining_qty > 0) {
-                            $session->decrement('remaining_qty');
-                        }
+                        // remaining_qty = ค้างผลิตจากแผน — ไม่ลดเมื่อกดของดี (เทียบกับ pipe_counter / ประวัติแยก)
                     } else {
                         $session->increment('ng_count');
                         $session->increment('total_ng_weight', $weight);
@@ -1047,8 +1054,10 @@ class ProductionMonitorController extends Controller
 
         // เก็บ event ต่อท้าย list — ใช้ Cache::get (ไม่ใช่ pull) เพื่อให้ทุก browser รับได้
         // events จะหมดอายุเองใน 2 ชั่วโมง หรือถูก reset เมื่อ scale-command ใหม่มา
+        $payloadOut = $payload + ($createdEventId !== null ? ['eventId' => $createdEventId] : []);
+
         $events   = Cache::get("scale_events_{$machineId}", []);
-        $events[] = $payload;
+        $events[] = $payloadOut;
         // Ring buffer: เก็บสูงสุด 500 events (~1 วันของการผลิต)
         if (count($events) > 500) {
             $events = array_slice($events, -500);
@@ -1058,7 +1067,7 @@ class ProductionMonitorController extends Controller
         // Broadcast ทันที → browsers รับ scale_weight event โดยไม่ต้องรอ poll รอบถัดไป
         $this->publishEvent('scale_weight', [
             'machineId' => $machineId,
-            'event'     => $payload,
+            'event'     => $payloadOut,
         ]);
 
         // ซิงก์เลขจาก DB เข้ากับป้ายไฟและตาชั่ง (ไม่เชื่อ actualCount จาก ESP32 เท่ากับแหล่งจริง)

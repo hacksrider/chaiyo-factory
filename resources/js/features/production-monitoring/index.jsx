@@ -572,7 +572,12 @@ const ProductionMonitoring = () => {
   // SSE handler for scale_weight events (real-time weight from scale ESP32)
   const handleSseScaleWeight = useCallback(({ machineId, event: ev }) => {
     if (!machineId || !ev) return;
-    const dedupKey = (ev.pressedAt || '') + '_' + (ev.weight || '') + '_' + (ev.type || '');
+    const dedupKey = (() => {
+      if (ev?.eventId != null && ev.eventId !== '') return `eid:${ev.eventId}`;
+      const w = Number(ev.weight);
+      const wKey = Number.isFinite(w) ? w.toFixed(4) : String(ev.weight ?? '');
+      return `${ev.pressedAt || ''}_${wKey}_${ev.type || ''}`;
+    })();
     if (seenScaleEventsRef.current.has(dedupKey)) return;
     seenScaleEventsRef.current.add(dedupKey);
     window.dispatchEvent(new CustomEvent('sse:scale_weight', {
@@ -1227,26 +1232,55 @@ const ProductionMonitoring = () => {
                     machineLabel={selectedMachine.label}
                     machineState={machineState}
                     onWeightUpdate={(type, weight, ev) => {
-                      // pressedAt = เวลากดปุ่มที่ตาชั่ง (จาก NTP ESP32)
+                      const eidRaw =
+                        ev?.eventId ??
+                        ev?.event_id ??
+                        (ev?.id !== undefined ? ev.id : undefined);
                       const pressedAt = ev?.pressedAt ?? new Date().toISOString();
-                      const entry = { weight, pressedAt };
+                      const eidNorm =
+                        eidRaw !== undefined && eidRaw !== null && String(eidRaw) !== ''
+                          ? eidRaw
+                          : undefined;
+                      const entry = {
+                        weight,
+                        pressedAt,
+                        ...(eidNorm !== undefined ? { eventId: eidNorm } : {}),
+                      };
                       const mid = selectedMachineId;
-                      // snapshot ก่อน update — เพื่อคำนวณ seq ถูกต้อง
+
+                      if (type === 'good') {
+                        const live = getMachineState(mid);
+                        if (
+                          eidNorm !== undefined &&
+                          (live.goodEvents ?? []).some(
+                            (g) => String(g.eventId) === String(eidNorm),
+                          )
+                        ) {
+                          return;
+                        }
+                      } else if (type === 'ng') {
+                        const live = getMachineState(mid);
+                        if (
+                          eidNorm !== undefined &&
+                          (live.ngEvents ?? []).some(
+                            (g) => String(g.eventId) === String(eidNorm),
+                          )
+                        ) {
+                          return;
+                        }
+                      }
+
                       const snap = getMachineState(mid);
                       const seq  = (snap.pipeCounter ?? 0) + (snap.ngCount ?? 0) + 1;
 
                       if (type === 'good') {
-                        updateMachineState(mid, (prev) => {
-                          const prevRem = prev.remainingQty ?? 0;
-                          return {
-                            pipeCounter:      (prev.pipeCounter      ?? 0) + 1,
-                            remainingQty:     prevRem > 0 ? prevRem - 1 : prevRem,
-                            totalGoodWeight:  (prev.totalGoodWeight  ?? 0) + weight,
-                            lastGoodWeight:   weight,
-                            lastGoodAt:       pressedAt,
-                            goodEvents:       [...(prev.goodEvents ?? []), entry],
-                          };
-                        });
+                        updateMachineState(mid, (prev) => ({
+                          pipeCounter:      (prev.pipeCounter      ?? 0) + 1,
+                          totalGoodWeight:  (prev.totalGoodWeight  ?? 0) + weight,
+                          lastGoodWeight:   weight,
+                          lastGoodAt:       pressedAt,
+                          goodEvents:       [...(prev.goodEvents ?? []), entry],
+                        }));
                       } else {
                         updateMachineState(mid, (prev) => ({
                           ngCount:          (prev.ngCount          ?? 0) + 1,
