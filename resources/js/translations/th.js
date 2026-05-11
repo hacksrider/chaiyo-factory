@@ -378,6 +378,10 @@ export default {
         historyColNg: 'น้ำหนักของเสีย(kg)',
         historyColStatus: 'Status',
         historyColView: 'ดูข้อมูล',
+        historyColDelete: 'ลบ',
+        historyDeleteConfirm: (params) =>
+          `ลบประวัติ Order ${params.order} และรายการชั่งในรอบผลิตนี้ออกจากฐานข้อมูลหรือไม่? (กู้คืนไม่ได้)`,
+        historyDeleteNoId: 'รายการนี้ลบไม่ได้ — ไม่มีรหัสอ้างอิงในฐานข้อมูล',
         historyDetailTitle: 'รายละเอียดการผลิต',
         historyExportExcel: 'Export Excel',
         historySortNewest: 'ล่าสุดก่อน',

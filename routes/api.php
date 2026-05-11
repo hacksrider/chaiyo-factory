@@ -187,5 +187,7 @@ Route::prefix('production-monitor')->group(function () {
 
     // History from DB
     Route::get('/history-db',                        [ProductionMonitorController::class, 'getHistoryDb']);
+    Route::delete('/history-order/{id}',             [ProductionMonitorController::class, 'deleteFinishedHistoryOrder'])
+        ->whereNumber('id');
     Route::get('/order-detail-db',                   [ProductionMonitorController::class, 'orderDetailDb']);
 });

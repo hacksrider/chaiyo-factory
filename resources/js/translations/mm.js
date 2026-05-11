@@ -378,6 +378,10 @@ export default {
         historyColNg: 'ညံ့ဖျင်းသော အလေးချိန်(kg)',
         historyColStatus: 'Status',
         historyColView: 'အသေးစိတ်ကြည့်ရန်',
+        historyColDelete: 'ဖျက်ရန်',
+        historyDeleteConfirm: (params) =>
+          `Order ${params.order} ရဲ့ မှတ်တမ်းနှင့် ဆက်စပ်အလေးချိန်မှတ်များကို ဒေတာဘေ့စ်မှ ဖျက်မလား။ ပြန်ပြင်မရပါ။`,
+        historyDeleteNoId: 'ဤမှတ်တမ်းကို ဖျက်၍မရ — ဒေတာဘေ့စ်တွင် မှတ်ပုံတင်မရှိပါ',
         historyDetailTitle: 'ထုတ်လုပ်မှု အသေးစိတ်',
         historyExportExcel: 'Excel ထုတ်ရန်',
         historySortNewest: 'နောက်ဆုံးမှ အရင်',

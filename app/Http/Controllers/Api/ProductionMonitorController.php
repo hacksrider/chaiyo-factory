@@ -2208,6 +2208,39 @@ class ProductionMonitorController extends Controller
         DB::transaction(function () use ($session, $machineId, $now, $goodCount, $ngCount, $totalGoodWeight, $totalNgWeight, $skipGasDispatch, &$prodOrder, $sessionRunUlid) {
             $session->refresh();
 
+            // ประวัติ: เซสชันอาจยังไม่ได้ sync กะ/พนักงานจาก DB ถ้าต้นทางอยู่แค่ใน weight_events (ตาชั่ง POST)
+            $shiftForOrder = trim((string) ($session->shift ?? ''));
+            $empForOrder = trim((string) ($session->employee_id ?? ''));
+            if (
+                ($shiftForOrder === '' || $empForOrder === '')
+                && is_string($sessionRunUlid)
+                && $sessionRunUlid !== ''
+            ) {
+                $rows = ProductionWeightEvent::query()
+                    ->where('machine_id', $machineId)
+                    ->where('session_run_ulid', $sessionRunUlid)
+                    ->orderByDesc('id')
+                    ->limit(100)
+                    ->get(['shift', 'employee_id']);
+                foreach ($rows as $row) {
+                    if ($shiftForOrder === '') {
+                        $s = trim((string) ($row->shift ?? ''));
+                        if ($s !== '') {
+                            $shiftForOrder = $s;
+                        }
+                    }
+                    if ($empForOrder === '') {
+                        $e = trim((string) ($row->employee_id ?? ''));
+                        if ($e !== '') {
+                            $empForOrder = $e;
+                        }
+                    }
+                    if ($shiftForOrder !== '' && $empForOrder !== '') {
+                        break;
+                    }
+                }
+            }
+
             if ($sessionRunUlid) {
                 ProductionOrder::where('machine_id', $machineId)
                     ->where('session_run_ulid', $sessionRunUlid)
@@ -2237,8 +2270,8 @@ class ProductionMonitorController extends Controller
                 'plan_date'         => $session->plan_date,
                 'sheet_name'        => $session->sheet_name,
                 'led_ip'            => $session->led_ip,
-                'shift'             => $session->shift,
-                'employee_id'       => $session->employee_id,
+                'shift'             => $shiftForOrder,
+                'employee_id'       => $empForOrder,
                 'good_count'        => $goodCount,
                 'ng_count'          => $ngCount,
                 'total_good_weight' => $totalGoodWeight,
@@ -2355,6 +2388,39 @@ class ProductionMonitorController extends Controller
             'current_page' => $orders->currentPage(),
             'last_page'    => $orders->lastPage(),
         ]);
+    }
+
+    /**
+     * DELETE /api/production-monitor/history-order/{id}
+     *
+     * ลบแถวสรุปใน production_orders (เฉพาะ status=finished) และรายการชั่งของรอบนั้น
+     */
+    public function deleteFinishedHistoryOrder(int $id): JsonResponse
+    {
+        $order = ProductionOrder::query()->whereKey($id)->first();
+        if ($order === null) {
+            return response()->json(['success' => false, 'message' => 'ไม่พบรายการ'], 404);
+        }
+        if ($order->status !== 'finished') {
+            return response()->json(['success' => false, 'message' => 'ลบได้เฉพาะรายการที่จบแล้ว'], 422);
+        }
+
+        $machineId = (string) $order->machine_id;
+        $orderId   = (string) $order->order_id;
+        $runUlid   = trim((string) ($order->session_run_ulid ?? ''));
+
+        DB::transaction(function () use ($order, $machineId, $orderId, $runUlid) {
+            if ($runUlid !== '') {
+                ProductionWeightEvent::query()
+                    ->where('machine_id', $machineId)
+                    ->where('order_id', $orderId)
+                    ->where('session_run_ulid', $runUlid)
+                    ->delete();
+            }
+            $order->delete();
+        });
+
+        return response()->json(['success' => true]);
     }
 
     /**

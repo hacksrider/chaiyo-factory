@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
-import { fetchHistory, fetchOrderDetail } from '../api/productionApi';
+import { fetchHistory, fetchOrderDetail, dbDeleteHistoryOrder } from '../api/productionApi';
 import {
   formatProductionDateTimeBangkok,
   formatProductionTimeBangkok,
@@ -247,6 +247,8 @@ const HistoryView = ({ machines }) => {
   const [detailRow, setDetailRow] = useState(null);
   const [detailData, setDetailData] = useState(null);
   const [detailSortDir, setDetailSortDir] = useState('desc'); // 'asc' oldest-first, 'desc' newest-first
+  const [deletingId, setDeletingId] = useState(null);
+  const [deleteBanner, setDeleteBanner] = useState(null); // { type: 'error', message: string }
   const [filters, setFilters]   = useState({
     machine:  '',
     status:   '',
@@ -271,7 +273,8 @@ const HistoryView = ({ machines }) => {
     { key: 'goodWeight',  label: t('production.historyColGoodWeight')  },
     { key: 'ngWeight',    label: t('production.historyColNg')          },
     { key: 'status',      label: t('production.historyColStatus')      },
-    { key: 'view',        label: t('production.historyColView')        },
+    { key: 'view',        label: t('production.historyColView'),        noSort: true },
+    { key: 'delete',      label: t('production.historyColDelete'),      noSort: true },
   ];
 
   const statusLabel = (s = '') => {
@@ -290,6 +293,7 @@ const HistoryView = ({ machines }) => {
   const load = async () => {
     setLoading(true);
     setError(null);
+    setDeleteBanner(null);
     try {
       const data = await fetchHistory(filters.machine || null, {
         from: filters.dateFrom,
@@ -417,6 +421,38 @@ const HistoryView = ({ machines }) => {
       setDetailError(err?.message ?? String(err));
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const handleDeleteRow = async (row) => {
+    const hid = row?.id;
+    if (hid == null || Number.isNaN(Number(hid))) {
+      setDeleteBanner({ type: 'error', message: t('production.historyDeleteNoId') });
+      return;
+    }
+    const confirmTpl = t('production.historyDeleteConfirm');
+    const msg =
+      typeof confirmTpl === 'function'
+        ? confirmTpl({ order: row.orderId ?? String(hid) })
+        : String(confirmTpl);
+    if (!window.confirm(msg)) return;
+    setDeleteBanner(null);
+    setDeletingId(hid);
+    try {
+      await dbDeleteHistoryOrder(hid);
+      if (detailOpen && detailRow?.id === hid) {
+        setDetailOpen(false);
+        setDetailRow(null);
+        setDetailData(null);
+      }
+      await load();
+    } catch (err) {
+      setDeleteBanner({
+        type: 'error',
+        message: err?.message ?? String(err),
+      });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -550,6 +586,19 @@ const HistoryView = ({ machines }) => {
         />
       </div>
 
+      {deleteBanner?.type === 'error' && (
+        <div className="flex-shrink-0 px-4 sm:px-6 py-2 border-b border-red-500/30 bg-red-500/10 flex items-center justify-between gap-3">
+          <p className="text-xs text-red-300 flex-1">{deleteBanner.message}</p>
+          <button
+            type="button"
+            onClick={() => setDeleteBanner(null)}
+            className="text-[11px] font-semibold text-red-200 hover:text-white border border-red-500/40 rounded-lg px-2 py-1 shrink-0"
+          >
+            {t('common.close')}
+          </button>
+        </div>
+      )}
+
       {/* ── Content ── */}
       <div className="flex-1 overflow-auto">
 
@@ -591,8 +640,8 @@ const HistoryView = ({ machines }) => {
                     {COLS.map((col) => (
                       <TH
                         key={col.key}
-                        onClick={() => toggleSort(col.key)}
-                        sorted={sort.key === col.key ? sort.dir : null}
+                        onClick={col.noSort ? undefined : () => toggleSort(col.key)}
+                        sorted={!col.noSort && sort.key === col.key ? sort.dir : null}
                         align={col.key === 'productName' ? 'left' : 'center'}
                         className={col.key === 'productName' ? 'w-full' : 'w-[1%]'}
                       >
@@ -604,7 +653,7 @@ const HistoryView = ({ machines }) => {
                 <tbody>
                   {filtered.map((row, i) => (
                     <tr
-                      key={i}
+                      key={row.id != null ? `hist-${row.id}` : `hist-i-${i}`}
                       className="border-t border-gray-800/60 hover:bg-gray-800/30 transition-colors"
                     >
                       <td className="px-2 py-2 font-mono text-xs text-gray-400 whitespace-nowrap text-center w-[1%]">
@@ -666,6 +715,18 @@ const HistoryView = ({ machines }) => {
                             px-2.5 py-1.5 rounded-lg transition-all"
                         >
                           {t('production.historyColView')}
+                        </button>
+                      </td>
+                      <td className="px-2 py-2 whitespace-nowrap text-center w-[1%]">
+                        <button
+                          type="button"
+                          disabled={deletingId === row.id}
+                          onClick={() => { void handleDeleteRow(row); }}
+                          className="text-xs font-semibold text-red-300 hover:text-red-200 disabled:opacity-40
+                            border border-red-500/35 hover:border-red-400/55 bg-red-500/10 hover:bg-red-500/15
+                            px-2.5 py-1.5 rounded-lg transition-all"
+                        >
+                          {deletingId === row.id ? t('common.loading') : t('production.historyColDelete')}
                         </button>
                       </td>
                     </tr>

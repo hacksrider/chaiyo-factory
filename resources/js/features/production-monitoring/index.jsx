@@ -109,18 +109,34 @@ function _fmtTimeForLog(d = new Date()) {
   return `${h % 12 || 12}:${String(m).padStart(2, '0')}:00 ${ampm}`;
 }
 
+/** ช่อง team ใน Machine Log — Laravel required ไม่รับว่างเปล่า */
+function _machineLogTeamLine(shift, employeeId) {
+  const parts = [];
+  const s = shift != null ? String(shift).trim() : '';
+  const e = employeeId != null ? String(employeeId).trim() : '';
+  if (s) parts.push(`กะ ${s}`);
+  if (e) parts.push(`พนักงาน ${e}`);
+  return parts.length ? parts.join(' · ') : '—';
+}
+
+function _machineLogMachineLine(machineLabel, machineId) {
+  const a = machineLabel != null ? String(machineLabel).trim() : '';
+  const b = machineId != null ? String(machineId).trim() : '';
+  return a || b || '—';
+}
+
 /**
  * ส่ง log สถานะ "เปิด" เมื่อกด Start Now — fire-and-forget
  */
-function logStartNow({ machineId, machineLabel, productCode, shift }) {
+function logStartNow({ machineId, machineLabel, productCode, shift, employeeId }) {
   const now = new Date();
   appendMachineLog({
-    machine:     machineLabel || machineId,
+    machine:     _machineLogMachineLine(machineLabel, machineId),
     date:        _fmtDateForLog(now),
     status:      'เปิด ဖွင့်သည်။',
     time:        _fmtTimeForLog(now),
     cause:       'เดินตามแผน အစီအစဉ်အတိုင်း ထုတ်လုပ်မှု',
-    team:        shift ?? '',
+    team:        _machineLogTeamLine(shift, employeeId),
     reporter:    'อัตโนมัติ',
     productCode: productCode ?? '',
     detail:      '',
@@ -133,15 +149,15 @@ function logStartNow({ machineId, machineLabel, productCode, shift }) {
 /**
  * ส่ง log สถานะ "อยู่ระหว่างเตรียมการผลิต" เมื่อกด Pause Order / Finished Order — fire-and-forget
  */
-function logPauseOrClose({ machineLabel, productCode, shift }) {
+function logPauseOrClose({ machineId, machineLabel, productCode, shift, employeeId }) {
   const now = new Date();
   appendMachineLog({
-    machine:     machineLabel || '',
+    machine:     _machineLogMachineLine(machineLabel, machineId),
     date:        _fmtDateForLog(now),
     status:      'อยู่ระหว่างเตรียมการผลิต',
     time:        _fmtTimeForLog(now),
     cause:       'ออเดอร์ครบ / รอออเดอร์ အော်ဒါဖြည့်ဆည်း',
-    team:        shift ?? '',
+    team:        _machineLogTeamLine(shift, employeeId),
     reporter:    'อัตโนมัติ',
     productCode: productCode ?? '',
     detail:      '',
@@ -1476,9 +1492,11 @@ const ProductionMonitoring = () => {
                       pushPrepLed(selectedMachineId);
                       resetMachineState(selectedMachineId);
                       logPauseOrClose({
+                        machineId:    selectedMachineId,
                         machineLabel: selectedMachine.label,
                         productCode:  machineState?.productCode ?? '',
                         shift:        machineState?.shift       ?? '',
+                        employeeId:   machineState?.employeeId  ?? '',
                       });
                       // Push ทันที (bypass debounce) เพื่อให้ browser อื่นรับ Finish Order เร็วสุด
                       const mid = selectedMachineId;
@@ -1550,6 +1568,7 @@ const ProductionMonitoring = () => {
                         machineLabel: selectedMachine.label,
                         productCode:  item.productCode || '',
                         shift:        item.shift       || '',
+                        employeeId:   item.employeeId  || '',
                       });
                     }}
                   />
@@ -1632,6 +1651,7 @@ const ProductionMonitoring = () => {
                         machineLabel: selectedMachine.label,
                         productCode:  data.productCode || '',
                         shift:        data.shift       || '',
+                        employeeId:   data.employeeId    || '',
                       });
                     }}
                   />

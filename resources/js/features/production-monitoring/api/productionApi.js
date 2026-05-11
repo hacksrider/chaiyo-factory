@@ -268,6 +268,13 @@ export const fetchOrderDetail = async (machineIdKey, orderId, sessionRunUlid) =>
   return raw?.detail ?? raw?.data ?? { events: [] };
 };
 
+/**
+ * DELETE /api/production-monitor/history-order/{id}
+ * ลบประวัติรายการที่จบแล้ว (production_orders finished) และ weight events ของรอบนั้น
+ */
+export const dbDeleteHistoryOrder = (historyId) =>
+  del(`/history-order/${encodeURIComponent(String(historyId ?? ''))}`);
+
 // ─── LED Sign ────────────────────────────────────────────────────────────────
 
 /**

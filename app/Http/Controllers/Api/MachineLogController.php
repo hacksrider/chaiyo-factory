@@ -49,6 +49,17 @@ class MachineLogController extends Controller
             ], 503);
         }
 
+        // Laravel required|string ถือว่า "" ว่างแล้ว fail — เว็บจึงเห็น 422 จากกะว่าง /
+        // เครื่องไม่มี label จาก Settings
+        $machineIn  = trim((string) $request->input('machine', ''));
+        $teamIn     = trim((string) $request->input('team', ''));
+        $reporterIn = trim((string) $request->input('reporter', ''));
+        $request->merge([
+            'machine'  => $machineIn !== '' ? $machineIn : '—',
+            'team'     => $teamIn !== '' ? $teamIn : '—',
+            'reporter' => $reporterIn !== '' ? $reporterIn : 'อัตโนมัติ',
+        ]);
+
         $request->validate([
             'machine'     => 'required|string',
             'date'        => 'required|string',
