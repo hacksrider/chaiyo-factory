@@ -169,7 +169,7 @@ const COLOR_PRESETS = [
 ];
 
 // ─── LedFormPopup ─────────────────────────────────────────────────────────────
-const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting, confirmError }) => {
+const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting, confirmError, defaultRecorderName = '' }) => {
   const [status,      setStatus]     = useState('');
   const [cause,       setCause]      = useState('');
   const [team,        setTeam]       = useState('');
@@ -205,7 +205,7 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
       setStatus('');
       setCause('');
       setTeam('');
-      setReporter('');
+      setReporter(String(defaultRecorderName ?? '').trim());
       setLedText('');
       setDetail('');
       setFix('');
@@ -218,7 +218,7 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
       setNewRep('');
       setReporterSaveError('');
     }
-  }, [isOpen]);
+  }, [isOpen, defaultRecorderName]);
 
   // When status changes → auto-fill LED text
   useEffect(() => {
@@ -1123,6 +1123,8 @@ const LedSignView = ({
   machines,
   selectedMachineId,
   allMachineStates = {},
+  defaultRecorderName = '',
+  canAutoPushQtyToLed = true,
   onPauseOrder,
   onResumeOrder,
   onBack,
@@ -1256,6 +1258,7 @@ const LedSignView = ({
   const prevProductionQtyRef = useRef({});
   useEffect(() => {
     const handler = (e) => {
+      if (!canAutoPushQtyToLed) return;
       const { machineId: mid, qty_good, qty_remaining } = e.detail ?? {};
       if (!mid) return;
 
@@ -1291,7 +1294,7 @@ const LedSignView = ({
 
     window.addEventListener('sse:production_updated', handler);
     return () => window.removeEventListener('sse:production_updated', handler);
-  }, [sid, validMachines]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sid, validMachines, canAutoPushQtyToLed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Fallback poll every 10s (was 3s) — SSE is now primary ────────────────
   const ledPollRef = useRef(null);
@@ -1704,6 +1707,7 @@ const LedSignView = ({
         mState={allMachineStates[sid] ?? null}
         submitting={popupSubmitting}
         confirmError={popupError}
+        defaultRecorderName={defaultRecorderName}
       />
 
       {/* ── Quick LED Popup (ไม่บันทึก Machine Log) ── */}

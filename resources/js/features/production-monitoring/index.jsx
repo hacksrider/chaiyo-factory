@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useLanguage } from '../../contexts/LanguageContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { useTranslation } from '../../utils/translations';
 import LanguageSwitcher from '../../components/LanguageSwitcher';
 import {
@@ -200,7 +201,7 @@ const LoadingSplash = () => {
 };
 
 /** Full-area error state shown when first fetch fails and no machines are cached */
-const ErrorSplash = ({ message, raw, onRetry }) => {
+const ErrorSplash = ({ message, raw, onRetry, showDebugLink = false }) => {
   const [showRaw, setShowRaw] = React.useState(false);
   const { language } = useLanguage();
   const { t } = useTranslation(language);
@@ -236,6 +237,7 @@ const ErrorSplash = ({ message, raw, onRetry }) => {
           {t('production.retry')}
         </button>
 
+        {showDebugLink && (
         <a
           href="/api/production-monitor/debug"
           target="_blank"
@@ -249,6 +251,7 @@ const ErrorSplash = ({ message, raw, onRetry }) => {
           </svg>
           {t('production.openDebug')}
         </a>
+        )}
       </div>
 
       {/* Fix hint */}
@@ -340,6 +343,8 @@ const ProductionMonitoring = () => {
   const isLedPage = Boolean(urlLedMachineId);
   const { language } = useLanguage();
   const { t } = useTranslation(language);
+  const { user, isAdmin } = useAuth();
+  const canManageProduction = Boolean(isAdmin);
 
   const [sseStatus, setSseStatus] = useState('connecting'); // 'connecting' | 'open' | 'error' | 'closed'
   const [ledChangedMachineIds, setLedChangedMachineIds] = useState(new Set());
@@ -487,6 +492,7 @@ const ProductionMonitoring = () => {
   }, []);
 
   useEffect(() => {
+    if (!canManageProduction) return;
     Object.entries(allStates).forEach(([mid, st]) => {
       const live = Boolean(st?.mode === 'live');
       const prev = scaleLivePrevRef.current[mid];
@@ -500,10 +506,11 @@ const ProductionMonitoring = () => {
       withRetry(() => storeScaleLive(mid, buildScaleLivePayload(mid, live)))
         .catch((err) => console.warn('[scaleLive] sync failed after retries:', mid, err?.message));
     });
-  }, [allStates, buildScaleLivePayload]);
+  }, [allStates, buildScaleLivePayload, canManageProduction]);
 
   useEffect(() => {
-    if (scaleLiveHydratedRef.current || machines.length === 0) return;
+    if (!canManageProduction) return undefined;
+    if (scaleLiveHydratedRef.current || machines.length === 0) return undefined;
     const t = setTimeout(() => {
       if (scaleLiveHydratedRef.current) return;
       scaleLiveHydratedRef.current = true;
@@ -515,7 +522,7 @@ const ProductionMonitoring = () => {
       });
     }, 1200);
     return () => clearTimeout(t);
-  }, [machines.length, allStates, buildScaleLivePayload]);
+  }, [machines.length, allStates, buildScaleLivePayload, canManageProduction]);
 
   // ── Shared State Sync ─────────────────────────────────────────────────────────
   // SSE (real-time push) replaces polling.
@@ -639,6 +646,7 @@ const ProductionMonitoring = () => {
   // Push local changes to server (debounced 600ms per machine)
   const pushDebounceRef = useRef({});
   useEffect(() => {
+    if (!canManageProduction) return;
     Object.entries(allStates).forEach(([mid, st]) => {
       const ts = st?._ts ?? 0;
       if (!ts || ts === sessionSyncTsRef.current[mid]) return;
@@ -649,7 +657,7 @@ const ProductionMonitoring = () => {
           .catch((err) => console.warn('[machineSession] sync failed:', mid, err?.message));
       }, 600);
     });
-  }, [allStates]);
+  }, [allStates, canManageProduction]);
 
   // SSE handler for machine_session events (push from other browsers/devices)
   const handleSseMachineSession = useCallback(({ machineId, state }) => {
@@ -1250,8 +1258,10 @@ const ProductionMonitoring = () => {
                   machines={machines}
                   selectedMachineId={selectedMachineId}
                   allMachineStates={allStates}
-                  onPauseOrder={(mid) => pauseOrder(mid)}
-                  onResumeOrder={(mid) => resumeOrderWithLed(mid)}
+                  defaultRecorderName={user?.name ?? ''}
+                  canAutoPushQtyToLed={canManageProduction}
+                  onPauseOrder={canManageProduction ? (mid) => pauseOrder(mid) : undefined}
+                  onResumeOrder={canManageProduction ? (mid) => { void resumeOrderWithLed(mid); } : undefined}
                   onBack={() => navigate('/production-monitoring')}
                 />
               )}
@@ -1267,7 +1277,7 @@ const ProductionMonitoring = () => {
         {/* History view (full width, replaces machine panel) */}
         {!isLedPage && view === 'history' && (
           <div className="flex-1 overflow-hidden flex flex-col bg-gray-900/20">
-            <HistoryView machines={machines} />
+            <HistoryView machines={machines} allowDeleteHistory={canManageProduction} />
           </div>
         )}
 
@@ -1280,10 +1290,12 @@ const ProductionMonitoring = () => {
               <ScheduleView
                 machines={machines}
                 queuedMap={queuedMap}
-                onAddToQueue={(machineId, item) => {
-                  handleDbAddToQueue(machineId, item);
-                }}
-                onRemoveFromQueue={(machineId, queueId) => handleDbRemoveFromQueue(machineId, queueId)}
+                onAddToQueue={canManageProduction
+                  ? (machineId, item) => handleDbAddToQueue(machineId, item)
+                  : undefined}
+                onRemoveFromQueue={canManageProduction
+                  ? (machineId, queueId) => handleDbRemoveFromQueue(machineId, queueId)
+                  : undefined}
               />
             )}
           </div>
@@ -1340,7 +1352,7 @@ const ProductionMonitoring = () => {
 
           {/* ── Error state (fetch failed, no machines available) ── */}
           {!loading && error && machines.length === 0 && (
-            <ErrorSplash message={error} raw={errorRaw} onRetry={refresh} />
+            <ErrorSplash message={error} raw={errorRaw} onRetry={refresh} showDebugLink={canManageProduction} />
           )}
 
           {/* ── Soft error banner (re-sync failed but machines still cached) ── */}
@@ -1417,6 +1429,7 @@ const ProductionMonitoring = () => {
                     machineLabel={selectedMachine.label}
                     machineState={machineState}
                     resumeScalePollSinceId={liveScalePollResumeSinceId}
+                    canManageProduction={canManageProduction}
                     onWeightUpdate={(type, weight, ev) => {
                       const eidRaw =
                         ev?.eventId ??
@@ -1486,7 +1499,7 @@ const ProductionMonitoring = () => {
                         || eidNorm !== undefined
                       ) {
                         /* เคสปกติของ ESP32+Laravel — อยู่เมื่อมี eventId; ถ้าไม่มีข้อมูลชีต/order ไม่ส่งไปที่ GAS */
-                      } else {
+                      } else if (canManageProduction) {
                         const seq = (snapBefore.pipeCounter ?? 0) + (snapBefore.ngCount ?? 0) + 1;
                         const evParams = {
                           machineId: mid,
@@ -1592,6 +1605,7 @@ const ProductionMonitoring = () => {
                     machineLabel={selectedMachine.label}
                     sheetName={selectedMachine.sheetName}
                     ledIp={selectedMachine.ledIp}
+                    canManageProduction={canManageProduction}
                     queue={machineState.queue ?? []}
                     pausedOrder={machineState.pausedOrder ?? null}
                     sessionWait={{

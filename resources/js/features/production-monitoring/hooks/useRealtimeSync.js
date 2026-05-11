@@ -174,9 +174,14 @@ export const useRealtimeSync = ({
     const tsMap  = readLastTs();
     const tsVals = Object.values(tsMap).filter((v) => typeof v === 'number' && v > 0);
     const since  = tsVals.length ? Math.min(...tsVals) : 0;
-    const url    = since > 0
+    const urlCore = since > 0
       ? `${SSE_URL}?lastId=${lastEventIdRef.current}&since=${since}`
       : `${SSE_URL}?lastId=${lastEventIdRef.current}`;
+    let url = urlCore;
+    try {
+      const tok = localStorage.getItem('auth_token');
+      if (tok) url = `${urlCore}&token=${encodeURIComponent(tok)}`;
+    } catch { /* ignore */ }
 
     let es;
     try {

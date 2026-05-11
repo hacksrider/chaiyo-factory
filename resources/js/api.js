@@ -28,9 +28,12 @@ api.interceptors.response.use(
     (response) => response,
     (error) => {
         if (error.response?.status === 401) {
-            // Only logout if it's an admin/protected route
             const url = error.config?.url || '';
-            if (url.includes('/admin/') || url.includes('/me') || url.includes('/logout')) {
+            const onProductionPage = typeof window !== 'undefined'
+                && window.location.pathname.startsWith('/production-monitoring');
+            const isProdMonApi = url.includes('production-monitor');
+            if (url.includes('/admin/') || url.includes('/me') || url.includes('/logout')
+                || (onProductionPage && isProdMonApi)) {
                 localStorage.removeItem('auth_token');
                 localStorage.removeItem('auth_user');
                 // Only redirect if not already on login page

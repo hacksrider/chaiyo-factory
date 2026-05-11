@@ -95,6 +95,7 @@ const QueueRow = ({
   machineId,
   sheetName,
   ledIp,
+  interactive = true,
   onStart,
   onRemove,
   serverAwaitingScale = false,
@@ -422,18 +423,21 @@ const QueueRow = ({
             </p>
             <p className="text-[11px] text-amber-400/60 mt-0.5">{t('production.scaleInstruction')}</p>
           </div>
+          {interactive && (
           <button
+            type="button"
             onClick={handleCancel}
             title={t('production.cancel')}
             className="flex-shrink-0 text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1 rounded"
           >
             {t('production.cancel')}
           </button>
+          )}
         </div>
       )}
 
       {/* ── Action row (idle / timeout) ── */}
-      {phase !== 'waiting' && (
+      {phase !== 'waiting' && interactive && (
         <div className="flex gap-2">
           <button
             onClick={phase === 'timeout' ? handleRetry : handleStart}
@@ -485,6 +489,7 @@ const QueueRow = ({
 const PausedOrderBanner = ({
   pausedOrder,
   machineId,
+  interactive = true,
   onResume,                    // () → resume ทันที (รหัสพนักงานเดิม)
   onResumeWithScaleConfirm,    // (shift, employeeId) → resume ด้วยข้อมูลใหม่
   onClosePaused,
@@ -555,7 +560,7 @@ const PausedOrderBanner = ({
   return (
     <>
       {/* ── Resume chooser modal ── */}
-      {phase === 'chooser' && (
+      {interactive && phase === 'chooser' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div className="w-full max-w-sm bg-gray-900 border border-yellow-500/30 rounded-2xl shadow-2xl overflow-hidden">
             {/* Header */}
@@ -658,17 +663,20 @@ const PausedOrderBanner = ({
               <p className="text-sm font-semibold text-indigo-300">{t('production.waitingScaleConfirm')}</p>
               <p className="text-[11px] text-indigo-400/60 mt-0.5">{t('production.scaleInstruction')}</p>
             </div>
-            <button onClick={() => { stopPolling(); setPhase('idle'); setNotice(null); }}
+            {interactive && (
+            <button type="button" onClick={() => { stopPolling(); setPhase('idle'); setNotice(null); }}
               className="text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1 rounded">
               {t('production.cancel')}
             </button>
+            )}
           </div>
         )}
 
         {/* Actions */}
-        {phase !== 'waiting_scale' && (
+        {interactive && phase !== 'waiting_scale' && (
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => setPhase('chooser')}
               className="flex-1 flex items-center justify-center gap-2 bg-yellow-500/15 hover:bg-yellow-500/25 border border-yellow-500/40 text-yellow-300 font-semibold text-sm py-2 rounded-xl transition-all"
             >
@@ -680,6 +688,7 @@ const PausedOrderBanner = ({
             </button>
 
             <button
+              type="button"
               onClick={handleClose}
               disabled={closing}
               className="flex items-center justify-center gap-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-sm font-semibold px-4 py-2 rounded-xl transition-all disabled:opacity-40"
@@ -690,6 +699,9 @@ const PausedOrderBanner = ({
               }
             </button>
           </div>
+        )}
+        {!interactive && (
+          <p className="text-xs text-gray-500 mt-2">ดูอย่างเดียว — บัญชีนี้ไม่มีสิทธิ์ควบคุมการผลิต</p>
         )}
       </div>
     </>
@@ -709,6 +721,7 @@ const SetupMode = ({
   machineLabel,
   sheetName,
   ledIp,
+  canManageProduction = true,
   queue,
   pausedOrder,
   sessionWait = DEFAULT_SESSION_WAIT,
@@ -777,6 +790,7 @@ const SetupMode = ({
         <PausedOrderBanner
           pausedOrder={pausedOrder}
           machineId={machineId}
+          interactive={canManageProduction}
           onResume={onResumeOrder}
           onResumeWithScaleConfirm={onResumeWithScaleConfirm}
           onClosePaused={onClosePausedOrder}
@@ -884,6 +898,7 @@ const SetupMode = ({
                 machineId={machineId}
                 sheetName={sheetName}
                 ledIp={ledIp}
+                interactive={canManageProduction}
                 serverAwaitingScale={Boolean(sessionWait.active && sessionWait.orderId === item.orderId)}
                 serverSessionStartedAt={
                   sessionWait.active && sessionWait.orderId === item.orderId ? sessionWait.startedAt : null

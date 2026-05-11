@@ -42,10 +42,26 @@ const fetchWithTimeout = (url, options = {}, timeoutMs = 30_000) => {
     .finally(() => clearTimeout(id));
 };
 
+/** Sanctum personal access token (same source as Axios `resources/js/api.js`). */
+const bearerAuthHeader = () => {
+  try {
+    const token = localStorage.getItem('auth_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+};
+
+const jsonHeaders = (extra = {}) => ({
+  Accept: 'application/json',
+  ...bearerAuthHeader(),
+  ...extra,
+});
+
 const get = async (endpoint) => {
   const response = await fetchWithTimeout(`${BASE}${endpoint}`, {
     method: 'GET',
-    headers: { Accept: 'application/json' },
+    headers: jsonHeaders(),
   });
 
   const data = await response
@@ -65,10 +81,9 @@ const getCsrfToken = () =>
 const del = async (endpoint) => {
   const response = await fetchWithTimeout(`${BASE}${endpoint}`, {
     method: 'DELETE',
-    headers: {
-      Accept: 'application/json',
+    headers: jsonHeaders({
       'X-CSRF-TOKEN': getCsrfToken(),
-    },
+    }),
   });
 
   const data = await response
@@ -85,11 +100,10 @@ const del = async (endpoint) => {
 const post = async (endpoint, body) => {
   const response = await fetchWithTimeout(`${BASE}${endpoint}`, {
     method: 'POST',
-    headers: {
+    headers: jsonHeaders({
       'Content-Type': 'application/json',
-      Accept: 'application/json',
       'X-CSRF-TOKEN': getCsrfToken(),
-    },
+    }),
     body: JSON.stringify(body),
   });
 
@@ -203,11 +217,10 @@ export const logWeightEvent = (params) => post('/log-weight-event', params);
 export const updatePlanProduced = async (params) => {
   const response = await fetchWithTimeout(`${BASE}/update-plan-produced`, {
     method: 'POST',
-    headers: {
+    headers: jsonHeaders({
       'Content-Type': 'application/json',
-      Accept: 'application/json',
       'X-CSRF-TOKEN': getCsrfToken(),
-    },
+    }),
     body: JSON.stringify(params),
   }, 90_000);
   const data = await response.json().catch(() => ({ success: false, message: response.statusText }));
@@ -218,11 +231,10 @@ export const updatePlanProduced = async (params) => {
 export const updateDailyProduced = async (params) => {
   const response = await fetchWithTimeout(`${BASE}/update-daily-produced`, {
     method: 'POST',
-    headers: {
+    headers: jsonHeaders({
       'Content-Type': 'application/json',
-      Accept: 'application/json',
       'X-CSRF-TOKEN': getCsrfToken(),
-    },
+    }),
     body: JSON.stringify(params),
   }, 90_000); // GAS cold start อาจนานถึง 60-90s
   const data = await response.json().catch(() => ({ success: false, message: response.statusText }));

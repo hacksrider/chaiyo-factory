@@ -233,7 +233,7 @@ const FilterBar = ({ machines, filters, onChange, total, filtered, t }) => (
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-const HistoryView = ({ machines }) => {
+const HistoryView = ({ machines, allowDeleteHistory = false }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
@@ -259,23 +259,28 @@ const HistoryView = ({ machines }) => {
   });
 
   // Build translated column definitions
-  const COLS = [
-    { key: 'machine',     label: t('production.historyColMachine')     },
-    { key: 'timestamp',   label: t('production.historyColStarted')     },
-    { key: 'finishedAt',  label: t('production.historyColFinished')    },
-    { key: 'orderId',     label: t('production.historyColOrderId')     },
-    { key: 'productCode', label: t('production.historyColProductCode') },
-    { key: 'productName', label: t('production.historyColProductName') },
-    { key: 'shift',       label: t('production.historyColShift')       },
-    { key: 'employeeId',  label: t('production.historyColEmployee')    },
-    { key: 'targetQty',   label: t('production.historyColTarget')      },
-    { key: 'goodCount',   label: t('production.historyColGood')        },
-    { key: 'goodWeight',  label: t('production.historyColGoodWeight')  },
-    { key: 'ngWeight',    label: t('production.historyColNg')          },
-    { key: 'status',      label: t('production.historyColStatus')      },
-    { key: 'view',        label: t('production.historyColView'),        noSort: true },
-    { key: 'delete',      label: t('production.historyColDelete'),      noSort: true },
-  ];
+  const COLS = useMemo(() => {
+    const base = [
+      { key: 'machine',     label: t('production.historyColMachine')     },
+      { key: 'timestamp',   label: t('production.historyColStarted')     },
+      { key: 'finishedAt',  label: t('production.historyColFinished')    },
+      { key: 'orderId',     label: t('production.historyColOrderId')     },
+      { key: 'productCode', label: t('production.historyColProductCode') },
+      { key: 'productName', label: t('production.historyColProductName') },
+      { key: 'shift',       label: t('production.historyColShift')       },
+      { key: 'employeeId',  label: t('production.historyColEmployee')    },
+      { key: 'targetQty',   label: t('production.historyColTarget')      },
+      { key: 'goodCount',   label: t('production.historyColGood')        },
+      { key: 'goodWeight',  label: t('production.historyColGoodWeight')  },
+      { key: 'ngWeight',    label: t('production.historyColNg')          },
+      { key: 'status',      label: t('production.historyColStatus')      },
+      { key: 'view',        label: t('production.historyColView'),        noSort: true },
+    ];
+    if (allowDeleteHistory) {
+      base.push({ key: 'delete', label: t('production.historyColDelete'), noSort: true });
+    }
+    return base;
+  }, [t, allowDeleteHistory]);
 
   const statusLabel = (s = '') => {
     const lower = String(s).toLowerCase();
@@ -709,6 +714,7 @@ const HistoryView = ({ machines }) => {
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap text-center w-[1%]">
                         <button
+                          type="button"
                           onClick={() => openDetail(row)}
                           className="text-xs font-semibold text-cyan-300 hover:text-cyan-200
                             border border-cyan-500/30 hover:border-cyan-400/50 bg-cyan-500/10 hover:bg-cyan-500/15
@@ -717,6 +723,7 @@ const HistoryView = ({ machines }) => {
                           {t('production.historyColView')}
                         </button>
                       </td>
+                      {allowDeleteHistory && (
                       <td className="px-2 py-2 whitespace-nowrap text-center w-[1%]">
                         <button
                           type="button"
@@ -729,6 +736,7 @@ const HistoryView = ({ machines }) => {
                           {deletingId === row.id ? t('common.loading') : t('production.historyColDelete')}
                         </button>
                       </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

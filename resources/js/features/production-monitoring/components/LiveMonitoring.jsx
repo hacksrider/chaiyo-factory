@@ -647,6 +647,7 @@ const LiveMonitoring = ({
   machineLabel,
   machineState,
   resumeScalePollSinceId, // GET scale-weight incremental cursor หลัง hydrate จากหน้า index (กัน poll ซ้ำรายการเก่า)
+  canManageProduction = true,
   onWeightUpdate,   // (type: 'good'|'ng', weight: number, event) → update state
   onCloseOrder,
   onPauseAndStart,
@@ -809,7 +810,7 @@ const LiveMonitoring = ({
     <div className="space-y-6 w-full">
 
       {/* Switch Order modal */}
-      {switchTarget && (
+      {canManageProduction && switchTarget && (
         <SwitchOrderModal
           targetItem={switchTarget}
           currentOrderId={machineState.orderId}
@@ -823,7 +824,7 @@ const LiveMonitoring = ({
       )}
 
       {/* Finished Order summary modal */}
-      {showFinish && (
+      {canManageProduction && showFinish && (
         <FinishedOrderModal
           machineState={machineState}
           machineId={machineId}
@@ -833,7 +834,7 @@ const LiveMonitoring = ({
       )}
 
       {/* Cancel Production confirm modal */}
-      {showCancelConfirm && (
+      {canManageProduction && showCancelConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div className="bg-gray-900 border border-red-500/40 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
             <div className="flex items-center gap-3 mb-3">
@@ -1064,27 +1065,33 @@ const LiveMonitoring = ({
           {t('production.autoFromScale')}
         </div>
 
-        {/* Finished Order */}
-        <button
-          onClick={() => setShowFinish(true)}
-          className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-green-500/50 bg-green-500/15 py-2.5 pl-4 pr-5 font-semibold text-green-300 transition-all hover:border-green-400 hover:bg-green-500/25 hover:text-green-100 sm:flex-initial"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
-          </svg>
-          {t('production.finishedOrder')}
-        </button>
+        {canManageProduction && (
+          <>
+            {/* Finished Order */}
+            <button
+              type="button"
+              onClick={() => setShowFinish(true)}
+              className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-green-500/50 bg-green-500/15 py-2.5 pl-4 pr-5 font-semibold text-green-300 transition-all hover:border-green-400 hover:bg-green-500/25 hover:text-green-100 sm:flex-initial"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+              </svg>
+              {t('production.finishedOrder')}
+            </button>
 
-        {/* Cancel Production */}
-        <button
-          onClick={() => setShowCancelConfirm(true)}
-          className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-red-500/30 bg-red-500/8 py-2.5 px-4 font-medium text-red-400/80 transition-all hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300 sm:flex-initial"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-          {t('production.cancelOrder')}
-        </button>
+            {/* Cancel Production */}
+            <button
+              type="button"
+              onClick={() => setShowCancelConfirm(true)}
+              className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-red-500/30 bg-red-500/8 py-2.5 px-4 font-medium text-red-400/80 transition-all hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300 sm:flex-initial"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              {t('production.cancelOrder')}
+            </button>
+          </>
+        )}
       </div>
 
       {/* ── Queue panel (always visible while live) ── */}
@@ -1192,16 +1199,18 @@ const LiveMonitoring = ({
                       {t('production.removeFromQueue')}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setSwitchTarget(item)}
-                    className="flex items-center gap-1.5 text-xs font-semibold bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 text-green-400 px-3 py-1.5 rounded-lg transition-all"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                    </svg>
-                    {t('production.switchBtn')}
-                  </button>
+                  {canManageProduction && (
+                    <button
+                      type="button"
+                      onClick={() => setSwitchTarget(item)}
+                      className="flex items-center gap-1.5 text-xs font-semibold bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 text-green-400 px-3 py-1.5 rounded-lg transition-all"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                      </svg>
+                      {t('production.switchBtn')}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

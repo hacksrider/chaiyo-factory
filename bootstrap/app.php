@@ -26,6 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'admin' => \App\Http\Middleware\EnsureUserIsAdmin::class,
+            'sanctum.query' => \App\Http\Middleware\AttachSanctumTokenFromQuery::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

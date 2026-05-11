@@ -25,12 +25,6 @@ class AuthController extends Controller
             ]);
         }
 
-        if ($user->role !== 'admin') {
-            throw ValidationException::withMessages([
-                'username' => ['Only admin users can login.'],
-            ]);
-        }
-
         $token = $user->createToken('auth-token')->plainTextToken;
 
         return response()->json([

@@ -21,13 +21,14 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'username' => 'required|string|max:255|unique:users',
             'password' => 'required|string|min:8',
+            'role' => 'required|string|in:admin,user',
         ]);
 
         $user = User::create([
             'name' => $validated['name'],
             'username' => $validated['username'],
             'password' => Hash::make($validated['password']),
-            'role' => 'admin', // Always admin
+            'role' => $validated['role'],
         ]);
 
         return response()->json($user, 201);
@@ -41,10 +42,12 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'username' => 'required|string|max:255|unique:users,username,' . $id,
             'password' => 'nullable|string|min:8',
+            'role' => 'required|string|in:admin,user',
         ]);
 
         $user->name = $validated['name'];
         $user->username = $validated['username'];
+        $user->role = $validated['role'];
 
         if (!empty($validated['password'])) {
             $user->password = Hash::make($validated['password']);
