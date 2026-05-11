@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\MachineController;
 use App\Http\Controllers\Api\MachineZoneController;
 use App\Http\Controllers\Api\MachineZoneProblemController;
 use App\Http\Controllers\Api\AiGemController;
+use App\Http\Controllers\Api\MaintenanceRequestController;
 use App\Http\Middleware\EnsureUserIsAdmin;
 
 // Public routes - no authentication required
@@ -49,6 +50,28 @@ Route::prefix('api')->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
+
+        // ใบแจ้งซ่อม / บำรุงรักษาเครื่องจักร (FR-MTN-04)
+        Route::get('/maintenance-requests', [MaintenanceRequestController::class, 'index']);
+        Route::post('/maintenance-requests', [MaintenanceRequestController::class, 'store']);
+        Route::get('/maintenance-requests/{id}', [MaintenanceRequestController::class, 'show'])
+            ->whereNumber('id');
+        Route::post('/maintenance-requests/{id}', [MaintenanceRequestController::class, 'update'])
+            ->whereNumber('id');
+        Route::put('/maintenance-requests/{id}', [MaintenanceRequestController::class, 'update'])
+            ->whereNumber('id');
+        Route::get('/maintenance-notifications', [MaintenanceRequestController::class, 'notificationsIndex']);
+        Route::get('/maintenance-notifications/unread-count', [MaintenanceRequestController::class, 'unreadCount']);
+        Route::post('/maintenance-notifications/read-all', [MaintenanceRequestController::class, 'markAllRead']);
+        Route::post('/maintenance-notifications/{id}/read', [MaintenanceRequestController::class, 'markNotificationRead'])
+            ->whereNumber('id');
+
+        Route::middleware([EnsureUserIsAdmin::class])->group(function () {
+            Route::post('/maintenance-requests/{id}/approve', [MaintenanceRequestController::class, 'approve'])
+                ->whereNumber('id');
+            Route::post('/maintenance-requests/{id}/reject', [MaintenanceRequestController::class, 'reject'])
+                ->whereNumber('id');
+        });
         
         // Admin only routes
         Route::middleware([EnsureUserIsAdmin::class])->group(function () {

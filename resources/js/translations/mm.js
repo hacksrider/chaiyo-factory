@@ -42,6 +42,33 @@ export default {
         logout: 'ထွက်ရန်',
         hello: 'မင်္ဂလာပါ',
     },
+
+    maintenance: {
+        navButton: 'ပြုပြင်မွမ်းမံခြင်းအကြောင်းကြားစာ',
+        loginToUse: 'ဝင်ရောက်ပြီးမှ သုံးရန်',
+        notifications: 'အကြောင်းကြားချက်များ',
+        markAllRead: 'အားလုံး ဖတ်ပြီး',
+        noNotifications: 'မရှိပါ',
+        newForm: 'စာရွက်အသစ်',
+        editForm: 'ပြင်ရန်',
+        confirmSave: 'သိမ်းမည်',
+        saved: 'သိမ်းပြီး',
+        created: 'တင်သွင်းပြီး',
+        saveFailed: 'မအောင်မြင်ပါ',
+        detailTitle: 'အသေးစိတ်',
+        submitter: 'တင်သွင်းသူ',
+        adminNote: 'Admin မှတ်ချက်',
+        approve: 'အတည်ပြု',
+        reject: 'ငြင်းပါ',
+        approved: 'အတည်ပြုပြီး',
+        rejected: 'ငြင်းပြီး',
+        rejectTitle: 'ငြင်းရခြင်း အကြောင်းရင်း',
+        rejectPlaceholder: 'ရေးပါ (လိုအပ်သည်)',
+        rejectConfirm: 'ငြင်းမည်',
+        rejectNeedReason: 'အကြောင်းရင်း ထည့်ပါ',
+        clearPhotoBefore: 'ရုပ်ပုံ မတိုင်မီ ဖျက်ရန်',
+        clearPhotoAfter: 'ရုပ်ပုံ နောက်ပိုင်း ဖျက်ရန်',
+    },
     
     // Landing Page
     landing: {

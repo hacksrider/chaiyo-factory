@@ -6,6 +6,7 @@ import { useTranslation } from '../utils/translations';
 import LanguageSwitcher from './LanguageSwitcher';
 import AdminLayout from './AdminLayout';
 import { publicAPI } from '../api';
+import MaintenanceNavSuite from '../features/maintenance-requests/MaintenanceNavSuite';
 
 const PublicLayout = ({ children }) => {
     const navigate = useNavigate();
@@ -163,6 +164,7 @@ const PublicLayout = ({ children }) => {
                         </div>
                     </div>
                     <div className="flex flex-shrink-0 items-center gap-2 sm:gap-3">
+                        <MaintenanceNavSuite />
                         <LanguageSwitcher />
                         <button
                             type="button"

@@ -6,6 +6,7 @@ import { useTranslation } from '../utils/translations';
 import LanguageSwitcher from './LanguageSwitcher';
 import { adminAPI } from '../api';
 import { useAlert } from '../contexts/AlertContext';
+import MaintenanceNavSuite from '../features/maintenance-requests/MaintenanceNavSuite';
 
 const AdminLayout = ({ children }) => {
     const navigate = useNavigate();
@@ -355,6 +356,7 @@ const AdminLayout = ({ children }) => {
                                     {t('admin.manageContent')}
                                 </button> */}
                             </div>
+                            <MaintenanceNavSuite />
                             <LanguageSwitcher />
                             <div className="relative group">
                                 <button

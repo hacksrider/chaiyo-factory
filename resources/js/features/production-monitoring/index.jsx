@@ -1133,15 +1133,19 @@ const ProductionMonitoring = () => {
                 {t('production.syncedAt')} {lastSyncAt.toLocaleTimeString()}
               </span>
             )}
-            <div className="hidden sm:block">
-              <LanguageSwitcher variant="dark" />
-            </div>
-            <a
-              href="/"
-              className="text-xs text-gray-500 hover:text-gray-200 transition px-2.5 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 whitespace-nowrap"
-            >
-              {t('production.back')}
-            </a>
+            {!isLive && (
+              <>
+                <div className="hidden sm:block">
+                  <LanguageSwitcher variant="dark" />
+                </div>
+                <a
+                  href="/"
+                  className="text-xs text-gray-500 hover:text-gray-200 transition px-2.5 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 whitespace-nowrap"
+                >
+                  {t('production.back')}
+                </a>
+              </>
+            )}
           </div>
         </div>
 
@@ -1227,10 +1231,12 @@ const ProductionMonitoring = () => {
             {t('production.history')}
           </button>
 
-          {/* Language switcher (mobile — shown inline in nav row) */}
-          <div className="sm:hidden ml-auto">
-            <LanguageSwitcher variant="dark" />
-          </div>
+          {/* Language switcher (mobile — shown inline in nav row; hidden on live เพราะใช้ตัวใน LiveMonitoring) */}
+          {!isLive && (
+            <div className="sm:hidden ml-auto">
+              <LanguageSwitcher variant="dark" />
+            </div>
+          )}
         </div>
       </header>
 

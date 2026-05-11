@@ -9,6 +9,7 @@ import StatCard from './StatCard';
 import { updateWeight, closeOrder, createOrder, fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
+import LanguageSwitcher from '../../../components/LanguageSwitcher';
 
 // ─── Elapsed timer hook ───────────────────────────────────────────────────────
 
@@ -948,10 +949,15 @@ const LiveMonitoring = ({
           )} */}
         </div>
 
-        {/* Elapsed timer */}
-        <div className="w-full shrink-0 rounded-xl border border-gray-700/50 bg-gray-800/60 px-4 py-3 text-center sm:w-auto sm:px-5 sm:text-right">
-          <p className="mb-1 text-[11px] uppercase tracking-wider text-gray-500">{t('production.runtime')}</p>
-          <p className="font-mono text-2xl font-bold tabular-nums text-gray-200 sm:text-3xl">{elapsed}</p>
+        <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:shrink-0 sm:items-end">
+          <div className="flex justify-end sm:w-full sm:justify-end [&>div]:border-l-0 [&>div]:pl-0 sm:[&>div]:pl-0">
+            <LanguageSwitcher variant="dark" />
+          </div>
+          {/* Elapsed timer */}
+          <div className="w-full shrink-0 rounded-xl border border-gray-700/50 bg-gray-800/60 px-4 py-3 text-center sm:w-auto sm:px-5 sm:text-right">
+            <p className="mb-1 text-[11px] uppercase tracking-wider text-gray-500">{t('production.runtime')}</p>
+            <p className="font-mono text-2xl font-bold tabular-nums text-gray-200 sm:text-3xl">{elapsed}</p>
+          </div>
         </div>
       </div>
 

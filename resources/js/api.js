@@ -33,6 +33,7 @@ api.interceptors.response.use(
                 && window.location.pathname.startsWith('/production-monitoring');
             const isProdMonApi = url.includes('production-monitor');
             if (url.includes('/admin/') || url.includes('/me') || url.includes('/logout')
+                || url.includes('/maintenance-requests') || url.includes('/maintenance-notifications')
                 || (onProductionPage && isProdMonApi)) {
                 localStorage.removeItem('auth_token');
                 localStorage.removeItem('auth_user');
@@ -50,6 +51,20 @@ export const authAPI = {
     login: (username, password) => api.post('/login', { username, password }),
     logout: () => api.post('/logout'),
     me: () => api.get('/me'),
+};
+
+/** ใบแจ้งซ่อม FR-MTN-04 — ต้องล็อกอิน */
+export const maintenanceAPI = {
+    list: (params) => api.get('/maintenance-requests', { params }),
+    get: (id) => api.get(`/maintenance-requests/${id}`),
+    create: (formData) => api.post('/maintenance-requests', formData),
+    update: (id, formData) => api.post(`/maintenance-requests/${id}`, formData),
+    approve: (id, data) => api.post(`/maintenance-requests/${id}/approve`, data),
+    reject: (id, data) => api.post(`/maintenance-requests/${id}/reject`, data),
+    notifications: () => api.get('/maintenance-notifications'),
+    unreadCount: () => api.get('/maintenance-notifications/unread-count'),
+    markNotificationRead: (id) => api.post(`/maintenance-notifications/${id}/read`),
+    markAllNotificationsRead: () => api.post('/maintenance-notifications/read-all'),
 };
 
 export const publicAPI = {

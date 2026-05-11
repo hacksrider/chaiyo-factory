@@ -1,11 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useLanguage } from '../contexts/LanguageContext';
 import FlagIcon from './FlagIcon';
+
+const MENU_WIDTH = 115;
 
 const LanguageSwitcher = ({ variant = 'light' }) => {
     const { language, changeLanguage } = useLanguage();
     const [isOpen, setIsOpen] = useState(false);
-    const dropdownRef = useRef(null);
+    const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+    const buttonRef = useRef(null);
+    const menuRef = useRef(null);
     const isDark = variant === 'dark';
 
     const languages = [
@@ -15,11 +20,35 @@ const LanguageSwitcher = ({ variant = 'light' }) => {
 
     const currentLanguage = languages.find(lang => lang.code === language) || languages[0];
 
+    const updateMenuPosition = useCallback(() => {
+        const btn = buttonRef.current;
+        if (!btn) return;
+        const r = btn.getBoundingClientRect();
+        const left = Math.min(
+            Math.max(8, r.right - MENU_WIDTH),
+            typeof window !== 'undefined' ? window.innerWidth - MENU_WIDTH - 8 : r.right - MENU_WIDTH,
+        );
+        const top = r.bottom + 4;
+        setMenuPos({ top, left });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!isOpen) return;
+        updateMenuPosition();
+        const onWin = () => updateMenuPosition();
+        window.addEventListener('resize', onWin);
+        window.addEventListener('scroll', onWin, true);
+        return () => {
+            window.removeEventListener('resize', onWin);
+            window.removeEventListener('scroll', onWin, true);
+        };
+    }, [isOpen, updateMenuPosition]);
+
     useEffect(() => {
         const handleClickOutside = (event) => {
-            if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-                setIsOpen(false);
-            }
+            if (buttonRef.current?.contains(event.target)) return;
+            if (menuRef.current?.contains(event.target)) return;
+            setIsOpen(false);
         };
 
         document.addEventListener('mousedown', handleClickOutside);
@@ -34,9 +63,11 @@ const LanguageSwitcher = ({ variant = 'light' }) => {
     };
 
     return (
-        <div className={`relative border-l ${isDark ? 'border-gray-700/50 pl-2 sm:pl-3' : 'pl-2 sm:pl-4'}`} ref={dropdownRef}>
+        <div className={`relative border-l ${isDark ? 'border-gray-700/50 pl-2 sm:pl-3' : 'pl-2 sm:pl-4'}`}>
             <button
-                onClick={() => setIsOpen(!isOpen)}
+                ref={buttonRef}
+                type="button"
+                onClick={() => setIsOpen((v) => !v)}
                 className={`flex items-center gap-2 px-1 py-1 rounded-md text-sm focus:outline-none focus:ring-2 transition-colors duration-200 ${
                     isDark
                         ? 'bg-gray-800 border border-gray-600/60 text-gray-200 hover:bg-gray-700 focus:ring-cyan-500'
@@ -57,47 +88,61 @@ const LanguageSwitcher = ({ variant = 'light' }) => {
                 </svg>
             </button>
 
-            {isOpen && (
-                <div className={`absolute right-0 w-[115px] rounded-md shadow-lg border z-50 ${
-                    isDark ? 'bg-gray-800 border-gray-600/60' : 'bg-white border-gray-200'
-                }`}>
-                    <div>
-                        {languages.map((lang) => (
-                            <button
-                                key={lang.code}
-                                onClick={() => handleLanguageChange(lang.code)}
-                                className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors duration-150 ${
-                                    isDark
-                                        ? language === lang.code
-                                            ? 'bg-cyan-500/20 text-cyan-300'
-                                            : 'text-gray-200 hover:bg-gray-700'
-                                        : language === lang.code
-                                            ? 'bg-blue-100 text-blue-700'
-                                            : 'text-gray-700 hover:bg-gray-100'
-                                }`}
-                            >
-                                <span className="w-8 h-6 flex-shrink-0 overflow-hidden">
-                                    <FlagIcon countryCode={lang.code} className="w-full h-full" />
-                                </span>
-                                <span>{lang.name}</span>
-                                {language === lang.code && (
-                                    <svg
-                                        className={`w-4 h-4 ml-auto ${isDark ? 'text-cyan-400' : 'text-blue-600'}`}
-                                        fill="currentColor"
-                                        viewBox="0 0 20 20"
-                                    >
-                                        <path
-                                            fillRule="evenodd"
-                                            d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                                            clipRule="evenodd"
-                                        />
-                                    </svg>
-                                )}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
+            {isOpen &&
+                typeof document !== 'undefined' &&
+                createPortal(
+                    <div
+                        ref={menuRef}
+                        style={{
+                            position: 'fixed',
+                            top: menuPos.top,
+                            left: menuPos.left,
+                            width: MENU_WIDTH,
+                            zIndex: 10000,
+                        }}
+                        className={`rounded-md shadow-lg border ${
+                            isDark ? 'bg-gray-800 border-gray-600/60' : 'bg-white border-gray-200'
+                        }`}
+                    >
+                        <div>
+                            {languages.map((lang) => (
+                                <button
+                                    type="button"
+                                    key={lang.code}
+                                    onClick={() => handleLanguageChange(lang.code)}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors duration-150 ${
+                                        isDark
+                                            ? language === lang.code
+                                                ? 'bg-cyan-500/20 text-cyan-300'
+                                                : 'text-gray-200 hover:bg-gray-700'
+                                            : language === lang.code
+                                              ? 'bg-blue-100 text-blue-700'
+                                              : 'text-gray-700 hover:bg-gray-100'
+                                    }`}
+                                >
+                                    <span className="w-8 h-6 flex-shrink-0 overflow-hidden">
+                                        <FlagIcon countryCode={lang.code} className="w-full h-full" />
+                                    </span>
+                                    <span>{lang.name}</span>
+                                    {language === lang.code && (
+                                        <svg
+                                            className={`w-4 h-4 ml-auto ${isDark ? 'text-cyan-400' : 'text-blue-600'}`}
+                                            fill="currentColor"
+                                            viewBox="0 0 20 20"
+                                        >
+                                            <path
+                                                fillRule="evenodd"
+                                                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                                clipRule="evenodd"
+                                            />
+                                        </svg>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    </div>,
+                    document.body,
+                )}
         </div>
     );
 };

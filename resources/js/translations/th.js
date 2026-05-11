@@ -42,6 +42,33 @@ export default {
         logout: 'ออกจากระบบ',
         hello: 'สวัสดี',
     },
+
+    maintenance: {
+        navButton: 'ใบแจ้งซ่อม',
+        loginToUse: 'เข้าสู่ระบบเพื่อใช้ใบแจ้งซ่อม',
+        notifications: 'แจ้งเตือน',
+        markAllRead: 'อ่านทั้งหมด',
+        noNotifications: 'ไม่มีแจ้งเตือน',
+        newForm: 'สร้างใบแจ้งซ่อม',
+        editForm: 'แก้ไขใบแจ้งซ่อม',
+        confirmSave: 'ยืนยันบันทึก',
+        saved: 'บันทึกแล้ว',
+        created: 'ส่งใบแจ้งซ่อมแล้ว',
+        saveFailed: 'บันทึกไม่สำเร็จ',
+        detailTitle: 'รายละเอียดใบ',
+        submitter: 'ผู้แจ้ง',
+        adminNote: 'หมายเหตุจากผู้ดูแล',
+        approve: 'อนุมัติ',
+        reject: 'ปฏิเสธ',
+        approved: 'อนุมัติแล้ว',
+        rejected: 'บันทึกการปฏิเสธแล้ว',
+        rejectTitle: 'เหตุผลการปฏิเสธ',
+        rejectPlaceholder: 'ระบุเหตุผล (จำเป็นต้องกรอก)',
+        rejectConfirm: 'ยืนยันปฏิเสธ',
+        rejectNeedReason: 'กรุณากรอกเหตุผลการปฏิเสธ',
+        clearPhotoBefore: 'ลบรูปก่อนซ่อม',
+        clearPhotoAfter: 'ลบรูปหลังซ่อม',
+    },
     
     // Landing Page
     landing: {
