@@ -1270,8 +1270,7 @@ const ProductionMonitoring = () => {
                         }
                       }
 
-                      const snap = getMachineState(mid);
-                      const seq  = (snap.pipeCounter ?? 0) + (snap.ngCount ?? 0) + 1;
+                      const snapBefore = getMachineState(mid);
 
                       if (type === 'good') {
                         updateMachineState(mid, (prev) => ({
@@ -1291,19 +1290,24 @@ const ProductionMonitoring = () => {
                         }));
                       }
 
-                      // บันทึกรายการน้ำหนักลง GAS Sheet — retry ถ้า fail
-                      if (snap.sheetName && snap.orderId) {
+                      // Laravel เก็บ DB + SyncWeightEventToGas เมื่อตาชั่ง POST มี eventId — อย่ายิง logWeightEvent ซ้ำ (เดิมทำแถวใน Sheet เท่าทวีคู่ และคอลัมลำดับเพี้ยน)
+                      if (
+                        !(snapBefore.sheetName && snapBefore.orderId)
+                        || eidNorm !== undefined
+                      ) {
+                        /* เคสปกติของ ESP32+Laravel — อยู่เมื่อมี eventId; ถ้าไม่มีข้อมูลชีต/order ไม่ส่งไปที่ GAS */
+                      } else {
+                        const seq = (snapBefore.pipeCounter ?? 0) + (snapBefore.ngCount ?? 0) + 1;
                         const evParams = {
                           machineId: mid,
-                          sheetName: snap.sheetName,
-                          orderId:   snap.orderId,
+                          sheetName: snapBefore.sheetName,
+                          orderId:   snapBefore.orderId,
                           seq,
                           type,
                           weight,
                           pressedAt,
                         };
                         logWeightEvent(evParams).catch(() => {
-                          // GAS timeout / ไม่ตอบ → เข้า retry queue, flush ทุก 20 วิ
                           weightRetryQueueRef.current.push({ params: evParams, attempts: 1 });
                         });
                       }

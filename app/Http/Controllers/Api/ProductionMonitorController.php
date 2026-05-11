@@ -985,62 +985,85 @@ class ProductionMonitorController extends Controller
         $sessionAfter = null;
         $createdEventId = null;
 
+        $orderForLock = (string) ($payload['orderId'] ?? '');
+        $lockKey      = 'weight-seq:' . hash('sha1', "{$machineId}|{$orderForLock}");
+
         try {
-            DB::transaction(function () use ($machineId, $payload, &$sessionAfter, &$createdEventId) {
-                $type       = $payload['type']   ?? 'good';
-                $weight     = (float) ($payload['weight'] ?? 0);
-                $orderId    = $payload['orderId']    ?? '';
-                $sheetName  = $payload['sheetName']  ?? '';
-                $employeeId = $payload['employeeId'] ?? '';
-                $shift      = $payload['shift']      ?? '';
+            // ให้เลขลำดับใน order เป็นแบบ linear ภายใน machine+order เสมอ (กันชน max(seq) เมื่อไม่มีแถว session lock พร้อมกัน / เรียกคู่ขนานจาก ESP32)
+            Cache::lock($lockKey, 30)->block(15, function () use ($machineId, $payload, &$sessionAfter, &$createdEventId) {
+                DB::transaction(function () use ($machineId, $payload, &$sessionAfter, &$createdEventId) {
+                    $type       = $payload['type']   ?? 'good';
+                    $weight     = (float) ($payload['weight'] ?? 0);
+                    $orderId    = $payload['orderId']    ?? '';
+                    $sheetName  = $payload['sheetName']  ?? '';
+                    $employeeId = $payload['employeeId'] ?? '';
+                    $shift      = $payload['shift']      ?? '';
 
-                $session = ProductionSession::where('machine_id', $machineId)
-                    ->whereNotIn('status', ['finished', 'cancelled'])
-                    ->lockForUpdate()
-                    ->first();
+                    $session = ProductionSession::where('machine_id', $machineId)
+                        ->whereNotIn('status', ['finished', 'cancelled'])
+                        ->lockForUpdate()
+                        ->first();
 
-                $seq = (int) ProductionWeightEvent::where('machine_id', $machineId)
-                    ->where('order_id', $orderId)
-                    ->max('seq') + 1;
+                    $seq = (int) ProductionWeightEvent::where('machine_id', $machineId)
+                        ->where('order_id', $orderId)
+                        ->max('seq') + 1;
 
-                $pressedAtDb = $payload['pressedAt'] ?? null;
-                if (is_string($pressedAtDb) && str_starts_with($pressedAtDb, 'millis:')) {
-                    $pressedAtDb = null;
-                }
-
-                $weightEvent = ProductionWeightEvent::create([
-                    'machine_id'      => $machineId,
-                    'order_id'        => $orderId,
-                    'sheet_name'      => $sheetName,
-                    'type'            => $type,
-                    'weight'          => $weight,
-                    'seq'             => $seq,
-                    'employee_id'     => $employeeId,
-                    'shift'           => $shift,
-                    'pressed_at'      => $pressedAtDb,
-                    'received_at'     => $payload['receivedAt'],
-                    'raw_payload'     => $payload,
-                    'gas_sync_status' => 'pending',
-                ]);
-
-                $createdEventId = $weightEvent->id;
-
-                SyncWeightEventToGas::dispatch($weightEvent->id, $this->gasUrl)
-                    ->onQueue('gas-sync');
-
-                if ($session) {
-                    $tsMs = (int) (now()->timestamp * 1000);
+                    // คอลัมลำดับของดี/ของเสียใน Sheet และในประวัติ: เรียง 1…n ภายใน type (ไม่กระโดดเพราะของเสียคั่น)
+                    $goodSeq = null;
+                    $ngSeq   = null;
                     if ($type === 'good') {
-                        $session->increment('pipe_counter');
-                        $session->increment('total_good_weight', $weight);
-                        // remaining_qty = ค้างผลิตจากแผน — ไม่ลดเมื่อกดของดี (เทียบกับ pipe_counter / ประวัติแยก)
+                        $goodSeq = (int) ProductionWeightEvent::where('machine_id', $machineId)
+                            ->where('order_id', $orderId)
+                            ->where('type', 'good')
+                            ->max('good_seq') + 1;
                     } else {
-                        $session->increment('ng_count');
-                        $session->increment('total_ng_weight', $weight);
+                        $ngSeq = (int) ProductionWeightEvent::where('machine_id', $machineId)
+                            ->where('order_id', $orderId)
+                            ->where('type', 'ng')
+                            ->max('ng_seq') + 1;
                     }
-                    $session->forceFill(['ts' => $tsMs])->save();
-                    $sessionAfter = $session->fresh();
-                }
+
+                    $pressedAtDb = $payload['pressedAt'] ?? null;
+                    if (is_string($pressedAtDb) && str_starts_with($pressedAtDb, 'millis:')) {
+                        $pressedAtDb = null;
+                    }
+
+                    $weightEvent = ProductionWeightEvent::create([
+                        'machine_id'      => $machineId,
+                        'order_id'        => $orderId,
+                        'sheet_name'      => $sheetName,
+                        'type'            => $type,
+                        'weight'          => $weight,
+                        'seq'             => $seq,
+                        'good_seq'        => $goodSeq,
+                        'ng_seq'          => $ngSeq,
+                        'employee_id'     => $employeeId,
+                        'shift'           => $shift,
+                        'pressed_at'      => $pressedAtDb,
+                        'received_at'     => $payload['receivedAt'],
+                        'raw_payload'     => $payload,
+                        'gas_sync_status' => 'pending',
+                    ]);
+
+                    $createdEventId = $weightEvent->id;
+
+                    SyncWeightEventToGas::dispatch($weightEvent->id, $this->gasUrl)
+                        ->onQueue('gas-sync');
+
+                    if ($session) {
+                        $tsMs = (int) (now()->timestamp * 1000);
+                        if ($type === 'good') {
+                            $session->increment('pipe_counter');
+                            $session->increment('total_good_weight', $weight);
+                            // remaining_qty = ค้างผลิตจากแผน — ไม่ลดเมื่อกดของดี (เทียบกับ pipe_counter / ประวัติ)
+                        } else {
+                            $session->increment('ng_count');
+                            $session->increment('total_ng_weight', $weight);
+                        }
+                        $session->forceFill(['ts' => $tsMs])->save();
+                        $sessionAfter = $session->fresh();
+                    }
+                });
             });
         } catch (\Throwable $e) {
             Cache::forget($dedupKey);
@@ -1626,6 +1649,30 @@ class ProductionMonitorController extends Controller
             }
             // Loose match: machine_id may be stored as string vs int across sources
             if (in_array($mid, $terminalMachineIds, false)) {
+                // Browser อื่นอาจพลาด SSE แต่ยัง Local เป็น live — ต้องให้ poll ส่ง setup มาเพื่อ mergeServerStates Rule 1 ดึงลง
+                $lastTerminal = ProductionSession::where('machine_id', $mid)
+                    ->whereIn('status', ['finished', 'cancelled'])
+                    ->orderByDesc('finished_at')
+                    ->first();
+                $ts = ($lastTerminal && (int) ($lastTerminal->ts ?? 0) > 0)
+                    ? (int) $lastTerminal->ts
+                    : (int) round(microtime(true) * 1000);
+
+                $sessions[$mid] = [
+                    'mode'            => 'setup',
+                    'orderId'         => '',
+                    'productCode'     => '',
+                    'productName'     => '',
+                    'targetQty'       => 0,
+                    'remainingQty'    => 0,
+                    'pipeCounter'     => 0,
+                    'ngCount'         => 0,
+                    'totalGoodWeight' => 0,
+                    'totalNgWeight'   => 0,
+                    'finishedOrderId' => $lastTerminal ? (string) $lastTerminal->order_id : null,
+                    '_ts'             => $ts,
+                    '_db'             => true,
+                ];
                 continue;
             }
             $cached = Cache::get("machine_session_{$mid}");
@@ -1635,6 +1682,18 @@ class ProductionMonitorController extends Controller
         }
 
         return $sessions;
+    }
+
+    /**
+     * หลังจบผลิต / ยกเลิก — sync ว่าไม่ผลิต + ป้องกัน poll เก่ามาอ่านแล้วนับซ้ำ
+     */
+    private function finalizeScaleCachesForIdle(string $machineId): void
+    {
+        Cache::put("scale_live_{$machineId}", ['live' => false], now()->addDays(7));
+        Cache::forget("scale_events_{$machineId}");
+        Cache::forget("scale_count_{$machineId}");
+        Cache::forget("scale_confirm_{$machineId}");
+        Cache::put("scale_session_start_{$machineId}", now()->toIso8601String(), now()->addHours(24));
     }
 
     /**
@@ -1856,9 +1915,8 @@ class ProductionMonitorController extends Controller
         }
 
         Cache::forget("machine_session_{$machineId}");
-        Cache::put("scale_live_{$machineId}", ['live' => false], now()->addDays(7));
         Cache::forget("session_confirm_{$machineId}");
-        Cache::forget("scale_confirm_{$machineId}");
+        $this->finalizeScaleCachesForIdle($machineId);
 
         $this->publishEvent('session_updated', [
             'machineId' => $machineId,
@@ -2021,7 +2079,7 @@ class ProductionMonitorController extends Controller
      * POST /api/production-monitor/finish/{machineId}
      *
      * จบงาน: status → finished, คัดลอกข้อมูลไป production_orders
-     * Body: { goodCount?, ngCount?, totalGoodWeight?, totalNgWeight? }
+     * Body: { goodCount?, ngCount?, totalGoodWeight?, totalNgWeight?, skipGasDispatch? }
      */
     public function finishSession(Request $request, string $machineId): JsonResponse
     {
@@ -2036,12 +2094,14 @@ class ProductionMonitorController extends Controller
         $now = now();
 
         // Allow frontend to override counters (e.g., final sync before finish)
+        $skipGasDispatch = $request->boolean('skipGasDispatch');
         $goodCount       = (int) ($request->input('goodCount',       $session->pipe_counter));
         $ngCount         = (int) ($request->input('ngCount',         $session->ng_count));
         $totalGoodWeight = (float) ($request->input('totalGoodWeight', $session->total_good_weight));
         $totalNgWeight   = (float) ($request->input('totalNgWeight',  $session->total_ng_weight));
 
-        DB::transaction(function () use ($session, $machineId, $now, $goodCount, $ngCount, $totalGoodWeight, $totalNgWeight) {
+        $prodOrder = null;
+        DB::transaction(function () use ($session, $machineId, $now, $goodCount, $ngCount, $totalGoodWeight, $totalNgWeight, $skipGasDispatch, &$prodOrder) {
             $session->update([
                 'status'      => 'finished',
                 'finished_at' => $now,
@@ -2078,13 +2138,26 @@ class ProductionMonitorController extends Controller
                 'started_at'        => $session->started_at,
                 'finished_at'       => $now,
                 'status'            => 'finished',
-                'gas_sync_status'   => 'pending',
+                'gas_sync_status'   => $skipGasDispatch ? 'skipped' : 'pending',
             ]);
         });
 
-        // Dispatch async GAS dual-write for order close
-        SyncOrderToGas::dispatch($prodOrder->id, 'closeOrder', $this->gasUrl)
-            ->onQueue('gas-sync');
+        // การบันทึกรายการน้ำหนักลงตารางเป็นรายเหตุการณ์ (ตามกะ/order) เมื่อกดจากตาชั่งอยู่แล้ว — เสร็จสิ้นงานเหลือแค่ summary ใน production_orders
+        // ถ้ามีความไม่ตรงกัน ช่วย debug (เดิมอาจมาจาก retry ซ้ำ / บั๊กเก่า)
+        $liveOrderId = (string) $session->order_id;
+        $dbGood        = ProductionWeightEvent::where('machine_id', $machineId)->where('order_id', $liveOrderId)->where('type', 'good')->count();
+        $dbNg          = ProductionWeightEvent::where('machine_id', $machineId)->where('order_id', $liveOrderId)->where('type', 'ng')->count();
+        if ($dbGood !== $goodCount || $dbNg !== $ngCount) {
+            Log::info("[finishSession] session counters vs DB weight_events counts — machine={$machineId}, order={$liveOrderId}, session good/ng={$goodCount}/{$ngCount}, db good/ng={$dbGood}/{$dbNg}");
+        }
+
+        $this->finalizeScaleCachesForIdle($machineId);
+
+        // Web เรียก close-order ผ่าน GAS อยู่แล้ว — อย่ายิงซ้ำถ้าระบุ skipGasDispatch
+        if (!$skipGasDispatch && $prodOrder !== null) {
+            SyncOrderToGas::dispatch($prodOrder->id, 'closeOrder', $this->gasUrl)
+                ->onQueue('gas-sync');
+        }
 
         $state = $session->fresh()->toFrontendState();
 
@@ -2102,29 +2175,117 @@ class ProductionMonitorController extends Controller
      */
     public function getHistoryDb(Request $request): JsonResponse
     {
-        $query = ProductionOrder::query()->orderByDesc('started_at');
+        $query = ProductionOrder::query()
+            ->where('status', 'finished')
+            ->orderByDesc('finished_at');
 
-        if ($machineId = $request->input('machineId')) {
-            $query->where('machine_id', $machineId);
+        if ($m = trim((string) $request->input('machine', ''))) {
+            $query->where(function ($q) use ($m) {
+                $q->where('machine_id', $m)->orWhere('sheet_name', $m);
+            });
         }
-        if ($orderId = $request->input('orderId')) {
-            $query->where('order_id', $orderId);
+        if ($orderId = trim((string) $request->input('orderId', ''))) {
+            $query->where('order_id', 'like', '%' . $orderId . '%');
         }
         if ($from = $request->input('from')) {
-            $query->whereDate('started_at', '>=', $from);
+            $query->whereDate('finished_at', '>=', $from);
         }
         if ($to = $request->input('to')) {
-            $query->whereDate('started_at', '<=', $to);
+            $query->whereDate('finished_at', '<=', $to);
+        }
+        if ($shift = trim((string) $request->input('shift', ''))) {
+            $sq = strtoupper($shift);
+            $query->where('shift', 'like', '%' . $sq . '%');
         }
 
-        $perPage = min((int) $request->input('perPage', 50), 200);
+        $perPage = min((int) $request->input('perPage', 200), 500);
         $orders  = $query->paginate($perPage);
 
+        $history = collect($orders->items())->map(static function (ProductionOrder $o) {
+            $goodCount = (int) $o->good_count;
+            $goodW     = (float) $o->total_good_weight;
+            $ngW       = (float) $o->total_ng_weight;
+            $ngC       = (int) $o->ng_count;
+
+            return [
+                'id'           => $o->id,
+                'machine_id'   => $o->machine_id,
+                'machine'      => $o->sheet_name !== '' ? $o->sheet_name : $o->machine_id,
+                'timestamp'    => $o->started_at?->toISOString(),
+                'finishedAt'   => $o->finished_at?->toISOString(),
+                'orderId'      => $o->order_id,
+                'productCode'  => $o->product_code,
+                'productName'  => $o->product_name,
+                'shift'        => $o->shift,
+                'employeeId'   => $o->employee_id,
+                'targetQty'    => $o->target_qty,
+                'goodCount'    => $goodCount,
+                'ngCount'      => $ngC,
+                'goodWeight'   => $goodW,
+                'ngWeight'     => $ngW,
+                'summary'      => "ของดี {$goodCount} รายการ / {$goodW} kg",
+                'ngSummary'    => $ngC > 0 ? "ของเสียรวม {$ngW} kg" : '',
+                'status'       => 'Completed',
+            ];
+        })->values()->all();
+
         return response()->json([
+            'history'      => $history,
             'data'         => $orders->items(),
             'total'        => $orders->total(),
             'current_page' => $orders->currentPage(),
             'last_page'    => $orders->lastPage(),
+        ]);
+    }
+
+    /**
+     * GET /api/production-monitor/order-detail-db
+     *
+     * รายการน้ำหนักจาก production_weight_events (ตรงกับตาชั่ง + DB)
+     *
+     * Query: machineId=&orderId=
+     */
+    public function orderDetailDb(Request $request): JsonResponse
+    {
+        $machineId = trim((string) $request->input('machineId', ''));
+        $orderId   = trim((string) $request->input('orderId', ''));
+
+        if ($machineId === '' || $orderId === '') {
+            return response()->json(['message' => 'machineId and orderId required'], 422);
+        }
+
+        $events = ProductionWeightEvent::where('machine_id', $machineId)
+            ->where('order_id', $orderId)
+            ->orderByRaw('COALESCE(received_at, pressed_at, created_at) ASC')
+            ->orderBy('id')
+            ->get()
+            ->map(static function (ProductionWeightEvent $e) {
+                $lineOrd = $e->good_seq ?? $e->ng_seq ?? $e->seq;
+
+                return [
+                    'id'        => $e->id,
+                    'seq'       => $lineOrd,
+                    'lineOrdinal' => $lineOrd,
+                    'auditSeq'    => $e->seq,
+                    'goodSeq'   => $e->good_seq,
+                    'ngSeq'     => $e->ng_seq,
+                    'type'      => $e->type,
+                    'weight'    => $e->weight,
+                    'pressedAt' => $e->pressed_at
+                        ? $e->pressed_at->toISOString()
+                        : ($e->received_at ? $e->received_at->toISOString() : ''),
+                    'receivedAt' => $e->received_at ? $e->received_at->toISOString() : null,
+                    'employeeId' => $e->employee_id ?? '',
+                    'shift'      => $e->shift ?? '',
+                ];
+            })
+            ->values()
+            ->all();
+
+        return response()->json([
+            'detail' => [
+                'events' => $events,
+            ],
         ]);
     }
 }

@@ -231,38 +231,39 @@ export const updateDailyProduced = async (params) => {
 };
 
 /**
- * GET /api/production-monitor/history?sheetName=Machine_01
+ * ประวัติการผลิตจากฐานข้อมูล (completed orders จาก production_orders).
  *
- * Fetches production records from GAS sheets.
- * If sheetName is omitted, all machine sheets are returned.
+ * Params: machine, from, to, shift, orderId, perPage (camelCase as query keys — server accepts these)
  *
- * @param {string} [sheetName]
- * @returns {Promise<Array<{ machine, timestamp, orderId, productName, targetQty, weight, status }>>}
+ * @param {string|null} machineFilter sheetName หรือ machine id
  */
-export const fetchHistory = async (sheetName = null) => {
-  const endpoint = sheetName ? `/history?sheetName=${encodeURIComponent(sheetName)}` : '/history';
-  const raw = await get(endpoint);
-  const rows = Array.isArray(raw) ? raw : (raw?.history ?? raw?.data ?? []);
-  return rows;
+export const fetchHistory = async (machineFilter = null, dateOpts = {}) => {
+  const qs = new URLSearchParams();
+  if (machineFilter) qs.set('machine', String(machineFilter));
+  if (dateOpts.from) qs.set('from', String(dateOpts.from));
+  if (dateOpts.to) qs.set('to', String(dateOpts.to));
+  if (dateOpts.shift) qs.set('shift', String(dateOpts.shift));
+  if (dateOpts.orderId) qs.set('orderId', String(dateOpts.orderId));
+  qs.set('perPage', String(dateOpts.perPage ?? 400));
+  const raw = await get(`/history-db?${qs.toString()}`);
+  if (Array.isArray(raw?.history)) return raw.history;
+  if (Array.isArray(raw?.data)) return raw.data;
+  return [];
 };
 
 /**
- * GET /api/production-monitor/order-detail?sheetName=...&orderId=...
+ * รายละเอียดรายการน้ำหนักของ order จาก DB (production_weight_events)
  *
- * Returns per-order details (weight events between Started → Completed).
- *
- * @param {string} sheetName
+ * @param {string} machineIdKey machine_id เช่น EM 08 (ห้ามเป็น label อย่างเดียว)
  * @param {string} orderId
  */
-export const fetchOrderDetail = async (sheetName, orderId, startedAt = null) => {
+export const fetchOrderDetail = async (machineIdKey, orderId /* startedAt ไม่ใช้จาก DB path */) => {
   const qs = new URLSearchParams({
-    sheetName: String(sheetName ?? ''),
+    machineId: String(machineIdKey ?? ''),
     orderId: String(orderId ?? ''),
   });
-  if (startedAt) qs.append('startedAt', String(startedAt));
-  const endpoint = `/order-detail?${qs.toString()}`;
-  const raw = await get(endpoint);
-  return raw?.detail ?? raw?.data ?? raw;
+  const raw = await get(`/order-detail-db?${qs.toString()}`);
+  return raw?.detail ?? raw?.data ?? { events: [] };
 };
 
 // ─── LED Sign ────────────────────────────────────────────────────────────────
@@ -797,6 +798,11 @@ export const dbCancelSession = (machineId) =>
  * ประวัติการผลิตจาก DB
  */
 export const dbGetHistory = (params = {}) => {
-  const qs = new URLSearchParams(params).toString();
+  const q = { ...params };
+  if (q.machineId != null && q.machine == null) {
+    q.machine = q.machineId;
+    delete q.machineId;
+  }
+  const qs = new URLSearchParams(q).toString();
   return get(`/history-db${qs ? `?${qs}` : ''}`);
 };

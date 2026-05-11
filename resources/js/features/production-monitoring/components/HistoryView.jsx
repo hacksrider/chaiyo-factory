@@ -299,7 +299,11 @@ const HistoryView = ({ machines }) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchHistory(filters.machine || null);
+      const data = await fetchHistory(filters.machine || null, {
+        from: filters.dateFrom,
+        to: filters.dateTo,
+        shift: filters.shift || undefined,
+      });
       setRecords(data);
     } catch (err) {
       setError(err.message);
@@ -308,7 +312,7 @@ const HistoryView = ({ machines }) => {
     }
   };
 
-  useEffect(() => { load(); }, [filters.machine]);
+  useEffect(() => { load(); }, [filters.machine, filters.dateFrom, filters.dateTo]);
 
   const handleFilterChange = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -395,9 +399,12 @@ const HistoryView = ({ machines }) => {
     setDetailSortDir('desc');
 
     try {
-      const sheetName = row.machine; // History uses sheetName as machine identifier
-      const orderId = row.orderId;
-      const detail = await fetchOrderDetail(sheetName, orderId, row.timestamp || null);
+      const machineKey =
+        row.machine_id
+        ?? machines.find((m) => String(m.sheetName ?? '') === String(row.machine ?? ''))?.id
+        ?? machines.find((m) => String(m.id ?? '') === String(row.machine ?? ''))?.id
+        ?? row.machine;
+      const detail = await fetchOrderDetail(machineKey, row.orderId, row.timestamp || null);
       setDetailData(detail);
     } catch (err) {
       setDetailError(err?.message ?? String(err));
@@ -410,9 +417,16 @@ const HistoryView = ({ machines }) => {
     const events = Array.isArray(detailData?.events) ? detailData.events : [];
     const rows = [...events];
     rows.sort((a, b) => {
-      const ta = a?.pressedAt ? new Date(a.pressedAt).getTime() : 0;
-      const tb = b?.pressedAt ? new Date(b.pressedAt).getTime() : 0;
-      return detailSortDir === 'asc' ? (ta - tb) : (tb - ta);
+      const ta = a?.receivedAt ?? a?.pressedAt;
+      const tb = b?.receivedAt ?? b?.pressedAt;
+      const na = ta ? new Date(ta).getTime() : 0;
+      const nb = tb ? new Date(tb).getTime() : 0;
+      if (na !== nb) {
+        return detailSortDir === 'asc' ? na - nb : nb - na;
+      }
+      const ida = Number(a?.id ?? a?.auditSeq ?? 0);
+      const idb = Number(b?.id ?? b?.auditSeq ?? 0);
+      return detailSortDir === 'asc' ? ida - idb : idb - ida;
     });
     return rows;
   }, [detailData, detailSortDir]);
@@ -430,7 +444,7 @@ const HistoryView = ({ machines }) => {
     ].filter(Boolean);
 
     const rows = events.map((ev) => ({
-      [t('production.historyEventColSeq')]: ev?.seq ?? '',
+      [t('production.historyEventColSeq')]: ev?.lineOrdinal ?? ev?.seq ?? '',
       [t('production.historyEventColTime')]: ev?.pressedAt ? fmtDateTime(ev.pressedAt) : '',
       [t('production.historyEventColType')]: ev?.type === 'good' ? t('production.historyTypeGood') : t('production.historyTypeNg'),
       [t('production.historyEventColWeight')]: ev?.weight ?? '',
@@ -616,13 +630,19 @@ const HistoryView = ({ machines }) => {
                         {row.targetQty ?? '—'}
                       </td>
                       <td className="px-2 py-2 font-mono text-xs text-green-300 whitespace-nowrap text-center w-[1%]">
-                        {parseGoodCount(row.summary) || (String(row.status ?? '').toLowerCase() === 'in-progress' ? '…' : '—')}
+                        {row.goodCount != null
+                          ? row.goodCount
+                          : (parseGoodCount(row.summary) || (String(row.status ?? '').toLowerCase() === 'in-progress' ? '…' : '—'))}
                       </td>
                       <td className="px-2 py-2 font-mono text-xs text-green-300 whitespace-nowrap text-center w-[1%]">
-                        {parseGoodWeightKg(row.summary) || (String(row.status ?? '').toLowerCase() === 'in-progress' ? '…' : '—')}
+                        {row.goodWeight != null && row.goodWeight !== ''
+                          ? Number(row.goodWeight).toFixed(2)
+                          : (parseGoodWeightKg(row.summary) || (String(row.status ?? '').toLowerCase() === 'in-progress' ? '…' : '—'))}
                       </td>
                       <td className="px-2 py-2 font-mono text-xs text-red-300 whitespace-nowrap text-center w-[1%]">
-                        {parseNgWeightKg(row.ngSummary) || (String(row.status ?? '').toLowerCase() === 'in-progress' ? '…' : '—')}
+                        {row.ngWeight != null && row.ngWeight !== ''
+                          ? Number(row.ngWeight).toFixed(2)
+                          : (parseNgWeightKg(row.ngSummary) || (String(row.status ?? '').toLowerCase() === 'in-progress' ? '…' : '—'))}
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap text-center w-[1%]">
                         <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${statusStyle(row.status)}`}>
@@ -723,9 +743,9 @@ const HistoryView = ({ machines }) => {
                         </thead>
                         <tbody>
                           {sortedDetailEvents.map((ev, idx) => (
-                            <tr key={idx} className="border-t border-gray-800/60 hover:bg-gray-800/30 transition-colors">
+                            <tr key={ev?.id ?? `${idx}-${ev?.pressedAt}-${ev?.lineOrdinal ?? ev?.seq}`} className="border-t border-gray-800/60 hover:bg-gray-800/30 transition-colors">
                               <td className="px-2 py-1.5 text-center font-mono text-[11px] text-gray-300 whitespace-nowrap">
-                                {ev?.seq ?? '—'}
+                                {ev?.lineOrdinal ?? ev?.seq ?? '—'}
                               </td>
                               <td
                                 className="px-2 py-1.5 text-center text-[11px] text-gray-400 whitespace-nowrap"

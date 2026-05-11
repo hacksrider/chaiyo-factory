@@ -187,4 +187,5 @@ Route::prefix('production-monitor')->group(function () {
 
     // History from DB
     Route::get('/history-db',                        [ProductionMonitorController::class, 'getHistoryDb']);
+    Route::get('/order-detail-db',                   [ProductionMonitorController::class, 'orderDetailDb']);
 });

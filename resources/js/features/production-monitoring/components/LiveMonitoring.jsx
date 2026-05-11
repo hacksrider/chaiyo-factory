@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import StatCard from './StatCard';
-import { updateWeight, closeOrder, createOrder, fetchScaleWeights, updateDailyProduced, updatePlanProduced } from '../api/productionApi';
+import { updateWeight, closeOrder, createOrder, fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 
@@ -497,6 +497,22 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       // GAS/API fail — แสดง error ไม่ reset state เพื่อให้ลอง retry ได้
       console.warn('[FinishedOrderModal] closeOrder API error:', err.message);
       setCloseErr(t('production.finishSaveSheetFailed', { msg: err.message }));
+      setClosing(false);
+      return;
+    }
+
+    try {
+      await dbFinishSession(machineId, {
+        goodCount,
+        ngCount,
+        totalGoodWeight,
+        totalNgWeight,
+        skipGasDispatch: true,
+      });
+      await storeScaleLive(machineId, { live: false });
+    } catch (err) {
+      console.warn('[FinishedOrderModal] dbFinishSession / storeScaleLive error:', err?.message);
+      setCloseErr(t('production.finishDbSessionFailed', { msg: err?.message ?? '' }));
       setClosing(false);
       return;
     }

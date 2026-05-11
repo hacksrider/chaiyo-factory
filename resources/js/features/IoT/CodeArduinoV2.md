@@ -55,7 +55,7 @@
 // ======================================================================
 //  ⚙️  ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
-#define MACHINE_ID  "EM 20"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
+#define MACHINE_ID  "EM 21"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
 
 // ── รายการ WiFi ที่รู้จัก ─────────────────────────────────────────────
 // ESP32 จะ scan แล้วเลือก SSID ที่ RSSI ดีที่สุดอัตโนมัติ
@@ -1147,7 +1147,7 @@ void drawAndScrollText() {
   u8g2_for_gfx.setCursor(start_x, draw_y);
   u8g2_for_gfx.print(actualCount);
 
-  u8g2_for_gfx.setForegroundColor(dma_display->color565(255, 0, 0));
+  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 0, 255));
   u8g2_for_gfx.setCursor(start_x + w_actual + gap, draw_y);
   u8g2_for_gfx.print(targetCount);
 

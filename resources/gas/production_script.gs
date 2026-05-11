@@ -272,9 +272,13 @@ function doPost(e) {
       try { pressedAt = new Date(params.pressedAt); } catch(x) { pressedAt = new Date(); }
       // ตรวจสอบว่าแปลงวันที่สำเร็จ (ไม่ใช่ Invalid Date)
       if (isNaN(pressedAt.getTime())) { pressedAt = new Date(); }
+      // ลำดับใน Sheet: sheetOrdinal / lineOrdinal / seq (ของดี=1..n, ของเสียแยก 1..m จาก Laravel)
+      var ord = Number(params.sheetOrdinal != null ? params.sheetOrdinal :
+        (params.lineOrdinal != null ? params.lineOrdinal : (params.seq || 0)));
+      if (isNaN(ord)) ord = Number(params.seq || 0);
       sheet.appendRow([
         pressedAt,                    // A: วันที่ (เวลากดปุ่ม) ← ใส่ Date object ตรงๆ
-        Number(params.seq  || 0),     // B: ลำดับ (Number ไม่ใช่ Date)
+        ord,                           // B: ลำดับ (ภายใน type เดียวกัน เช่นของดี 1,2,3 | ของเสีย 1,2 …)
         Number(params.weight || 0),   // C: น้ำหนัก
         typeLabel,                    // D: ของดี / ของเสีย
         '', '', '',

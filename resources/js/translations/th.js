@@ -307,6 +307,7 @@ export default {
         confirmClosePaused: (params) => `Close paused order "${params.orderId}"?\n\nThis will mark it as Completed in the sheet.`,
         switchOrderCreateFailed: (params) => `สร้าง Order ใหม่ใน Sheet ไม่สำเร็จ: ${params.msg || 'ลองใหม่อีกครั้ง'}`,
         finishSaveSheetFailed: (params) => `บันทึกลง Sheet ไม่สำเร็จ: ${params.msg || 'ลองใหม่อีกครั้ง'}`,
+        finishDbSessionFailed: (params) => `บันทึกประวัติในระบบ (database) / ซิงก์ตาชั่งไม่สำเร็จ: ${params.msg || 'ลองใหม่อีกครั้ง'}`,
         sortLatestFirstTitle: 'เรียง: ล่าสุดอยู่บน',
         sortOldestFirstTitle: 'เรียง: เวลาเก่าอยู่บน',
         titleShowGoodEvents: 'คลิกดูรายการของดีทั้งหมด',
@@ -340,7 +341,7 @@ export default {
 
         // History
         historyTitle: 'ประวัติการผลิต',
-        historySubtitle: 'ดึงข้อมูลจาก Google Sheets ทุกเครื่อง',
+        historySubtitle: 'ข้อมูลจาก database — ประวัติงานที่ปิดครบจากทุกเครื่อง',
         refresh: 'รีเฟรช',
         exportCsv: 'Export CSV',
         historyAllTotal: 'รายการทั้งหมด',
@@ -389,7 +390,7 @@ export default {
         historyEventColWeight: 'น้ำหนัก (kg)',
         historyTypeGood: 'ของดี',
         historyTypeNg: 'ของเสีย',
-        historyLoadingSheets: 'กำลังดึงข้อมูลจาก Google Sheets…',
+        historyLoadingSheets: 'กำลังโหลดประวัติจากระบบ…',
         tryAgain: 'ลองใหม่',
         historyEmptyFiltered: 'ไม่พบข้อมูลที่ตรงกับเงื่อนไข',
         historyInProgressCell: 'กำลังผลิต…',

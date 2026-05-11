@@ -307,6 +307,7 @@ export default {
         confirmClosePaused: (params) => `ရပ်ထားသော "${params.orderId}" ကို ပိတ်မည်လား?\n\nSheet တွင် Completed မှတ်တမ်းတင်မည်`,
         switchOrderCreateFailed: (params) => `Sheet တွင် Order အသစ်မဖန်တီးနိုင်ပါ: ${params.msg || 'ထပ်မံကြိုးစားပါ'}`,
         finishSaveSheetFailed: (params) => `Sheet တွင်မသိမ်းနိုင်ပါ: ${params.msg || 'ထပ်မံကြိုးစားပါ'}`,
+        finishDbSessionFailed: (params) => `Database / စကေးချိန် sync မအောင်မြင်ပါ: ${params.msg || 'ထပ်မံကြိုးစားပါ'}`,
         sortLatestFirstTitle: 'စီ: နောက်ဆုံးအကြိမ်အပေါ်',
         sortOldestFirstTitle: 'စီ: အဟောင်းများအပေါ်',
         titleShowGoodEvents: 'ကောင်းသောပစ္စည်းများကြည့်ရန် နှိပ်ပါ',
@@ -340,7 +341,7 @@ export default {
 
         // History
         historyTitle: 'ထုတ်လုပ်မှုမှတ်တမ်း',
-        historySubtitle: 'Google Sheets မှ အားလုံးရယူ',
+        historySubtitle: 'Database — ပြန်ချက်မှတ်တမ်း ဝန်ဆောင်မှုတစ်ခုတည်းမှ',
         refresh: 'ပြန်ဆွဲယူ',
         exportCsv: 'CSV ထုတ်ရန်',
         historyAllTotal: 'မှတ်တမ်းအားလုံး',
@@ -389,7 +390,7 @@ export default {
         historyEventColWeight: 'အလေးချိန် (kg)',
         historyTypeGood: 'ကောင်းသော',
         historyTypeNg: 'ညံ့ဖျင်းသော',
-        historyLoadingSheets: 'Google Sheets မှ ဒေတာရယူနေသည်…',
+        historyLoadingSheets: 'မှတ်တမ်းတွက်ဖက်ရထားပါ…',
         tryAgain: 'ထပ်ကြိုးစားရန်',
         historyEmptyFiltered: 'ကိုက်ညီသောဒေတာမတွေ့ပါ',
         historyInProgressCell: 'ထုတ်လုပ်နေသည်…',

@@ -48,17 +48,21 @@ class SyncWeightEventToGas implements ShouldQueue
             return; // already synced (concurrent dispatch dedup)
         }
 
+        $sheetOrd = ($ev->good_seq ?? $ev->ng_seq) ?? $ev->seq;
+
         $payload = [
-            'action'     => 'logWeightEvent',
-            'machineId'  => $ev->machine_id,
-            'sheetName'  => $ev->sheet_name,
-            'orderId'    => $ev->order_id,
-            'type'       => $ev->type,
-            'weight'     => $ev->weight,
-            'seq'        => $ev->seq,
-            'employeeId' => $ev->employee_id,
-            'shift'      => $ev->shift,
-            'pressedAt'  => $ev->pressed_at?->toISOString(),
+            'action'       => 'logWeightEvent',
+            'machineId'    => $ev->machine_id,
+            'sheetName'    => $ev->sheet_name,
+            'orderId'      => $ev->order_id,
+            'type'         => $ev->type,
+            'weight'       => $ev->weight,
+            'seq'          => $sheetOrd,
+            'sheetOrdinal' => $sheetOrd,
+            'lineOrdinal'  => $sheetOrd,
+            'employeeId'   => $ev->employee_id,
+            'shift'        => $ev->shift,
+            'pressedAt'    => $ev->pressed_at?->toISOString(),
         ];
 
         $ev->increment('gas_sync_attempts');
