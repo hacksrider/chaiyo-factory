@@ -929,12 +929,14 @@ class ProductionMonitorController extends Controller
             && is_string($paStale)
             && $paStale !== ''
         ) {
-            $pressedTs = strtotime($paStale);
-            $startTs = $activeStale->started_at->getTimestamp();
-            if ($pressedTs !== false && $pressedTs + 120 < $startTs) {
-                Log::info("storeScaleWeight: rejected stale event for {$machineId} (pressedAt={$paStale} < db started_at)");
+            $pressedUtcStale = $this->interpretScalePressedAtToUtc($paStale);
+            if ($pressedUtcStale !== null) {
+                $startTs = $activeStale->started_at->getTimestamp();
+                if ($pressedUtcStale->getTimestamp() + 120 < $startTs) {
+                    Log::info("storeScaleWeight: rejected stale event for {$machineId} (pressedAt={$paStale} < db started_at)");
 
-                return response()->json(['success' => true, 'stale' => true]);
+                    return response()->json(['success' => true, 'stale' => true]);
+                }
             }
         }
 
@@ -1014,14 +1016,18 @@ class ProductionMonitorController extends Controller
                         $ngSeq = (int) $nq->max('ng_seq') + 1;
                     }
 
-                    $pressedAtDb = $payload['pressedAt'] ?? null;
-                    // ESP ยังไม่ sync NTP → millis: uptime — เซิร์ฟเวอร์บันทึกเวลาใกล้เคียง "กดแล้วส่งถึง" เพื่อประวัติไม่เพี้ยน
-                    if (is_string($pressedAtDb) && str_starts_with($pressedAtDb, 'millis:')) {
+                    $pressedRaw   = $payload['pressedAt'] ?? null;
+                    $pressedAtDb  = null;
+                    if (is_string($pressedRaw) && str_starts_with($pressedRaw, 'millis:')) {
                         try {
                             $pressedAtDb = Carbon::parse((string) ($payload['receivedAt'] ?? now()));
                         } catch (\Throwable $e) {
                             $pressedAtDb = now();
                         }
+                    } elseif ($pressedRaw !== null && $pressedRaw !== '') {
+                        $pressedAtDb = $this->interpretScalePressedAtToUtc($pressedRaw) ?? now();
+                    } else {
+                        $pressedAtDb = now();
                     }
 
                     $weightEvent = ProductionWeightEvent::create([
@@ -1209,6 +1215,32 @@ class ProductionMonitorController extends Controller
             'latestTs'      => $latestTs,
             'latestEventId' => $latestEventId,
         ]);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * แปลง pressedAt จากตาชั่ง → UTC เก็บ DB
+     * ถ้าไม่มี Z / +/-offset ใน string ให้ถือว่าเป็นเวลาโรงงาน Asia/Bangkok (กันบันทึกเป็น UTC ผิดเลื่อน ~7 ชม.)
+     */
+    private function interpretScalePressedAtToUtc(mixed $raw): ?Carbon
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $s = trim((string) $raw);
+        if ($s === '' || str_starts_with($s, 'millis:')) {
+            return null;
+        }
+        try {
+            if (preg_match('/[zZ]|[+-]\d{2}:?\d{2}$/', $s)) {
+                return Carbon::parse($s)->utc();
+            }
+
+            return Carbon::parse($s, 'Asia/Bangkok')->utc();
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────

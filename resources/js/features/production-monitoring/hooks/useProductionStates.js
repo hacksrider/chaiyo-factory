@@ -284,14 +284,23 @@ export const useProductionStates = () => {
           return; // ไม่รับ — ถือว่างานปิดแล้ว
         }
 
-        // ── Rule 3: LWW มาตรฐาน + max-wins สำหรับ counter ─────────────────────
+        // ── Rule 3: LWW มาตรฐาน + counter ───────────────────────────────────────
         if (serverTs <= localTs) return;
 
-        // Max-wins: ยอดนับต้องเพิ่มขึ้นเท่านั้น — ป้องกัน browser ที่มียอดต่ำกว่า overwrite
-        const pipeCounter     = Math.max(serverState.pipeCounter     ?? 0, localState?.pipeCounter     ?? 0);
-        const ngCount         = Math.max(serverState.ngCount         ?? 0, localState?.ngCount         ?? 0);
-        const totalGoodWeight = Math.max(serverState.totalGoodWeight ?? 0, localState?.totalGoodWeight ?? 0);
-        const totalNgWeight   = Math.max(serverState.totalNgWeight   ?? 0, localState?.totalNgWeight   ?? 0);
+        // snapshot จาก production_sessions (_db) เป็นหลัก — อย่าทำ max กับเลขที่ GAS/UI ทำให้พอง
+        const trustCounters = Boolean(serverState._db);
+        const pipeCounter = trustCounters
+          ? (serverState.pipeCounter ?? 0)
+          : Math.max(serverState.pipeCounter ?? 0, localState?.pipeCounter ?? 0);
+        const ngCount = trustCounters
+          ? (serverState.ngCount ?? 0)
+          : Math.max(serverState.ngCount ?? 0, localState?.ngCount ?? 0);
+        const totalGoodWeight = trustCounters
+          ? (serverState.totalGoodWeight ?? 0)
+          : Math.max(serverState.totalGoodWeight ?? 0, localState?.totalGoodWeight ?? 0);
+        const totalNgWeight = trustCounters
+          ? (serverState.totalNgWeight ?? 0)
+          : Math.max(serverState.totalNgWeight ?? 0, localState?.totalNgWeight ?? 0);
 
         next[mid] = {
           ...serverState,
@@ -369,11 +378,7 @@ export const useProductionStates = () => {
           // Preserve in-memory events (not persisted in DB state snapshot)
           goodEvents: current.goodEvents ?? [],
           ngEvents:   current.ngEvents   ?? [],
-          // Max-wins on counters to avoid going backwards on a stale broadcast
-          pipeCounter:     Math.max(session.pipeCounter     ?? 0, current.pipeCounter     ?? 0),
-          ngCount:         Math.max(session.ngCount         ?? 0, current.ngCount         ?? 0),
-          totalGoodWeight: Math.max(session.totalGoodWeight ?? 0, current.totalGoodWeight ?? 0),
-          totalNgWeight:   Math.max(session.totalNgWeight   ?? 0, current.totalNgWeight   ?? 0),
+          // ...session มี pipeCounter/ng/น้ำหนักจาก DB — ห้าม Math.max เลข UI (GAS พอง) มีชนะ
           // ค้างผลิตจากแผน — ไม่ลดเมื่อผลิดี; ค่าใน DB เป็นหลักเมื่อ sync มา
           remainingQty:
             typeof session.remainingQty === 'number'

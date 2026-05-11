@@ -522,17 +522,23 @@ const ProductionMonitoring = () => {
     const localTs = Number(allStatesRef.current[machineId]?._ts) || 0;
     if (ts > 0 && ts <= localTs) return;
 
+    const prevSnap = allStatesRef.current[machineId];
+    // เซสชัน DB-first (มี sessionRunUlid) — อย่ายกเลขจาก GAS แถวเก่ามาทับ pipeCounter/nฯลฯ (มักเป็น 2x)
+    const skipLegacyQuantityFromGas = Boolean(prevSnap?.sessionRunUlid || prevSnap?._db);
+
     updateMachineState(machineId, (prev) => {
       const patch = {};
-      if (typeof qty_good === 'number' && qty_good > (prev.pipeCounter ?? 0)) {
-        patch.pipeCounter = qty_good;
+      if (!skipLegacyQuantityFromGas) {
+        if (typeof qty_good === 'number' && qty_good > (prev.pipeCounter ?? 0)) {
+          patch.pipeCounter = qty_good;
+        }
+        if (typeof total_weight === 'number' && total_weight > (prev.totalGoodWeight ?? 0)) {
+          patch.totalGoodWeight = total_weight;
+        }
       }
       // ไม่รับ qty_remaining = 0 จาก GAS — มักทำให้ UI คิดว่าไม่มีค้างผลิต
       if (typeof qty_remaining === 'number' && qty_remaining > 0) {
         patch.remainingQty = qty_remaining;
-      }
-      if (typeof total_weight === 'number' && total_weight > (prev.totalGoodWeight ?? 0)) {
-        patch.totalGoodWeight = total_weight;
       }
       return patch;
     });
