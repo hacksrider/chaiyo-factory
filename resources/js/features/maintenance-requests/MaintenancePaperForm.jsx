@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { normalizePayload } from './defaultPayload';
+import { getDepartmentSuggestions, rememberDepartment } from './departmentStorage';
 
 function Section({ title, children, className = '' }) {
     return (
@@ -10,15 +11,16 @@ function Section({ title, children, className = '' }) {
     );
 }
 
-function LabeledInput({ label, value, onChange, disabled, type = 'text', className = '' }) {
+function LabeledInput({ label, value, onChange, disabled, type = 'text', className = '', list = null }) {
     return (
-        <label className={`block text-xs text-gray-800 ${className}`}>
+        <label className={`block min-w-0 text-xs text-gray-800 ${className}`}>
             <span className="mb-0.5 block font-medium">{label}</span>
             <input
                 type={type}
                 value={value ?? ''}
                 onChange={(e) => onChange(e.target.value)}
                 disabled={disabled}
+                list={list}
                 className="w-full rounded border border-gray-400 px-2 py-1 text-sm disabled:bg-gray-100"
             />
         </label>
@@ -56,31 +58,24 @@ function Check({ label, checked, onChange, disabled }) {
 }
 
 /**
- * ฟอร์มจัดเลย์เอาต์คล้ายใบกระดาษ FR-MTN-04
  * @param {object} props
- * @param {object} props.payload
- * @param {function} props.setPayload
- * @param {boolean} props.readOnly
- * @param {boolean} props.canEditAdminSections — false = ซ่อมบำรุง/วิเคราะห์/ฯลฯ อ่านอย่างเดียว
- * @param {string|null} props.photoBeforeUrl
+ * @param {string|null} props.photoBeforeUrl — แสดงรูป (เซิร์ฟเวอร์หรือ preview)
  * @param {string|null} props.photoAfterUrl
- * @param {function} props.onPhotoBeforeChange
- * @param {function} props.onPhotoAfterChange
  */
 export default function MaintenancePaperForm({
     payload: payloadProp,
     setPayload,
     readOnly = false,
-    canEditAdminSections = true,
     photoBeforeUrl = null,
     photoAfterUrl = null,
     onPhotoBeforeChange,
     onPhotoAfterChange,
     formId = 'maintenance-paper-form',
+    decisionBanner = null,
 }) {
     const payload = normalizePayload(payloadProp);
     const disabled = readOnly;
-    const adminLocked = readOnly || !canEditAdminSections;
+    const deptListId = useId();
 
     const patch = (partial) => {
         if (disabled || !setPayload) return;
@@ -95,8 +90,11 @@ export default function MaintenancePaperForm({
         });
     };
 
+    const deptOptions = getDepartmentSuggestions();
+
     return (
         <div id={formId} className="mx-auto max-w-4xl border-2 border-gray-900 bg-white p-2 shadow-sm sm:p-4 print:shadow-none">
+
             {/* Header */}
             <div className="mb-3 flex flex-col gap-2 border-b-2 border-gray-900 pb-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
@@ -115,9 +113,11 @@ export default function MaintenancePaperForm({
                 </div>
             </div>
 
+            {decisionBanner}
+
             <div className="space-y-3">
                 <Section title="ส่วนของผู้แจ้ง">
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-4">
                         <LabeledInput
                             label="วันที่ / เวลาแจ้ง"
                             type="datetime-local"
@@ -126,17 +126,34 @@ export default function MaintenancePaperForm({
                             disabled={disabled}
                         />
                         <LabeledInput
-                            label="ผู้แจ้ง / แผนก"
-                            value={payload.requesterDepartment}
-                            onChange={(v) => patch({ requesterDepartment: v })}
+                            label="ผู้แจ้ง"
+                            value={payload.requesterName}
+                            onChange={(v) => patch({ requesterName: v })}
                             disabled={disabled}
                         />
+                        <label className="block min-w-0 text-xs text-gray-800">
+                            <span className="mb-0.5 block font-medium">แผนก</span>
+                            <datalist id={deptListId}>
+                                {deptOptions.map((d) => (
+                                    <option key={d} value={d} />
+                                ))}
+                            </datalist>
+                            <input
+                                type="text"
+                                value={payload.department ?? ''}
+                                onChange={(e) => patch({ department: e.target.value })}
+                                onBlur={(e) => !disabled && rememberDepartment(e.target.value)}
+                                disabled={disabled}
+                                list={deptListId}
+                                placeholder="เลือกหรือพิมพ์แผนก"
+                                className="w-full rounded border border-gray-400 px-2 py-1 text-sm disabled:bg-gray-100"
+                            />
+                        </label>
                         <LabeledInput
                             label="เครื่องจักร / อุปกรณ์"
                             value={payload.machineEquipment}
                             onChange={(v) => patch({ machineEquipment: v })}
                             disabled={disabled}
-                            className="sm:col-span-2"
                         />
                     </div>
                     <p className="mt-2 text-xs text-gray-600">เลขที่ใบแจ้งซ่อมถูกสร้างอัตโนมัติหลังบันทึก</p>
@@ -145,15 +162,17 @@ export default function MaintenancePaperForm({
                         <Check label="เครื่องขัดข้อง BM" checked={payload.workType.bm} onChange={(c) => patchNested('workType', { bm: c })} disabled={disabled} />
                         <Check label="แก้ไข/ปรับปรุง CM" checked={payload.workType.cm} onChange={(c) => patchNested('workType', { cm: c })} disabled={disabled} />
                         <Check label="หยุดเครื่อง PM" checked={payload.workType.pm} onChange={(c) => patchNested('workType', { pm: c })} disabled={disabled} />
-                        <Check label="อื่นๆ" checked={payload.workType.other} onChange={(c) => patchNested('workType', { other: c })} disabled={disabled} />
+                        <Check label="อื่นๆ" checked={payload.workType.other} onChange={(c) => patchNested('workType', { other: c, otherDetail: c ? payload.workType.otherDetail : '' })} disabled={disabled} />
                     </div>
-                    <LabeledInput
-                        label="รายละเอียดอื่นๆ (ประเภทงาน)"
-                        value={payload.workType.otherDetail}
-                        onChange={(v) => patchNested('workType', { otherDetail: v })}
-                        disabled={disabled}
-                        className="mt-2"
-                    />
+                    {payload.workType.other && (
+                        <LabeledInput
+                            label="ระบุ (ประเภทงานอื่นๆ)"
+                            value={payload.workType.otherDetail}
+                            onChange={(v) => patchNested('workType', { otherDetail: v })}
+                            disabled={disabled}
+                            className="mt-2"
+                        />
+                    )}
                     <LabeledTextarea
                         label="อาการที่เสีย / ปัญหา / สาเหตุ / รายละเอียดอื่นๆ"
                         value={payload.symptoms}
@@ -177,42 +196,46 @@ export default function MaintenancePaperForm({
                         />
                     </div>
                     <LabeledInput label="หมายเหตุ" value={payload.remarks} onChange={(v) => patch({ remarks: v })} disabled={disabled} className="mt-2" />
-                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                        <LabeledInput label="ลายเซ็น ผู้แจ้งซ่อม" value={payload.signatures.reporter} onChange={(v) => patchNested('signatures', { reporter: v })} disabled={disabled} />
-                        <LabeledInput label="ฝ่ายวางแผน" value={payload.signatures.planning} onChange={(v) => patchNested('signatures', { planning: v })} disabled={disabled} />
-                        <LabeledInput label="ผู้อนุมัติ" value={payload.signatures.approver} onChange={(v) => patchNested('signatures', { approver: v })} disabled={disabled} />
-                    </div>
+                    <LabeledInput
+                        label="ลายเซ็น ผู้แจ้งซ่อม (พิมพ์ชื่อ)"
+                        value={payload.signatures.reporter}
+                        onChange={(v) => patchNested('signatures', { reporter: v })}
+                        disabled={disabled}
+                        className="mt-3 max-w-md"
+                    />
                 </Section>
 
                 <Section title="ส่วนของซ่อมบำรุง">
                     <div className="mb-2 flex flex-wrap gap-3">
                         <span className="text-xs font-semibold">ประเภท:</span>
-                        <Check label="เครื่องจักร" checked={payload.maintenance.type.machine} onChange={(c) => patchNested('maintenance', { type: { ...payload.maintenance.type, machine: c } })} disabled={adminLocked} />
-                        <Check label="ระบบสนับสนุน" checked={payload.maintenance.type.support} onChange={(c) => patchNested('maintenance', { type: { ...payload.maintenance.type, support: c } })} disabled={adminLocked} />
-                        <Check label="ทั่วไป" checked={payload.maintenance.type.general} onChange={(c) => patchNested('maintenance', { type: { ...payload.maintenance.type, general: c } })} disabled={adminLocked} />
+                        <Check label="เครื่องจักร" checked={payload.maintenance.type.machine} onChange={(c) => patchNested('maintenance', { type: { ...payload.maintenance.type, machine: c } })} disabled={disabled} />
+                        <Check label="ระบบสนับสนุน" checked={payload.maintenance.type.support} onChange={(c) => patchNested('maintenance', { type: { ...payload.maintenance.type, support: c } })} disabled={disabled} />
+                        <Check label="ทั่วไป" checked={payload.maintenance.type.general} onChange={(c) => patchNested('maintenance', { type: { ...payload.maintenance.type, general: c } })} disabled={disabled} />
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        <LabeledInput label="ผู้รับแจ้ง" value={payload.maintenance.receiver} onChange={(v) => patchNested('maintenance', { receiver: v })} disabled={adminLocked} />
-                        <LabeledInput label="หัวหน้าแผนก" value={payload.maintenance.departmentHead} onChange={(v) => patchNested('maintenance', { departmentHead: v })} disabled={adminLocked} />
-                        <LabeledInput label="คาดว่าจะแล้วเสร็จ" type="date" value={payload.maintenance.expectedCompletion} onChange={(v) => patchNested('maintenance', { expectedCompletion: v })} disabled={adminLocked} />
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                        <LabeledInput label="ผู้รับแจ้ง" value={payload.maintenance.receiver} onChange={(v) => patchNested('maintenance', { receiver: v })} disabled={disabled} />
+                        <LabeledInput label="หัวหน้าแผนก" value={payload.maintenance.departmentHead} onChange={(v) => patchNested('maintenance', { departmentHead: v })} disabled={disabled} />
+                        <LabeledInput label="คาดว่าจะแล้วเสร็จ" type="date" value={payload.maintenance.expectedCompletion} onChange={(v) => patchNested('maintenance', { expectedCompletion: v })} disabled={disabled} />
                     </div>
                     <p className="mt-2 text-xs font-semibold">ระบบที่มีปัญหา</p>
                     <div className="flex flex-wrap gap-3">
-                        <Check label="Electric" checked={payload.maintenance.problematicSystem.electric} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, electric: c } })} disabled={adminLocked} />
-                        <Check label="Hydraulic" checked={payload.maintenance.problematicSystem.hydraulic} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, hydraulic: c } })} disabled={adminLocked} />
-                        <Check label="Pneumatic" checked={payload.maintenance.problematicSystem.pneumatic} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, pneumatic: c } })} disabled={adminLocked} />
-                        <Check label="Mechanic" checked={payload.maintenance.problematicSystem.mechanic} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, mechanic: c } })} disabled={adminLocked} />
-                        <Check label="Water" checked={payload.maintenance.problematicSystem.water} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, water: c } })} disabled={adminLocked} />
-                        <Check label="อื่นๆ" checked={payload.maintenance.problematicSystem.other} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, other: c } })} disabled={adminLocked} />
+                        <Check label="Electric" checked={payload.maintenance.problematicSystem.electric} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, electric: c } })} disabled={disabled} />
+                        <Check label="Hydraulic" checked={payload.maintenance.problematicSystem.hydraulic} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, hydraulic: c } })} disabled={disabled} />
+                        <Check label="Pneumatic" checked={payload.maintenance.problematicSystem.pneumatic} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, pneumatic: c } })} disabled={disabled} />
+                        <Check label="Mechanic" checked={payload.maintenance.problematicSystem.mechanic} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, mechanic: c } })} disabled={disabled} />
+                        <Check label="Water" checked={payload.maintenance.problematicSystem.water} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, water: c } })} disabled={disabled} />
+                        <Check label="อื่นๆ" checked={payload.maintenance.problematicSystem.other} onChange={(c) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, other: c, otherDetail: c ? payload.maintenance.problematicSystem.otherDetail : '' } })} disabled={disabled} />
                     </div>
-                    <LabeledInput label="อื่นๆ (ระบุ)" value={payload.maintenance.problematicSystem.otherDetail} onChange={(v) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, otherDetail: v } })} disabled={adminLocked} className="mt-2" />
+                    {payload.maintenance.problematicSystem.other && (
+                        <LabeledInput label="อื่นๆ (ระบุ)" value={payload.maintenance.problematicSystem.otherDetail} onChange={(v) => patchNested('maintenance', { problematicSystem: { ...payload.maintenance.problematicSystem, otherDetail: v } })} disabled={disabled} className="mt-2" />
+                    )}
                     <div className="mt-2 flex flex-wrap gap-3">
                         <span className="text-xs font-semibold">ดำเนินการโดย:</span>
-                        <Check label="ช่างภายในบริษัท" checked={payload.maintenance.performedBy.internal} onChange={(c) => patchNested('maintenance', { performedBy: { ...payload.maintenance.performedBy, internal: c } })} disabled={adminLocked} />
-                        <Check label="จ้างภายนอก" checked={payload.maintenance.performedBy.external} onChange={(c) => patchNested('maintenance', { performedBy: { ...payload.maintenance.performedBy, external: c } })} disabled={adminLocked} />
-                        <Check label="แจ้งผู้ขายตามเงื่อนไข" checked={payload.maintenance.performedBy.vendor} onChange={(c) => patchNested('maintenance', { performedBy: { ...payload.maintenance.performedBy, vendor: c } })} disabled={adminLocked} />
+                        <Check label="ช่างภายในบริษัท" checked={payload.maintenance.performedBy.internal} onChange={(c) => patchNested('maintenance', { performedBy: { ...payload.maintenance.performedBy, internal: c } })} disabled={disabled} />
+                        <Check label="จ้างภายนอก" checked={payload.maintenance.performedBy.external} onChange={(c) => patchNested('maintenance', { performedBy: { ...payload.maintenance.performedBy, external: c } })} disabled={disabled} />
+                        <Check label="แจ้งผู้ขายตามเงื่อนไข" checked={payload.maintenance.performedBy.vendor} onChange={(c) => patchNested('maintenance', { performedBy: { ...payload.maintenance.performedBy, vendor: c } })} disabled={disabled} />
                     </div>
-                    <LabeledTextarea label="การดำเนินการ / อุปกรณ์ที่เปลี่ยน" value={payload.maintenance.actionTaken} onChange={(v) => patchNested('maintenance', { actionTaken: v })} disabled={adminLocked} rows={4} />
+                    <LabeledTextarea label="การดำเนินการ / อุปกรณ์ที่เปลี่ยน" value={payload.maintenance.actionTaken} onChange={(v) => patchNested('maintenance', { actionTaken: v })} disabled={disabled} rows={4} />
                 </Section>
 
                 <Section title="ภาพประกอบ">
@@ -223,9 +246,9 @@ export default function MaintenancePaperForm({
                                 <input type="file" accept="image/*" onChange={(e) => onPhotoBeforeChange(e.target.files?.[0] || null)} className="mb-2 block w-full text-xs" />
                             )}
                             {photoBeforeUrl ? (
-                                <img src={photoBeforeUrl} alt="before" className="max-h-48 w-full border border-gray-400 object-contain" />
+                                <img src={photoBeforeUrl} alt="before" className="max-h-56 w-full border border-gray-400 bg-gray-50 object-contain" />
                             ) : (
-                                <div className="flex h-40 items-center justify-center border-2 border-dashed border-gray-400 text-xs text-gray-500">ไม่มีรูป</div>
+                                <div className="flex h-44 items-center justify-center border-2 border-dashed border-gray-400 text-xs text-gray-500">ไม่มีรูป</div>
                             )}
                         </div>
                         <div>
@@ -234,9 +257,9 @@ export default function MaintenancePaperForm({
                                 <input type="file" accept="image/*" onChange={(e) => onPhotoAfterChange(e.target.files?.[0] || null)} className="mb-2 block w-full text-xs" />
                             )}
                             {photoAfterUrl ? (
-                                <img src={photoAfterUrl} alt="after" className="max-h-48 w-full border border-gray-400 object-contain" />
+                                <img src={photoAfterUrl} alt="after" className="max-h-56 w-full border border-gray-400 bg-gray-50 object-contain" />
                             ) : (
-                                <div className="flex h-40 items-center justify-center border-2 border-dashed border-gray-400 text-xs text-gray-500">ไม่มีรูป</div>
+                                <div className="flex h-44 items-center justify-center border-2 border-dashed border-gray-400 text-xs text-gray-500">ไม่มีรูป</div>
                             )}
                         </div>
                     </div>
@@ -244,42 +267,46 @@ export default function MaintenancePaperForm({
 
                 <Section title="วิเคราะห์ / คำแนะนำ">
                     <div className="grid gap-3">
-                        <LabeledInput label="สาเหตุ" value={payload.analysis.cause} onChange={(v) => patchNested('analysis', { cause: v })} disabled={adminLocked} />
-                        <LabeledInput label="การป้องกัน" value={payload.analysis.prevention} onChange={(v) => patchNested('analysis', { prevention: v })} disabled={adminLocked} />
-                        <LabeledInput label="คำแนะนำวิธีการใช้งาน" value={payload.analysis.usageInstructions} onChange={(v) => patchNested('analysis', { usageInstructions: v })} disabled={adminLocked} />
+                        <LabeledInput label="สาเหตุ" value={payload.analysis.cause} onChange={(v) => patchNested('analysis', { cause: v })} disabled={disabled} />
+                        <LabeledInput label="การป้องกัน" value={payload.analysis.prevention} onChange={(v) => patchNested('analysis', { prevention: v })} disabled={disabled} />
+                        <LabeledInput label="คำแนะนำวิธีการใช้งาน" value={payload.analysis.usageInstructions} onChange={(v) => patchNested('analysis', { usageInstructions: v })} disabled={disabled} />
                     </div>
                 </Section>
 
                 <Section title="กรณีสั่งซื้อเครื่องมือ / อุปกรณ์">
                     <div className="grid gap-3 sm:grid-cols-3">
-                        <LabeledInput label="วันที่สั่งซื้อ" type="date" value={payload.procurement.orderDate} onChange={(v) => patchNested('procurement', { orderDate: v })} disabled={adminLocked} />
-                        <LabeledInput label="เลขที่ใบขอซื้อ" value={payload.procurement.prNo} onChange={(v) => patchNested('procurement', { prNo: v })} disabled={adminLocked} />
-                        <LabeledInput label="ได้รับของวันที่" type="date" value={payload.procurement.receivedDate} onChange={(v) => patchNested('procurement', { receivedDate: v })} disabled={adminLocked} />
+                        <LabeledInput label="วันที่สั่งซื้อ" type="date" value={payload.procurement.orderDate} onChange={(v) => patchNested('procurement', { orderDate: v })} disabled={disabled} />
+                        <LabeledInput label="เลขที่ใบขอซื้อ" value={payload.procurement.prNo} onChange={(v) => patchNested('procurement', { prNo: v })} disabled={disabled} />
+                        <LabeledInput label="ได้รับของวันที่" type="date" value={payload.procurement.receivedDate} onChange={(v) => patchNested('procurement', { receivedDate: v })} disabled={disabled} />
                     </div>
                 </Section>
 
                 <Section title="ระยะเวลา / ค่าใช้จ่าย / ผู้ดำเนินการ">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        <LabeledInput label="เริ่มดำเนินการในวันที่" type="date" value={payload.timeline.startDate} onChange={(v) => patchNested('timeline', { startDate: v })} disabled={adminLocked} />
-                        <LabeledInput label="เสร็จวันที่" type="date" value={payload.timeline.completionDate} onChange={(v) => patchNested('timeline', { completionDate: v })} disabled={adminLocked} />
-                        <LabeledInput label="รวมเวลาดำเนินการ (นาที)" value={payload.timeline.totalMinutes} onChange={(v) => patchNested('timeline', { totalMinutes: v })} disabled={adminLocked} />
-                        <LabeledInput label="ค่าใช้จ่ายในการซ่อมบำรุง (บาท)" value={payload.timeline.costBaht} onChange={(v) => patchNested('timeline', { costBaht: v })} disabled={adminLocked} />
-                        <LabeledInput label="ใช้เวลาซ่อมจริง (นาที)" value={payload.timeline.actualRepairMinutes} onChange={(v) => patchNested('timeline', { actualRepairMinutes: v })} disabled={adminLocked} />
-                        <LabeledInput label="ผู้ดำเนินการ" value={payload.timeline.performedByName} onChange={(v) => patchNested('timeline', { performedByName: v })} disabled={adminLocked} />
-                        <LabeledInput label="วันที่" type="date" value={payload.timeline.performedDate} onChange={(v) => patchNested('timeline', { performedDate: v })} disabled={adminLocked} />
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <LabeledInput label="เริ่มดำเนินการในวันที่" type="date" value={payload.timeline.startDate} onChange={(v) => patchNested('timeline', { startDate: v })} disabled={disabled} />
+                        <LabeledInput label="เสร็จวันที่" type="date" value={payload.timeline.completionDate} onChange={(v) => patchNested('timeline', { completionDate: v })} disabled={disabled} />
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+                        <LabeledInput label="รวมเวลาดำเนินการ (นาที)" value={payload.timeline.totalMinutes} onChange={(v) => patchNested('timeline', { totalMinutes: v })} disabled={disabled} />
+                        <LabeledInput label="ค่าใช้จ่ายในการซ่อมบำรุง (บาท)" value={payload.timeline.costBaht} onChange={(v) => patchNested('timeline', { costBaht: v })} disabled={disabled} />
+                        <LabeledInput label="ใช้เวลาซ่อมจริง (นาที)" value={payload.timeline.actualRepairMinutes} onChange={(v) => patchNested('timeline', { actualRepairMinutes: v })} disabled={disabled} />
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <LabeledInput label="ผู้ดำเนินการ" value={payload.timeline.performedByName} onChange={(v) => patchNested('timeline', { performedByName: v })} disabled={disabled} />
+                        <LabeledInput label="วันที่" type="date" value={payload.timeline.performedDate} onChange={(v) => patchNested('timeline', { performedDate: v })} disabled={disabled} />
                     </div>
                 </Section>
 
                 <Section title="ผลการตรวจรับงาน">
                     <div className="flex flex-wrap gap-4">
-                        <Check label="ใช้งานได้ตามปกติ" checked={payload.inspection.result === 'normal'} onChange={() => patchNested('inspection', { result: 'normal' })} disabled={adminLocked} />
-                        <Check label="ใช้งานได้ไม่ปกติ" checked={payload.inspection.result === 'abnormal'} onChange={() => patchNested('inspection', { result: 'abnormal' })} disabled={adminLocked} />
+                        <Check label="ใช้งานได้ตามปกติ" checked={payload.inspection.result === 'normal'} onChange={() => patchNested('inspection', { result: 'normal' })} disabled={disabled} />
+                        <Check label="ใช้งานได้ไม่ปกติ" checked={payload.inspection.result === 'abnormal'} onChange={() => patchNested('inspection', { result: 'abnormal' })} disabled={disabled} />
                     </div>
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                        <LabeledInput label="ผู้ตรวจรับงาน" value={payload.inspection.inspectorName} onChange={(v) => patchNested('inspection', { inspectorName: v })} disabled={adminLocked} />
-                        <LabeledInput label="วันที่ (ผู้ตรวจ)" type="date" value={payload.inspection.inspectorDate} onChange={(v) => patchNested('inspection', { inspectorDate: v })} disabled={adminLocked} />
-                        <LabeledInput label="ฝ่ายวางแผนการผลิต" value={payload.inspection.productionPlanningName} onChange={(v) => patchNested('inspection', { productionPlanningName: v })} disabled={adminLocked} />
-                        <LabeledInput label="วันที่ (แผนการผลิต)" type="date" value={payload.inspection.productionPlanningDate} onChange={(v) => patchNested('inspection', { productionPlanningDate: v })} disabled={adminLocked} />
+                        <LabeledInput label="ผู้ตรวจรับงาน" value={payload.inspection.inspectorName} onChange={(v) => patchNested('inspection', { inspectorName: v })} disabled={disabled} />
+                        <LabeledInput label="วันที่ (ผู้ตรวจ)" type="date" value={payload.inspection.inspectorDate} onChange={(v) => patchNested('inspection', { inspectorDate: v })} disabled={disabled} />
+                        <LabeledInput label="ฝ่ายวางแผนการผลิต" value={payload.inspection.productionPlanningName} onChange={(v) => patchNested('inspection', { productionPlanningName: v })} disabled={disabled} />
+                        <LabeledInput label="วันที่ (แผนการผลิต)" type="date" value={payload.inspection.productionPlanningDate} onChange={(v) => patchNested('inspection', { productionPlanningDate: v })} disabled={disabled} />
                     </div>
                 </Section>
             </div>

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguage } from '../../contexts/LanguageContext';
@@ -16,12 +16,46 @@ function statusLabel(status) {
     return { text: 'รอพิจารณา', cls: 'bg-amber-100 text-amber-800' };
 }
 
-export default function MaintenanceNavSuite() {
+function DecisionBanner({ detail }) {
+    const rb = detail?.reviewed_by;
+    const dStr = detail?.reviewed_at ? new Date(detail.reviewed_at).toLocaleString() : '';
+    if (detail?.status === 'approved' && rb) {
+        return (
+            <div className="mb-3 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+                <span className="font-semibold">ผลการพิจารณา:</span> อนุมัติโดย <strong>{rb.name}</strong>
+                {dStr ? ` · ${dStr}` : ''}
+            </div>
+        );
+    }
+    if (detail?.status === 'rejected' && rb) {
+        return (
+            <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-950">
+                <span className="font-semibold">ผลการพิจารณา:</span> ปฏิเสธโดย <strong>{rb.name}</strong>
+                {dStr ? ` · ${dStr}` : ''}
+            </div>
+        );
+    }
+    if (detail?.status === 'pending') {
+        return (
+            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                <span className="font-semibold">สถานะ:</span> รอผู้ดูแลระบบพิจารณา / รับแบบฟอร์ม
+            </div>
+        );
+    }
+    return null;
+}
+
+/**
+ * @param {{ variant?: 'light' | 'dark' }} props
+ */
+export default function MaintenanceNavSuite({ variant = 'light' }) {
     const navigate = useNavigate();
     const { user, isAdmin } = useAuth();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const { showSuccess, showError } = useAlert();
+
+    const isDark = variant === 'dark';
 
     const [unreadCount, setUnreadCount] = useState(0);
     const [bellOpen, setBellOpen] = useState(false);
@@ -44,6 +78,24 @@ export default function MaintenanceNavSuite() {
     const [rejectNote, setRejectNote] = useState('');
 
     const bellRef = useRef(null);
+
+    const beforePreviewUrl = useMemo(() => (photoBefore ? URL.createObjectURL(photoBefore) : null), [photoBefore]);
+    const afterPreviewUrl = useMemo(() => (photoAfter ? URL.createObjectURL(photoAfter) : null), [photoAfter]);
+
+    useEffect(() => {
+        return () => {
+            if (beforePreviewUrl) URL.revokeObjectURL(beforePreviewUrl);
+        };
+    }, [beforePreviewUrl]);
+
+    useEffect(() => {
+        return () => {
+            if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
+        };
+    }, [afterPreviewUrl]);
+
+    const displayPhotoBefore = !clearBefore ? (beforePreviewUrl || editRecord?.photo_before_url || null) : null;
+    const displayPhotoAfter = !clearAfter ? (afterPreviewUrl || editRecord?.photo_after_url || null) : null;
 
     const refreshUnread = useCallback(async () => {
         if (!user) return;
@@ -99,10 +151,33 @@ export default function MaintenanceNavSuite() {
         if (bellOpen) loadNotifications();
     }, [bellOpen, loadNotifications]);
 
+    /** เติมชื่อบัญชีเมื่อ user โหลดทีหลัง */
+    useEffect(() => {
+        if (!formOpen || editId || !user?.name) return;
+        setPayload((prev) => {
+            const p = normalizePayload(prev);
+            const name = user.name.trim();
+            const next = { ...p };
+            if (!next.requesterName?.trim()) next.requesterName = name;
+            if (!next.signatures?.reporter?.trim()) {
+                next.signatures = { ...next.signatures, reporter: name };
+            }
+            return normalizePayload(next);
+        });
+    }, [formOpen, editId, user?.name]);
+
     const openCreateForm = () => {
         setEditId(null);
         setEditRecord(null);
-        setPayload(createDefaultMaintenancePayload());
+        const name = user?.name?.trim() || '';
+        const fresh = createDefaultMaintenancePayload();
+        setPayload(
+            normalizePayload({
+                ...fresh,
+                requesterName: name,
+                signatures: { ...fresh.signatures, reporter: name },
+            })
+        );
         setPhotoBefore(null);
         setPhotoAfter(null);
         setClearBefore(false);
@@ -170,7 +245,8 @@ export default function MaintenanceNavSuite() {
         try {
             await maintenanceAPI.approve(detail.id, {});
             showSuccess(t('maintenance.approved'));
-            setDetailOpen(false);
+            const { data } = await maintenanceAPI.get(detail.id);
+            setDetail(data);
             refreshUnread();
         } catch (e) {
             showError(e.response?.data?.message || 'ไม่สำเร็จ');
@@ -187,7 +263,8 @@ export default function MaintenanceNavSuite() {
             showSuccess(t('maintenance.rejected'));
             setRejectOpen(false);
             setRejectNote('');
-            setDetailOpen(false);
+            const { data } = await maintenanceAPI.get(detail.id);
+            setDetail(data);
             refreshUnread();
         } catch (e) {
             showError(e.response?.data?.message || 'ไม่สำเร็จ');
@@ -197,12 +274,28 @@ export default function MaintenanceNavSuite() {
     const canEditDetail = detail && (isAdmin || detail.user_id === user?.id);
     const showAdminActions = isAdmin && detail && detail.status === 'pending';
 
+    const primaryBtn = isDark
+        ? 'border-amber-400/70 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25'
+        : 'border-amber-800 bg-amber-50 text-amber-900 hover:bg-amber-100';
+
+    const bellBtn = isDark
+        ? 'border-gray-600 text-gray-200 hover:bg-gray-800'
+        : 'border-gray-300 text-gray-700 hover:bg-gray-50';
+
+    const loginBtn = isDark
+        ? 'border-amber-400/50 text-amber-100 hover:bg-gray-800'
+        : 'border-amber-700 text-amber-800 hover:bg-amber-50';
+
+    const panelCls = isDark
+        ? 'border-gray-600 bg-gray-900 text-gray-100 shadow-xl'
+        : 'border-gray-200 bg-white shadow-xl';
+
     if (!user) {
         return (
             <button
                 type="button"
                 onClick={() => navigate('/admin/login')}
-                className="whitespace-nowrap rounded border border-amber-700 px-2 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-50 sm:px-3 sm:text-sm"
+                className={`whitespace-nowrap rounded border px-2 py-1.5 text-xs font-medium sm:px-3 sm:text-sm ${loginBtn}`}
             >
                 {t('maintenance.loginToUse')}
             </button>
@@ -211,12 +304,11 @@ export default function MaintenanceNavSuite() {
 
     return (
         <>
-
             <div className="flex items-center gap-1 sm:gap-2">
                 <button
                     type="button"
                     onClick={openCreateForm}
-                    className="whitespace-nowrap rounded border border-amber-800 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 sm:px-3 sm:text-sm"
+                    className={`whitespace-nowrap rounded border px-2 py-1.5 text-xs font-semibold sm:px-3 sm:text-sm ${primaryBtn}`}
                 >
                     {t('maintenance.navButton')}
                 </button>
@@ -225,7 +317,7 @@ export default function MaintenanceNavSuite() {
                     <button
                         type="button"
                         onClick={() => setBellOpen(!bellOpen)}
-                        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 sm:h-10 sm:w-10"
+                        className={`relative flex h-9 w-9 items-center justify-center rounded-lg border sm:h-10 sm:w-10 ${bellBtn}`}
                         aria-label={t('maintenance.notifications')}
                     >
                         <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -238,12 +330,12 @@ export default function MaintenanceNavSuite() {
                         )}
                     </button>
                     {bellOpen && (
-                        <div className="absolute right-0 top-full z-50 mt-1 w-[min(calc(100vw-2rem),22rem)] rounded-lg border border-gray-200 bg-white shadow-xl">
-                            <div className="flex items-center justify-between border-b px-3 py-2">
-                                <span className="text-sm font-semibold text-gray-900">{t('maintenance.notifications')}</span>
+                        <div className={`absolute right-0 top-full z-[80] mt-1 w-[min(calc(100vw-2rem),22rem)] rounded-lg border ${panelCls}`}>
+                            <div className={`flex items-center justify-between border-b px-3 py-2 ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+                                <span className={`text-sm font-semibold ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>{t('maintenance.notifications')}</span>
                                 <button
                                     type="button"
-                                    className="text-xs text-blue-600 hover:underline"
+                                    className={`text-xs ${isDark ? 'text-cyan-300 hover:underline' : 'text-blue-600 hover:underline'}`}
                                     onClick={async () => {
                                         try {
                                             await maintenanceAPI.markAllNotificationsRead();
@@ -259,20 +351,26 @@ export default function MaintenanceNavSuite() {
                             </div>
                             <div className="max-h-[min(60vh,22rem)] overflow-y-auto">
                                 {notifLoading ? (
-                                    <div className="p-4 text-center text-sm text-gray-500">{t('common.loading')}</div>
+                                    <div className={`p-4 text-center text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>{t('common.loading')}</div>
                                 ) : notifList.length === 0 ? (
-                                    <div className="p-4 text-center text-sm text-gray-500">{t('maintenance.noNotifications')}</div>
+                                    <div className={`p-4 text-center text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>{t('maintenance.noNotifications')}</div>
                                 ) : (
                                     notifList.map((n) => (
                                         <button
                                             key={n.id}
                                             type="button"
                                             onClick={() => openDetailById(n.maintenance_request_id, n.id)}
-                                            className={`w-full border-b px-3 py-2.5 text-left transition hover:bg-gray-50 ${n.read_at ? '' : 'bg-amber-50/90'}`}
+                                            className={`w-full border-b px-3 py-2.5 text-left text-sm transition hover:bg-opacity-80 ${
+                                                isDark
+                                                    ? `border-gray-800 hover:bg-gray-800 ${n.read_at ? 'text-gray-300' : 'bg-amber-900/25 text-gray-100'}`
+                                                    : `border-gray-100 hover:bg-gray-50 ${n.read_at ? '' : 'bg-amber-50/90'}`
+                                            }`}
                                         >
-                                            <div className="text-sm font-medium text-gray-900">{n.title}</div>
-                                            {n.body && <div className="mt-0.5 line-clamp-2 text-xs text-gray-600">{n.body}</div>}
-                                            <div className="mt-1 text-[10px] text-gray-400">{new Date(n.created_at).toLocaleString()}</div>
+                                            <div className={`font-medium ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>{n.title}</div>
+                                            {n.body && (
+                                                <div className={`mt-0.5 line-clamp-2 text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>{n.body}</div>
+                                            )}
+                                            <div className={`mt-1 text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{new Date(n.created_at).toLocaleString()}</div>
                                         </button>
                                     ))
                                 )}
@@ -282,9 +380,8 @@ export default function MaintenanceNavSuite() {
                 </div>
             </div>
 
-            {/* Create / edit modal */}
             {formOpen && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-2 sm:p-4" role="dialog" aria-modal="true">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-2 sm:p-4" role="dialog" aria-modal="true">
                     <div className="flex max-h-[95vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
                         <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
                             <h2 className="text-lg font-bold text-gray-900">
@@ -319,9 +416,8 @@ export default function MaintenanceNavSuite() {
                                 payload={payload}
                                 setPayload={setPayload}
                                 readOnly={false}
-                                canEditAdminSections={isAdmin}
-                                photoBeforeUrl={!clearBefore ? editRecord?.photo_before_url : null}
-                                photoAfterUrl={!clearAfter ? editRecord?.photo_after_url : null}
+                                photoBeforeUrl={displayPhotoBefore}
+                                photoAfterUrl={displayPhotoAfter}
                                 onPhotoBeforeChange={setPhotoBefore}
                                 onPhotoAfterChange={setPhotoAfter}
                             />
@@ -343,24 +439,27 @@ export default function MaintenanceNavSuite() {
                 </div>
             )}
 
-            {/* Detail modal (paper view) */}
             {detailOpen && detail && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-2 sm:p-4" role="dialog" aria-modal="true">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-2 sm:p-4" role="dialog" aria-modal="true">
                     <div className="flex max-h-[95vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-                        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-                            <div>
+                        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-slate-50 px-4 py-3">
+                            <div className="min-w-0 flex-1">
                                 <h2 className="text-lg font-bold text-gray-900">
                                     {t('maintenance.detailTitle')} {detail.notification_number}
                                 </h2>
-                                <p className="text-xs text-gray-600">
-                                    {t('maintenance.submitter')}: {detail.user?.name || '—'} ·{' '}
-                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${statusLabel(detail.status).cls}`}>
-                                        {statusLabel(detail.status).text}
-                                    </span>
+                                <p className="mt-0.5 text-xs text-gray-600">
+                                    <span className="font-medium text-gray-800">{t('maintenance.submitter')}:</span> {detail.user?.name || '—'}
+                                    {detail.user?.username ? ` (${detail.user.username})` : ''}
+                                </p>
+                                <p className="mt-1 text-xs text-gray-600">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${statusLabel(detail.status).cls}`}>{statusLabel(detail.status).text}</span>
+                                    {detail.created_at && (
+                                        <span className="ml-2 text-gray-500">ยืนยันส่งเมื่อ {new Date(detail.created_at).toLocaleString()}</span>
+                                    )}
                                 </p>
                                 {detail.admin_note && (
-                                    <p className="mt-1 text-xs text-gray-700">
-                                        {t('maintenance.adminNote')}: {detail.admin_note}
+                                    <p className="mt-2 text-xs text-gray-800">
+                                        <span className="font-semibold">{t('maintenance.adminNote')}:</span> {detail.admin_note}
                                     </p>
                                 )}
                             </div>
@@ -387,11 +486,7 @@ export default function MaintenanceNavSuite() {
                                         </button>
                                     </>
                                 )}
-                                <button
-                                    type="button"
-                                    onClick={() => setDetailOpen(false)}
-                                    className="rounded-lg border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
-                                >
+                                <button type="button" onClick={() => setDetailOpen(false)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
                                     {t('common.close')}
                                 </button>
                             </div>
@@ -401,9 +496,9 @@ export default function MaintenanceNavSuite() {
                                 payload={normalizePayload(detail.payload)}
                                 setPayload={() => {}}
                                 readOnly
-                                canEditAdminSections={false}
                                 photoBeforeUrl={detail.photo_before_url}
                                 photoAfterUrl={detail.photo_after_url}
+                                decisionBanner={<DecisionBanner detail={detail} />}
                             />
                         </div>
                     </div>
@@ -411,7 +506,7 @@ export default function MaintenanceNavSuite() {
             )}
 
             {rejectOpen && (
-                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+                <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 p-4">
                     <div className="w-full max-w-md rounded-xl bg-white p-4 shadow-xl">
                         <h3 className="text-base font-bold text-gray-900">{t('maintenance.rejectTitle')}</h3>
                         <textarea

@@ -1,14 +1,49 @@
-import { toDatetimeLocalValue } from './departmentStorage';
+/** รายการแผนกแนะนำ + ที่ผู้ใช้เคยกรอก (localStorage) */
+const STORAGE_KEY = 'maintenance_department_suggestions';
 
-export { toDatetimeLocalValue } from './departmentStorage';
+const DEFAULT_DEPARTMENTS = [
+    'ฝ่ายผลิต',
+    'ฝ่ายซ่อมบำรุง',
+    'ฝ่ายคลังสินค้า',
+    'ฝ่าย QC',
+    'ฝ่ายบริหาร',
+    'แผนกไฟฟ้า',
+    'แผนกช่างกล',
+];
 
-/** ค่าเริ่มต้นคงที่ (ไม่รวมวันเวลาปัจจุบัน) — ใช้ใน normalize เพื่อไม่ให้ notifiedAt เด้งทุกครั้งที่พิมพ์ */
-function maintenancePayloadShape() {
+export function getDepartmentSuggestions() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return [...DEFAULT_DEPARTMENTS];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [...DEFAULT_DEPARTMENTS];
+        const merged = [...new Set([...DEFAULT_DEPARTMENTS, ...parsed.map(String)])];
+        return merged.sort((a, b) => a.localeCompare(b, 'th'));
+    } catch {
+        return [...DEFAULT_DEPARTMENTS];
+    }
+}
+
+export function rememberDepartment(name) {
+    const t = String(name || '').trim();
+    if (!t) return;
+    const set = new Set(getDepartmentSuggestions());
+    set.add(t);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...set].sort((a, b) => a.localeCompare(b, 'th'))));
+}
+
+export function toDatetimeLocalValue(d = new Date()) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** โครงสร้าง payload ใบแจ้งซ่อม FR-MTN-04 (JSON ใน database) */
+export function createDefaultMaintenancePayload() {
     return {
-        notifiedAt: '',
+        notifiedAt: toDatetimeLocalValue(),
         requesterName: '',
         department: '',
-        /** @deprecated */
+        /** @deprecated รวมกับ requesterName + department — ใช้ตอน normalize ข้อมูลเก่า */
         requesterDepartment: '',
         machineEquipment: '',
         workType: {
@@ -70,19 +105,9 @@ function maintenancePayloadShape() {
     };
 }
 
-/** เปิดฟอร์มใหม่ — วันที่/เวลาแจ้ง = ปัจจุบัน */
-export function createDefaultMaintenancePayload() {
-    return {
-        ...maintenancePayloadShape(),
-        notifiedAt: toDatetimeLocalValue(),
-    };
-}
-
 export function normalizePayload(raw) {
-    const base = maintenancePayloadShape();
-    if (!raw || typeof raw !== 'object') {
-        return { ...base };
-    }
+    const base = createDefaultMaintenancePayload();
+    if (!raw || typeof raw !== 'object') return base;
 
     let requesterName = raw.requesterName ?? '';
     let department = raw.department ?? '';
@@ -102,7 +127,7 @@ export function normalizePayload(raw) {
     return {
         ...base,
         ...raw,
-        notifiedAt: raw.notifiedAt != null && String(raw.notifiedAt).length > 0 ? raw.notifiedAt : base.notifiedAt,
+        notifiedAt: raw.notifiedAt ?? base.notifiedAt,
         requesterName,
         department,
         workType: { ...base.workType, ...(raw.workType || {}) },
