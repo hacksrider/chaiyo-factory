@@ -28,25 +28,27 @@ const Landing = () => {
 
     if (loading) {
         return (
-            <div className="flex justify-center items-center h-screen">
-                <div className="text-xl">{t('common.loading')}</div>
-            </div>
+            <PublicLayout>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 text-gray-900">
+                    <div className="text-lg sm:text-xl">{t('common.loading')}</div>
+                </div>
+            </PublicLayout>
         );
     }
 
     return (
         <PublicLayout>
-            <div className="relative h-full min-h-0 overflow-hidden bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
-                {/* Decorative background elements */}
+            <div className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
+                {/* Decorative background elements — ขยาย/หดตามขนาดจอ */}
                 <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                    <div className="absolute top-20 left-10 w-72 h-72 bg-blue-200 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
-                    <div className="absolute top-40 right-10 w-72 h-72 bg-purple-200 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
-                    <div className="absolute -bottom-8 left-1/2 w-72 h-72 bg-indigo-200 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
+                    <div className="animate-blob absolute left-[5%] top-16 h-[clamp(10rem,28vmin,22rem)] w-[clamp(10rem,28vmin,22rem)] rounded-full bg-blue-200 opacity-20 mix-blend-multiply blur-xl filter sm:left-10 sm:top-20"></div>
+                    <div className="animate-blob animation-delay-2000 absolute right-[5%] top-32 h-[clamp(10rem,28vmin,22rem)] w-[clamp(10rem,28vmin,22rem)] rounded-full bg-purple-200 opacity-20 mix-blend-multiply blur-xl filter sm:right-10 sm:top-40"></div>
+                    <div className="animate-blob animation-delay-4000 absolute -bottom-8 left-1/2 h-[clamp(10rem,28vmin,22rem)] w-[clamp(10rem,28vmin,22rem)] -translate-x-1/2 rounded-full bg-indigo-200 opacity-20 mix-blend-multiply blur-xl filter"></div>
                 </div>
 
                 {/* Main Content Container */}
-                <div className="relative flex min-h-0 flex-1 items-center justify-center py-6 sm:py-10">
-                    <div className="mx-auto w-full max-w-[1920px] px-3 sm:px-5 lg:px-8 xl:px-10">
+                <div className="relative flex min-h-0 w-full flex-1 items-center justify-center py-6 sm:py-10">
+                    <div className="w-full px-3 sm:px-5 lg:px-8 xl:px-10 2xl:px-12">
                         <div className="grid grid-cols-1 items-center gap-6 md:gap-8 lg:grid-cols-3">
                             {/* Left Image */}
                             <div className="hidden lg:flex justify-center items-center animate-fade-in-left">
@@ -64,44 +66,62 @@ const Landing = () => {
                             <div className="text-center space-y-6 animate-fade-in-up">
                                 <div className="space-y-3">
                                     <h2
-                                        className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text pb-2 text-3xl font-extrabold text-transparent drop-shadow-lg sm:text-4xl md:text-5xl xl:text-6xl"
+                                        className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text pb-2 text-3xl font-extrabold text-transparent drop-shadow-lg sm:text-4xl md:text-3xl xl:text-5xl"
                                         style={{ paddingTop: '0.5em', paddingBottom: '0.5em', lineHeight: 1.1 }}
                                     >
                                         {t('landing.title')}
                                     </h2>
-                                    <div className="mx-auto max-w-2xl text-base font-medium leading-relaxed text-gray-700 sm:text-lg md:text-xl">
-                                        {t('landing.subtitle')}
-                                    </div>
                                 </div>
-                                
-                                <div className="flex flex-col justify-center gap-3 pt-4 sm:flex-row sm:gap-4">
+
+                                <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-3 pt-4 sm:grid-cols-2 sm:gap-4">
                                     <button
                                         type="button"
                                         onClick={() => navigate('/problems')}
-                                        className="group relative transform overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-blue-700 hover:to-indigo-700 hover:shadow-blue-500/50 sm:px-10 sm:py-5 sm:text-lg"
+                                        className="group relative min-h-0 w-full min-w-0 transform overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 px-3 py-2 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-blue-700 hover:to-indigo-700 hover:shadow-blue-500/50 sm:px-5 sm:py-3 sm:text-lg"
+                                        style={{ minWidth: 0 }}
                                     >
-                                        <span className="relative z-10 flex items-center justify-center gap-2">
+                                        <span className="relative z-10 flex items-center justify-center gap-2 text-lg sm:text-xl md:text-2xl xl:text-lg">
                                             {t('nav.problems')}
-                                            <svg className="w-5 h-5 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <svg className="h-5 w-5 transform transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                                             </svg>
                                         </span>
-                                        <div className="absolute inset-0 bg-gradient-to-r from-blue-400 to-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                                        <div className="absolute inset-0 bg-gradient-to-r from-blue-400 to-indigo-400 opacity-0 transition-opacity group-hover:opacity-100"></div>
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => navigate('/machines')}
-                                        className="group relative transform overflow-hidden rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-4 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-green-700 hover:to-emerald-700 hover:shadow-green-500/50 sm:px-10 sm:py-5 sm:text-lg"
+                                        className="group relative min-h-0 w-full min-w-0 transform overflow-hidden rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 px-3 py-2 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-green-700 hover:to-emerald-700 hover:shadow-green-500/50 sm:px-5 sm:py-3 sm:text-lg"
+                                        style={{ minWidth: 0 }}
                                     >
-                                        <span className="relative z-10 flex items-center justify-center gap-2">
+                                        <span className="relative z-10 flex items-center justify-center gap-2 text-lg sm:text-xl md:text-2xl xl:text-lg">
                                             {t('landing.machineMode')}
-                                            <svg className="w-5 h-5 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <svg className="h-5 w-5 transform transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                                             </svg>
                                         </span>
-                                        <div className="absolute inset-0 bg-gradient-to-r from-green-400 to-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                                        <div className="absolute inset-0 bg-gradient-to-r from-green-400 to-emerald-400 opacity-0 transition-opacity group-hover:opacity-100"></div>
                                     </button>
+                                    <div className="col-span-full flex w-full justify-center">
+                                        <button
+                                            type="button"
+                                            onClick={() => navigate('/production-monitoring')}
+                                            className="group relative w-full max-w-md transform overflow-hidden rounded-2xl bg-gradient-to-r from-cyan-600 to-teal-600 px-3 py-2 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-cyan-700 hover:to-teal-700 hover:shadow-cyan-500/50 sm:px-5 sm:py-3 sm:text-lg md:max-w-lg"
+                                            style={{ minWidth: 0 }}
+                                        >
+                                            <span className="relative z-10 flex items-center justify-center gap-2 text-lg sm:text-xl md:text-2xl xl:text-lg">
+                                                {t('nav.production')}
+                                                <svg className="h-5 w-5 transform transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                                </svg>
+                                            </span>
+                                            <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-teal-400 opacity-0 transition-opacity group-hover:opacity-100"></div>
+                                        </button>
+                                    </div>
                                 </div>
+
+                           
+                           
                             </div>
 
                             {/* Right Image */}

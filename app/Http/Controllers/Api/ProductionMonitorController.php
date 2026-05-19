@@ -667,6 +667,26 @@ class ProductionMonitorController extends Controller
     }
 
     /**
+     * GET /api/production-monitor/calendar
+     *
+     * ปฏิทินโรงงาน (Asia/Bangkok) — ใช้กำหนดวันนี้ / เมื่อวาน / ล่วงหน้า ใน UI
+     * ไม่ขึ้นกับ timezone ของเครื่องผู้ใช้หรือ APP_TIMEZONE (UTC)
+     */
+    public function getCalendar(): JsonResponse
+    {
+        $tz    = 'Asia/Bangkok';
+        $today = Carbon::now($tz);
+
+        return response()->json([
+            'timezone'  => $tz,
+            'today'     => $today->format('Y-m-d'),
+            'yesterday' => $today->copy()->subDay()->format('Y-m-d'),
+            'serverTime' => (int) round(microtime(true) * 1000),
+            'now'       => $today->toIso8601String(),
+        ]);
+    }
+
+    /**
      * GET /api/production-monitor/daily-plan?machine=EM+08&jobNo=6901001
      *
      * Returns rows from the "Daily" sheet.

@@ -9,7 +9,6 @@ import StatCard from './StatCard';
 import { updateWeight, closeOrder, createOrder, fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
-import LanguageSwitcher from '../../../components/LanguageSwitcher';
 
 // ─── Elapsed timer hook ───────────────────────────────────────────────────────
 
@@ -72,11 +71,14 @@ const SwitchOrderModal = ({
 }) => {
   const [action, setAction] = useState(null); // 'pause' | 'close'
   const [busy, setBusy]     = useState(false);
+  const busyLockRef         = useRef(false);
   const [warn, setWarn]     = useState(null);
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
   const run = async (mode) => {
+    if (busyLockRef.current) return;
+    busyLockRef.current = true;
     setBusy(true);
     setAction(mode);
     setWarn(null);
@@ -85,7 +87,6 @@ const SwitchOrderModal = ({
       try {
         await closeOrder({ machineId, sheetName, orderId: currentOrderId });
       } catch (err) {
-        console.warn('[SwitchModal] closeOrder API error:', err.message);
         setWarn(`Close API failed (${err.message}) — closing locally.`);
         await new Promise((r) => setTimeout(r, 800));
       }
@@ -102,9 +103,9 @@ const SwitchOrderModal = ({
       });
     } catch (err) {
       // GAS fail — หยุด ไม่เปลี่ยน order เพื่อป้องกัน order ใหม่หาย
-      console.warn('[SwitchModal] createOrder API error:', err.message);
       setWarn(t('production.switchOrderCreateFailed', { msg: err.message }));
       setBusy(false);
+      busyLockRef.current = false;
       return;
     }
 
@@ -112,6 +113,7 @@ const SwitchOrderModal = ({
     else                  onCloseAndStart(targetItem);
 
     setBusy(false);
+    busyLockRef.current = false;
   };
 
   return (
@@ -491,7 +493,11 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
   const totalNgWeight   = machineState.totalNgWeight   ?? 0;
   const totalItems      = goodCount + ngCount;
 
+  const confirmLockRef = useRef(false);
+
   const handleConfirm = async () => {
+    if (confirmLockRef.current || closing) return;
+    confirmLockRef.current = true;
     setClosing(true);
     setCloseErr(null);
     try {
@@ -507,9 +513,9 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       });
     } catch (err) {
       // GAS/API fail — แสดง error ไม่ reset state เพื่อให้ลอง retry ได้
-      console.warn('[FinishedOrderModal] closeOrder API error:', err.message);
       setCloseErr(t('production.finishSaveSheetFailed', { msg: err.message }));
       setClosing(false);
+      confirmLockRef.current = false;
       return;
     }
 
@@ -523,9 +529,9 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       });
       await storeScaleLive(machineId, { live: false });
     } catch (err) {
-      console.warn('[FinishedOrderModal] dbFinishSession / storeScaleLive error:', err?.message);
       setCloseErr(t('production.finishDbSessionFailed', { msg: err?.message ?? '' }));
       setClosing(false);
+      confirmLockRef.current = false;
       return;
     }
 
@@ -544,7 +550,7 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         date:     prodDate,
         shift:    machineState.shift,
         produced: goodCount,
-      }).catch((err) => console.warn('[FinishedOrderModal] updateDailyProduced error:', err.message));
+      }).catch(() => {});
 
       // 2b) แผนการผลิต sheet — บวกสะสมจำนวน + น้ำหนัก + รหัสพนักงาน
       updatePlanProduced({
@@ -554,11 +560,12 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         goodWeight:  totalGoodWeight,
         ngWeight:    totalNgWeight,
         employeeId:  machineState.employeeId ?? '',
-      }).catch((err) => console.warn('[FinishedOrderModal] updatePlanProduced error:', err.message));
+      }).catch(() => {});
     }
 
     onConfirm();
     setClosing(false);
+    confirmLockRef.current = false;
   };
 
   return (
@@ -808,7 +815,7 @@ const LiveMonitoring = ({
   }, [machineId, machineState?.sessionRunUlid, machineState?.orderId, processScaleEvent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="space-y-6 w-full">
+    <div className="w-full max-w-[1600px] mx-auto space-y-3 xs:space-y-4 sm:space-y-5 lg:space-y-6 3xl:max-w-[1920px]">
 
       {/* Switch Order modal */}
       {canManageProduction && switchTarget && (
@@ -892,87 +899,80 @@ const LiveMonitoring = ({
         />
       )}
 
-      {/* ── Header ── */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-        <div className="min-w-0">
-          <div className="mb-1 flex items-center gap-2.5">
+
+      {/* ── Header (compact) ── */}
+      <div className="rounded-xl border border-gray-700/40 bg-gray-800/30 p-2.5 xs:p-3 sm:p-4">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <div className="relative flex-shrink-0">
-              <span className="block h-3 w-3 rounded-full bg-green-400" />
-              <span className="absolute inset-0 h-3 w-3 animate-ping rounded-full bg-green-400 opacity-60" />
+              <span className="block h-2.5 w-2.5 rounded-full bg-green-400 sm:h-3 sm:w-3" />
+              <span className="absolute inset-0 h-2.5 w-2.5 animate-ping rounded-full bg-green-400 opacity-60 sm:h-3 sm:w-3" />
             </div>
-            <span className="text-[11px] font-semibold uppercase tracking-widest text-green-400">{t('production.liveMonitoring')}</span>
-          </div>
-          <h2 className="text-xl font-bold text-white sm:text-2xl">{machineLabel}</h2>
-          <p className="mt-1 text-sm text-gray-400">
-            {t('production.order')}: <span className="font-mono text-white">{machineState.orderId}</span>
-            {machineState.startedAt && (
-              <span className="mt-1 block text-gray-600 sm:ml-3 sm:mt-0 sm:inline">
-                {t('production.started')}{' '}
-                {formatProductionTimeBangkok(machineState.startedAt)}
+            <div className="min-w-0">
+              <span className="text-[9px] font-semibold uppercase tracking-widest text-green-400 xs:text-[10px] sm:text-[11px]">
+                {t('production.liveMonitoring')}
               </span>
-            )}
-          </p>
-          {/* แสดงพนักงานและกะ (จาก Scale ESP32 confirm) */}
+              <h2 className="truncate text-base font-bold text-white xs:text-lg sm:text-xl lg:text-2xl 3xl:text-3xl">
+                {machineLabel}
+              </h2>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2 rounded-lg border border-gray-700/50 bg-gray-900/70 px-2.5 py-1.5">
+            <span className="text-[9px] uppercase tracking-wider text-gray-500 xs:text-[10px]">
+              {t('production.runtime')}
+            </span>
+            <span className="font-mono text-sm font-bold tabular-nums text-gray-200 xs:text-base sm:text-lg lg:text-xl 3xl:text-2xl">
+              {elapsed}
+            </span>
+          </div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-gray-700/30 pt-2 text-[11px] text-gray-400 xs:text-xs sm:text-sm">
+          <span className="shrink-0">{t('production.order')}:</span>
+          <span className="min-w-0 truncate font-mono text-white">{machineState.orderId}</span>
+          {machineState.startedAt && (
+            <>
+              <span className="hidden text-gray-600 xs:inline">·</span>
+              <span className="shrink-0 text-gray-500">
+                {t('production.started')}{' '}
+                <span className="font-mono text-gray-400">
+                  {formatProductionTimeBangkok(machineState.startedAt)}
+                </span>
+              </span>
+            </>
+          )}
           {(machineState.employeeId || machineState.shift) && (
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
               {machineState.employeeId && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-mono bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 px-2.5 py-1 rounded-full">
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 font-mono text-[10px] text-indigo-300">
+                  <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                       d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                   </svg>
-                  {t('production.employee')}: {machineState.employeeId}
+                  {machineState.employeeId}
                 </span>
               )}
               {machineState.shift && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-mono bg-violet-500/10 border border-violet-500/30 text-violet-300 px-2.5 py-1 rounded-full">
+                <span className="inline-flex items-center rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-300">
                   {t('production.shiftLabel')} {machineState.shift}
                 </span>
               )}
-            </div>
+            </span>
           )}
-          {/* {(machineState.sheetName || machineState.ledIp) && (
-            <div className="flex flex-wrap gap-2 mt-2">
-              {machineState.sheetName && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-mono bg-gray-800/80 border border-gray-700 text-gray-500 px-2.5 py-1 rounded-full">
-                  <svg className="w-3 h-3 text-cyan-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                  Sheet: {machineState.sheetName}
-                </span>
-              )}
-              {machineState.ledIp && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-mono bg-gray-800/80 border border-gray-700 text-gray-500 px-2.5 py-1 rounded-full">
-                  <svg className="w-3 h-3 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-                  LED: {machineState.ledIp}
-                </span>
-              )}
-            </div>
-          )} */}
-        </div>
-
-        <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:shrink-0 sm:items-end">
-          <div className="flex justify-end sm:w-full sm:justify-end [&>div]:border-l-0 [&>div]:pl-0 sm:[&>div]:pl-0">
-            <LanguageSwitcher variant="dark" />
-          </div>
-          {/* Elapsed timer */}
-          <div className="w-full shrink-0 rounded-xl border border-gray-700/50 bg-gray-800/60 px-4 py-3 text-center sm:w-auto sm:px-5 sm:text-right">
-            <p className="mb-1 text-[11px] uppercase tracking-wider text-gray-500">{t('production.runtime')}</p>
-            <p className="font-mono text-2xl font-bold tabular-nums text-gray-200 sm:text-3xl">{elapsed}</p>
-          </div>
         </div>
       </div>
-
       {/* Toast */}
       <Toast toast={toast} />
 
+
       {/* ── Stat cards ── */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Product */}
-        <div className="col-span-1 sm:col-span-2 lg:col-span-2">
+      <div className="grid grid-cols-2 gap-2 xs:gap-2.5 sm:gap-3 lg:grid-cols-12 lg:gap-4">
+        <div className="col-span-2 lg:col-span-6">
           <StatCard
             label={t('production.productCodeLabel')}
             value={String(machineState.productCode || '').trim() || '—'}
             accent="cyan"
             numeric={false}
+            compact
             subtext={
               [
                 machineState.productName,
@@ -985,33 +985,31 @@ const LiveMonitoring = ({
           />
         </div>
 
-        {/* น้ำหนักมาตรฐาน — แสดงเฉพาะเมื่อมีข้อมูล */}
         {machineState.stdWeight != null && (
-          <div className="col-span-1 sm:col-span-2 lg:col-span-4">
-            <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-4 py-2.5 flex items-center gap-4 flex-wrap">
-              <span className="text-[10px] font-semibold tracking-widest text-amber-500/70 uppercase">น้ำหนักมาตรฐาน</span>
-              <span className="text-sm font-mono font-bold text-amber-300">
+          <div className="col-span-2 lg:col-span-12">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-[10px] sm:px-4 sm:py-2.5 sm:text-xs">
+              <span className="font-semibold uppercase tracking-widest text-amber-500/70">น้ำหนักมาตรฐาน</span>
+              <span className="font-mono text-xs font-bold text-amber-300 sm:text-sm">
                 {machineState.stdWeight} kg / ม้วน
               </span>
               {machineState.minWeight != null && machineState.maxWeight != null && (
-                <span className="text-xs text-gray-500">
-                  Min <span className="text-gray-300 font-mono">{machineState.minWeight}</span>
+                <span className="text-gray-500">
+                  Min <span className="font-mono text-gray-300">{machineState.minWeight}</span>
                   {' — '}
-                  Max <span className="text-gray-300 font-mono">{machineState.maxWeight}</span>
-                  {' kg'}
+                  Max <span className="font-mono text-gray-300">{machineState.maxWeight}</span> kg
                 </span>
               )}
               {machineState.colorStripe && (
-                <span className="text-xs text-gray-500">แถบสี: <span className="text-gray-300">{machineState.colorStripe}</span></span>
+                <span className="text-gray-500">แถบสี: <span className="text-gray-300">{machineState.colorStripe}</span></span>
               )}
             </div>
           </div>
         )}
-        {/* Progress — คลิกดูรายการ */}
+
         <button
           type="button"
           onClick={() => setShowGoodList(true)}
-          className="text-left group rounded-xl ring-0 hover:ring-2 hover:ring-green-500/40 focus-visible:ring-2 focus-visible:ring-green-500 transition-all"
+          className="col-span-1 text-left group rounded-xl ring-0 hover:ring-2 hover:ring-green-500/40 focus-visible:ring-2 focus-visible:ring-green-500 transition-all lg:col-span-3"
           title={t('production.titleShowGoodEvents')}
         >
           <StatCard
@@ -1019,14 +1017,15 @@ const LiveMonitoring = ({
             value={goodCount}
             unit={`/ ${displayTarget}`}
             accent="green"
+            compact
             subtext={t('production.totalWeightKg', { weight: totalGoodWeight.toFixed(2) })}
           />
         </button>
-        {/* NG — คลิกดูรายการ */}
+
         <button
           type="button"
           onClick={() => setShowNgList(true)}
-          className="text-left group rounded-xl ring-0 hover:ring-2 hover:ring-red-500/40 focus-visible:ring-2 focus-visible:ring-red-500 transition-all"
+          className="col-span-1 text-left group rounded-xl ring-0 hover:ring-2 hover:ring-red-500/40 focus-visible:ring-2 focus-visible:ring-red-500 transition-all lg:col-span-3"
           title={t('production.titleShowNgEvents')}
         >
           <StatCard
@@ -1034,28 +1033,29 @@ const LiveMonitoring = ({
             value={ngCount}
             unit={t('production.items')}
             accent="red"
+            compact
             subtext={t('production.totalWeightKg', { weight: totalNgWeight.toFixed(2) })}
           />
         </button>
       </div>
 
       {/* ── Progress bar ── */}
-      <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
-        <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-sm text-gray-400">{t('production.progressLabel')}</span>
-          <span className={`text-sm font-mono font-bold tabular-nums ${isComplete ? 'text-green-400' : 'text-cyan-400'}`}>
-            {goodCount} / {displayTarget} &nbsp;({progress}%)
+      <div className="rounded-xl border border-gray-700/50 bg-gray-800/50 p-2.5 sm:p-4">
+        <div className="mb-1.5 flex items-center gap-2">
+          <span className="shrink-0 text-xs text-gray-400 sm:text-sm">{t('production.progressLabel')}</span>
+          <span className={`shrink-0 text-xs font-mono font-bold tabular-nums sm:text-sm ${isComplete ? 'text-green-400' : 'text-cyan-400'}`}>
+            {goodCount}/{displayTarget} ({progress}%)
           </span>
-        </div>
-        <div className="h-3 bg-gray-700 rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-700 ease-out ${isComplete ? 'bg-green-400' : 'bg-gradient-to-r from-cyan-600 to-cyan-400'}`}
-            style={{ width: `${progress}%` }}
-          />
+          <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-gray-700 sm:h-2.5">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ease-out ${isComplete ? 'bg-green-400' : 'bg-gradient-to-r from-cyan-600 to-cyan-400'}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
         </div>
         {isComplete && (
-          <p className="flex items-center gap-1.5 text-sm text-green-400 font-semibold mt-2.5">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <p className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-green-400 sm:text-sm">
+            <svg className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             {t('production.targetReached')}
@@ -1063,47 +1063,43 @@ const LiveMonitoring = ({
         )}
       </div>
 
-      {/* ── Action buttons (ของดี/ของเสียถูกลบออก — รับจากตาชั่ง Scale ESP32 โดยตรง) ── */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        {/* Scale status indicator */}
-        <div className="flex min-h-[44px] items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/8 px-4 py-2.5 font-mono text-xs text-cyan-400/70">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
-          {t('production.autoFromScale')}
+      {/* ── Action buttons ── */}
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+        <div className="col-span-2 flex min-h-[36px] items-center gap-2 rounded-lg border border-cyan-500/20 bg-cyan-500/8 px-2.5 py-2 font-mono text-[10px] text-cyan-400/70 xs:text-xs sm:col-span-1 sm:min-h-[40px] sm:flex-initial sm:px-3">
+          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-cyan-400" />
+          <span className="truncate">{t('production.autoFromScale')}</span>
         </div>
 
         {canManageProduction && (
           <>
-            {/* Finished Order */}
             <button
               type="button"
               onClick={() => setShowFinish(true)}
-              className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-green-500/50 bg-green-500/15 py-2.5 pl-4 pr-5 font-semibold text-green-300 transition-all hover:border-green-400 hover:bg-green-500/25 hover:text-green-100 sm:flex-initial"
+              className="flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg border border-green-500/50 bg-green-500/15 px-2 py-2 text-xs font-semibold text-green-300 transition-all hover:border-green-400 hover:bg-green-500/25 hover:text-green-100 sm:min-h-[40px] sm:px-3 sm:text-sm"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
               </svg>
-              {t('production.finishedOrder')}
+              <span className="truncate">{t('production.finishedOrder')}</span>
             </button>
 
-            {/* Cancel Production */}
             <button
               type="button"
               onClick={() => setShowCancelConfirm(true)}
-              className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border border-red-500/30 bg-red-500/8 py-2.5 px-4 font-medium text-red-400/80 transition-all hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300 sm:flex-initial"
+              className="flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/8 px-2 py-2 text-xs font-medium text-red-400/80 transition-all hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300 sm:min-h-[40px] sm:px-3 sm:text-sm"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
-              {t('production.cancelOrder')}
+              <span className="truncate">{t('production.cancelOrder')}</span>
             </button>
           </>
         )}
       </div>
-
       {/* ── Queue panel (always visible while live) ── */}
-      <div className="rounded-2xl border border-gray-700/40 bg-gray-800/40 p-4 sm:p-5">
+      <div className="rounded-xl border border-gray-700/40 bg-gray-800/40 p-2.5 xs:p-3 sm:p-4">
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="mb-2 flex items-center justify-between sm:mb-3">
           <div className="flex items-center gap-2">
           <h3 className="text-xs font-semibold tracking-widest text-gray-500 uppercase">
             {t('production.nextInQueue')}
@@ -1135,13 +1131,13 @@ const LiveMonitoring = ({
             {queue.map((item, index) => (
               <div
                 key={item.queueId}
-                className="bg-gray-900/60 border border-gray-700/50 rounded-xl px-4 py-3 flex flex-col gap-1.5"
+                className="rounded-lg border border-gray-700/50 bg-gray-900/60 px-2.5 py-2 sm:rounded-xl sm:px-3 sm:py-2.5"
               >
-                <div className="flex items-start gap-3">
-                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-gray-700/80 text-gray-400 text-[11px] font-bold flex items-center justify-center mt-0.5">
+                <div className="flex items-start gap-2 sm:gap-3">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-700/80 text-[10px] font-bold text-gray-400 sm:h-6 sm:w-6 sm:text-[11px]">
                     {index + 1}
                   </span>
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0 flex-1">
                     {/* เลขใบขอ + รหัสสินค้า */}
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-semibold font-mono text-white">{item.orderId}</span>
@@ -1183,21 +1179,16 @@ const LiveMonitoring = ({
                       )}
                     </div>
                   </div>
-                  <div className="flex-shrink-0 flex flex-col items-end gap-0.5">
-                    <span className="text-[11px] font-mono font-bold text-cyan-400 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-full">
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="rounded-full border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-cyan-400 sm:px-2 sm:text-[11px]">
                       ×{item.remainingQty > 0 ? item.remainingQty : item.targetQty}
                     </span>
-                    {item.remainingQty > 0 && (
-                      <span className="text-[9px] text-gray-600">ค้างผลิต</span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex justify-end flex-wrap gap-2">
+                    <div className="flex flex-wrap justify-end gap-1">
                   {onRemoveFromQueue && item.queueId && (
                     <button
                       type="button"
                       onClick={() => onRemoveFromQueue(item.queueId)}
-                      className="flex items-center gap-1 text-xs font-semibold bg-red-500/10 hover:bg-red-500/15 border border-red-500/30 text-red-400 px-2.5 py-1.5 rounded-lg transition-all"
+                      className="flex items-center gap-0.5 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-400 transition-all hover:bg-red-500/15 sm:gap-1 sm:rounded-lg sm:px-2.5 sm:py-1.5 sm:text-xs"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1209,7 +1200,7 @@ const LiveMonitoring = ({
                     <button
                       type="button"
                       onClick={() => setSwitchTarget(item)}
-                      className="flex items-center gap-1.5 text-xs font-semibold bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 text-green-400 px-3 py-1.5 rounded-lg transition-all"
+                      className="flex items-center gap-0.5 rounded-md border border-green-500/30 bg-green-500/10 px-2 py-1 text-[10px] font-semibold text-green-400 transition-all hover:bg-green-500/20 sm:gap-1 sm:rounded-lg sm:px-2.5 sm:py-1.5 sm:text-xs"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
@@ -1217,6 +1208,8 @@ const LiveMonitoring = ({
                       {t('production.switchBtn')}
                     </button>
                   )}
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}

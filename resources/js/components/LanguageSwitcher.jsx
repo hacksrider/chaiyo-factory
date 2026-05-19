@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTranslation } from '../utils/translations';
 import FlagIcon from './FlagIcon';
 
 const MENU_WIDTH = 115;
 
-const LanguageSwitcher = ({ variant = 'light' }) => {
+const LanguageSwitcher = ({ variant = 'light', compact = false }) => {
     const { language, changeLanguage } = useLanguage();
+    const { t } = useTranslation(language);
     const [isOpen, setIsOpen] = useState(false);
     const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
     const buttonRef = useRef(null);
@@ -68,24 +70,41 @@ const LanguageSwitcher = ({ variant = 'light' }) => {
                 ref={buttonRef}
                 type="button"
                 onClick={() => setIsOpen((v) => !v)}
-                className={`flex items-center gap-2 px-1 py-1 rounded-md text-sm focus:outline-none focus:ring-2 transition-colors duration-200 ${
-                    isDark
-                        ? 'bg-gray-800 border border-gray-600/60 text-gray-200 hover:bg-gray-700 focus:ring-cyan-500'
-                        : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-blue-500'
+                aria-expanded={isOpen}
+                aria-haspopup="listbox"
+                title={compact ? `${t('nav.languageMenu')}: ${currentLanguage.name}` : undefined}
+                aria-label={compact ? `${t('nav.languageMenu')}: ${currentLanguage.name}` : undefined}
+                className={`flex items-center rounded-md text-sm focus:outline-none focus:ring-2 transition-colors duration-200 ${
+                    compact
+                        ? `justify-center h-9 w-9 p-0 sm:h-10 sm:w-10 ${
+                              isDark
+                                  ? 'bg-gray-800 border border-gray-600/60 text-gray-200 hover:bg-gray-700 focus:ring-cyan-500'
+                                  : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-blue-500'
+                          }`
+                        : `gap-2 px-1 py-1 ${
+                              isDark
+                                  ? 'bg-gray-800 border border-gray-600/60 text-gray-200 hover:bg-gray-700 focus:ring-cyan-500'
+                                  : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-blue-500'
+                          }`
                 }`}
             >
-                <span className="w-8 h-6 flex-shrink-0 overflow-hidden">
+                <span className={`flex-shrink-0 overflow-hidden ${compact ? 'h-5 w-7 sm:h-6 sm:w-8' : 'w-8 h-6'}`}>
                     <FlagIcon countryCode={currentLanguage.code} className="w-full h-full" />
                 </span>
-                <span className="hidden sm:inline">{currentLanguage.name}</span>
-                <svg
-                    className={`w-4 h-4 transition-transform duration-200 ${isOpen ? 'transform rotate-180' : ''}`}
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
+                {!compact && (
+                    <>
+                        <span className="hidden sm:inline">{currentLanguage.name}</span>
+                        <svg
+                            className={`w-4 h-4 transition-transform duration-200 ${isOpen ? 'transform rotate-180' : ''}`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                            aria-hidden
+                        >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </>
+                )}
             </button>
 
             {isOpen &&

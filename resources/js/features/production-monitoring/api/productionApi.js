@@ -566,6 +566,22 @@ export const fetchDailyPlan = async ({ machine, jobNo, sinceDate } = {}) => {
 };
 
 /**
+ * GET /api/production-monitor/calendar
+ * วันนี้/เมื่อวานตามปฏิทินโรงงาน (Asia/Bangkok) จากเซิร์ฟเวอร์
+ */
+export const fetchProductionCalendar = async () => {
+  const raw = await get('/calendar');
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    today:     raw.today     ?? null,
+    yesterday: raw.yesterday ?? null,
+    timezone:  raw.timezone  ?? 'Asia/Bangkok',
+    serverTime: raw.serverTime ?? null,
+    now:       raw.now       ?? null,
+  };
+};
+
+/**
  * GET /api/production-monitor/product-lookup
  *
  * Fetches a { productCode: productName } map from the Chaiyo Data Center sheet.

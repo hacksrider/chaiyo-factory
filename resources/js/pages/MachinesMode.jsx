@@ -32,8 +32,8 @@ const MachinesMode = () => {
     if (loading) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl">{t('common.loading')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg sm:text-xl">{t('common.loading')}</div>
                 </div>
             </PublicLayout>
         );
@@ -41,8 +41,8 @@ const MachinesMode = () => {
 
     return (
         <PublicLayout>
-            <div className="min-h-0 bg-gray-50">
-                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden bg-gray-50">
+                <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                         <BackButton to="/" label="Back" className="mb-4" />
                     
                     <div className="mb-8 flex flex-col gap-6 lg:flex-row lg:gap-8">
@@ -50,11 +50,11 @@ const MachinesMode = () => {
                         <div className="w-full lg:w-9/12">
                             <div className="h-full rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6">
                                 <h2 className="mb-4 text-xl font-semibold sm:text-2xl">{t('machines.factoryLayout')}</h2>
-                                <div className="relative w-full flex justify-center bg-gray-100 rounded-lg overflow-hidden">
+                                <div className="w-full overflow-x-auto rounded-lg bg-gray-100">
                                     <img
                                         src="/images/Factory-layout.png"
                                         alt={t('machines.factoryLayout')}
-                                        className="max-w-8xl w-full h-auto"
+                                        className="mx-auto block h-auto w-auto min-w-[560px] max-w-none sm:min-w-0 sm:w-full sm:max-w-full"
                                         onError={(e) => {
                                             e.target.style.display = 'none';
                                             e.target.nextSibling.style.display = 'block';

@@ -73,8 +73,8 @@ export const AlertProvider = ({ children }) => {
             show: true,
             title: title || t('common.confirm'),
             message,
-            onConfirm: () => {
-                if (onConfirm) onConfirm();
+            onConfirm: async () => {
+                if (onConfirm) await onConfirm();
                 setConfirmDialog({ show: false, title: '', message: '', onConfirm: null });
             },
             confirmText: confirmText || t('common.confirm'),

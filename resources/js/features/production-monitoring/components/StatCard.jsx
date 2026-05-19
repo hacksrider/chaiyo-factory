@@ -38,38 +38,58 @@ const ACCENT = {
  *   label: string,
  *   value: string | number | null,
  *   unit?: string,
- *   accent?: 'cyan' | 'green' | 'amber' | 'purple',
+ *   accent?: 'cyan' | 'green' | 'amber' | 'purple' | 'red',
  *   subtext?: string,
- *   numeric?: boolean,   // true = large monospace display
+ *   numeric?: boolean,
+ *   compact?: boolean,
  * }} props
  */
-const StatCard = ({ label, value, unit, accent = 'cyan', subtext, numeric = true }) => {
+const StatCard = ({
+  label,
+  value,
+  unit,
+  accent = 'cyan',
+  subtext,
+  numeric = true,
+  compact = false,
+}) => {
   const colors = ACCENT[accent] ?? ACCENT.cyan;
 
+  const pad = compact ? 'p-2 sm:p-3 lg:p-4' : 'p-3 sm:p-4 lg:p-5';
+  const labelCls = compact
+    ? 'text-[9px] sm:text-[10px] mb-1 sm:mb-1.5'
+    : 'text-[10px] sm:text-[11px] mb-2 sm:mb-3';
+  const valueCls = numeric
+    ? compact
+      ? `font-mono text-lg xs:text-xl sm:text-2xl lg:text-3xl 3xl:text-4xl tv:text-5xl ${colors.value}`
+      : `font-mono text-2xl sm:text-3xl lg:text-4xl 3xl:text-5xl ${colors.value}`
+    : compact
+      ? `text-base xs:text-lg sm:text-xl lg:text-2xl 3xl:text-3xl ${colors.value}`
+      : `text-xl sm:text-2xl lg:text-4xl 3xl:text-5xl ${colors.value}`;
+  const unitCls = compact
+    ? 'text-xs sm:text-sm lg:text-base'
+    : 'text-sm sm:text-lg lg:text-xl';
+  const subCls = compact
+    ? 'mt-1 text-[11px] leading-snug sm:text-xs lg:text-sm'
+    : 'mt-1.5 text-sm leading-snug sm:mt-2 sm:text-base lg:text-lg';
+
   return (
-    <div className={`rounded-xl border ${colors.border} ${colors.bg} p-3 sm:p-4`}>
-      <p className={`text-[10px] sm:text-[11px] font-semibold tracking-widest uppercase ${colors.label} mb-2 sm:mb-3`}>
+    <div className={`h-full rounded-xl border ${colors.border} ${colors.bg} ${pad}`}>
+      <p className={`font-semibold uppercase tracking-widest ${labelCls} ${colors.label}`}>
         {label}
       </p>
 
-      <div className="flex min-h-[1.75rem] items-end gap-1.5 sm:gap-2 sm:min-h-[2rem]">
-        <span
-          className={[
-            'font-bold leading-none break-all',
-            numeric
-              ? `font-mono text-2xl sm:text-3xl lg:text-4xl ${colors.value}`
-              : `text-xl sm:text-2xl lg:text-4xl ${colors.value}`,
-          ].join(' ')}
-        >
+      <div className={`flex items-end gap-1 ${compact ? 'min-h-[1.25rem] sm:min-h-[1.5rem]' : 'min-h-[1.75rem] sm:min-h-[2rem]'}`}>
+        <span className={`font-bold leading-none break-all ${valueCls}`}>
           {value !== null && value !== undefined && value !== '' ? value : '—'}
         </span>
         {unit && (
-          <span className="mb-0.5 flex-shrink-0 font-mono text-sm text-gray-400 sm:text-lg">{unit}</span>
+          <span className={`mb-0.5 flex-shrink-0 font-mono text-gray-400 ${unitCls}`}>{unit}</span>
         )}
       </div>
 
       {subtext && (
-        <p className="mt-1.5 text-sm leading-snug text-gray-500 sm:mt-2 sm:text-base lg:text-lg">{subtext}</p>
+        <p className={`text-gray-500 ${subCls}`}>{subtext}</p>
       )}
     </div>
   );

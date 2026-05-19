@@ -143,9 +143,7 @@ function logStartNow({ machineId, machineLabel, productCode, shift, employeeId }
     productCode: productCode ?? '',
     detail:      '',
     fix:         '',
-  }).catch((err) => {
-    console.warn('[StartNow] appendMachineLog failed (non-critical):', err?.message ?? err);
-  });
+  }).catch(() => {});
 }
 
 /**
@@ -164,20 +162,16 @@ function logPauseOrClose({ machineId, machineLabel, productCode, shift, employee
     productCode: productCode ?? '',
     detail:      '',
     fix:         '',
-  }).catch((err) => {
-    console.warn('[PauseOrClose] appendMachineLog failed (non-critical):', err?.message ?? err);
-  });
+  }).catch(() => {});
 }
 import MachineSidebar from './components/MachineSidebar';
 import SetupMode from './components/SetupMode';
 import LiveMonitoring from './components/LiveMonitoring';
 import HistoryView from './components/HistoryView';
-import ProductionPlanView from './components/ProductionPlanView';
 import DashboardView from './components/DashboardView';
 import LedSignView from './components/LedSignView';
 import { useProductionStates } from './hooks/useProductionStates';
 import { useMachineSettings } from './hooks/useMachineSettings';
-import { useProductionPlan } from './hooks/useProductionPlan';
 import ScheduleView from './components/ScheduleView';
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
@@ -202,8 +196,7 @@ const LoadingSplash = () => {
 };
 
 /** Full-area error state shown when first fetch fails and no machines are cached */
-const ErrorSplash = ({ message, raw, onRetry, showDebugLink = false }) => {
-  const [showRaw, setShowRaw] = React.useState(false);
+const ErrorSplash = ({ message, onRetry }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
@@ -237,22 +230,6 @@ const ErrorSplash = ({ message, raw, onRetry, showDebugLink = false }) => {
           </svg>
           {t('production.retry')}
         </button>
-
-        {showDebugLink && (
-        <a
-          href="/api/production-monitor/debug"
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-2 text-sm font-semibold text-amber-400 hover:text-amber-200 border border-amber-500/40 hover:border-amber-400 px-4 py-2 rounded-lg transition-all"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
-            />
-          </svg>
-          {t('production.openDebug')}
-        </a>
-        )}
       </div>
 
       {/* Fix hint */}
@@ -262,7 +239,7 @@ const ErrorSplash = ({ message, raw, onRetry, showDebugLink = false }) => {
           <li>เปิด Google Apps Script ของคุณ</li>
           <li>เพิ่ม function <code className="text-cyan-400 bg-gray-900 px-1 rounded">doGet(e)</code> ที่ return JSON จาก Settings sheet</li>
           <li>Deploy ใหม่เป็น Web App (Execute as: Me, Access: Anyone)</li>
-          <li>กด <span className="text-cyan-400">Retry</span> หรือ <span className="text-amber-400">Open Debug Info</span> เพื่อตรวจสอบ</li>
+          <li>กด <span className="text-cyan-400">Retry</span> เพื่อลองโหลดใหม่</li>
         </ol>
         <pre className="mt-3 text-[10px] text-green-400 bg-gray-950 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">
 {`function doGet(e) {
@@ -287,29 +264,6 @@ const ErrorSplash = ({ message, raw, onRetry, showDebugLink = false }) => {
 }`}
         </pre>
       </div>
-
-      {/* Collapsible raw GAS response */}
-      {raw && (
-        <div className="max-w-2xl w-full">
-          <button
-            onClick={() => setShowRaw((v) => !v)}
-            className="flex items-center gap-2 text-xs text-gray-500 hover:text-gray-300 transition mb-2"
-          >
-            <svg
-              className={`w-3.5 h-3.5 transition-transform ${showRaw ? 'rotate-90' : ''}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            {showRaw ? t('production.hideRaw') : t('production.showRaw')}
-          </button>
-          {showRaw && (
-            <pre className="text-[10px] text-gray-500 bg-gray-900 border border-gray-700/50 rounded-xl p-4 text-left overflow-x-auto max-h-48 whitespace-pre-wrap break-all">
-              {raw}
-            </pre>
-          )}
-        </div>
-      )}
     </div>
   );
 };
@@ -347,10 +301,9 @@ const ProductionMonitoring = () => {
   const { user, isAdmin } = useAuth();
   const canManageProduction = Boolean(isAdmin);
 
-  const [sseStatus, setSseStatus] = useState('connecting'); // 'connecting' | 'open' | 'error' | 'closed'
   const [ledChangedMachineIds, setLedChangedMachineIds] = useState(new Set());
 
-  const { machines, loading, syncing, error, errorRaw, lastSyncAt, refresh } = useMachineSettings();
+  const { machines, loading, error, lastSyncAt, refresh } = useMachineSettings();
   const {
     allStates,
     getMachineState,
@@ -368,8 +321,9 @@ const ProductionMonitoring = () => {
   } = useProductionStates();
 
   const [selectedMachineId, setSelectedMachineId] = useState(null);
-  const [view, setView] = useState('machines'); // 'machines' | 'history' | 'plan' | 'dashboard'
+  const [view, setView] = useState('machines'); // 'machines' | 'history' | 'schedule' | 'dashboard'
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [productionViewsMenuOpen, setProductionViewsMenuOpen] = useState(false);
 
   /** หลังรีเฟรช: DB ใส่ pipeCounter แล้วแต่ goodEvents=[] → poll ดึงเหตุซ้ำแล้ว onWeightUpdate +1 ซ้ำ (เลขคูณสอง) */
   const scaleEventsHydratedKeyRef = useRef(new Set());
@@ -390,6 +344,17 @@ const ProductionMonitoring = () => {
     },
     [isLedPage, navigate]
   );
+
+  /** ออกจากหน้าจอย่อย (LED / ตาราง / ประวัติ) หรือกลับไปรายการเครื่องบนมือถือ */
+  const handleExitView = useCallback(() => {
+    setProductionViewsMenuOpen(false);
+    if (isLedPage || view !== 'machines') {
+      navigate('/production-monitoring');
+      setView('machines');
+      return;
+    }
+    setSidebarOpen(true);
+  }, [isLedPage, view, navigate]);
 
   // Auto-select first machine once the list loads (ยกเว้นตอนเปิดจากลิงก์ /led-sign/:id)
   useEffect(() => {
@@ -422,15 +387,10 @@ const ProductionMonitoring = () => {
     }
   }, [urlLedMachineId, machines, navigate]);
 
-  // Prefetch plan data in background as soon as a machine is selected.
-  // Data is cached module-level, so switching tabs shows it instantly.
-  const planData = useProductionPlan({ machineId: selectedMachineId });
-
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null;
   const machineState = selectedMachineId ? getMachineState(selectedMachineId) : null;
   const isLive = machineState?.mode === 'live';
 
-  const liveCount = Object.values(allStates).filter((s) => s?.mode === 'live').length;
 
   const liveScalePollResumeSinceId =
     selectedMachineId && machineState?.sessionRunUlid
@@ -483,8 +443,6 @@ const ProductionMonitoring = () => {
         } catch {
           if (item.attempts < 4) {
             weightRetryQueueRef.current.push({ ...item, attempts: item.attempts + 1 });
-          } else {
-            console.warn('[logWeightEvent] dropped after max retries:', item.params);
           }
         }
       }
@@ -505,7 +463,7 @@ const ProductionMonitoring = () => {
       scaleLivePrevRef.current[mid] = live;
       // retry 3 ครั้ง — ตาชั่ง poll ก่อน cache ถูก set ทำให้ session ไม่ restore
       withRetry(() => storeScaleLive(mid, buildScaleLivePayload(mid, live)))
-        .catch((err) => console.warn('[scaleLive] sync failed after retries:', mid, err?.message));
+        .catch(() => {});
     });
   }, [allStates, buildScaleLivePayload, canManageProduction]);
 
@@ -519,7 +477,7 @@ const ProductionMonitoring = () => {
         const live = Boolean(st?.mode === 'live');
         scaleLivePrevRef.current[mid] = live;
         withRetry(() => storeScaleLive(mid, buildScaleLivePayload(mid, live)))
-          .catch((err) => console.warn('[scaleLive] hydration failed after retries:', mid, err?.message));
+          .catch(() => {});
       });
     }, 1200);
     return () => clearTimeout(t);
@@ -655,7 +613,7 @@ const ProductionMonitoring = () => {
       if (pushDebounceRef.current[mid]) clearTimeout(pushDebounceRef.current[mid]);
       pushDebounceRef.current[mid] = setTimeout(() => {
         storeMachineSession(mid, allStatesRef.current[mid] ?? st)
-          .catch((err) => console.warn('[machineSession] sync failed:', mid, err?.message));
+          .catch(() => {});
       }, 600);
     });
   }, [allStates, canManageProduction]);
@@ -727,22 +685,16 @@ const ProductionMonitoring = () => {
   // SSE handler for session_confirmed — ESP32 operator confirmed shift + employee ID
   const handleSseSessionConfirmed = useCallback(({ machineId, shift, employee_id, confirmed_at }) => {
     if (!machineId) return;
-    // Mark machine as live if it was in setup mode waiting for scale confirmation
     const current = allStatesRef.current[machineId];
-    if (current?.mode === 'live') {
-      // Already live — just sync shift/employee_id if different
-      if (shift || employee_id) {
-        updateMachineState(machineId, {
-          shift:      shift      ?? current.shift,
-          employeeId: employee_id ?? current.employeeId,
-        });
-      }
+    if (shift || employee_id) {
+      updateMachineState(machineId, {
+        shift:      shift      ?? current?.shift,
+        employeeId: employee_id ?? current?.employeeId,
+      });
     }
-    // Dispatch so LiveMonitoring can react (show badge / switch to live mode)
     window.dispatchEvent(new CustomEvent('sse:session_confirmed', {
       detail: { machineId, shift, employee_id, confirmed_at },
     }));
-    // Notify sidebar for machines not currently viewed
     if (machineId !== selectedMachineId) {
       window.dispatchEvent(new CustomEvent('sse:session_confirmed_other', {
         detail: { machineId },
@@ -750,14 +702,118 @@ const ProductionMonitoring = () => {
     }
   }, [updateMachineState, selectedMachineId]);
 
+  /** อัปเดต pipeCounter/น้ำหนักจากตาชั่ง — ใช้ทั้ง Dashboard และ Live Monitor */
+  const applyMachineWeightEvent = useCallback((machineId, type, weight, ev) => {
+    if (!machineId) return;
+    const eidRaw =
+      ev?.eventId ??
+      ev?.event_id ??
+      (ev?.id !== undefined ? ev.id : undefined);
+    const pressedAt = ev?.pressedAt ?? new Date().toISOString();
+    const eidNorm =
+      eidRaw !== undefined && eidRaw !== null && String(eidRaw) !== ''
+        ? eidRaw
+        : undefined;
+    const entry = {
+      weight,
+      pressedAt,
+      ...(eidNorm !== undefined ? { eventId: eidNorm } : {}),
+    };
+    const live = allStatesRef.current[machineId] ?? {};
+    const incomingKey = scaleEventDedupKey(type === 'good' ? { ...ev, type: 'good' } : { ...ev, type: 'ng' });
+    if (!incomingKey) return;
+    if (type === 'good') {
+      const dup = (live.goodEvents ?? []).some(
+        (g) => incomingKey === scaleEventDedupKey({ ...g, type: 'good' }),
+      );
+      if (dup) return;
+    } else {
+      const dup = (live.ngEvents ?? []).some(
+        (g) => incomingKey === scaleEventDedupKey({ ...g, type: 'ng' }),
+      );
+      if (dup) return;
+    }
+
+    const snapBefore = allStatesRef.current[machineId];
+
+    if (type === 'good') {
+      updateMachineState(machineId, (prev) => {
+        const goods = [...(prev.goodEvents ?? []), entry];
+        const pipeCounter = Math.max(prev.pipeCounter ?? 0, goods.length);
+        const sumListed = goods.reduce((s, g) => s + (parseFloat(g.weight) || 0), 0);
+        const totalGoodWeight = Math.max(prev.totalGoodWeight ?? 0, sumListed);
+        return {
+          pipeCounter,
+          totalGoodWeight,
+          lastGoodWeight: weight,
+          lastGoodAt:     pressedAt,
+          goodEvents:     goods,
+        };
+      });
+    } else {
+      updateMachineState(machineId, (prev) => {
+        const ngs = [...(prev.ngEvents ?? []), entry];
+        const ngCount = Math.max(prev.ngCount ?? 0, ngs.length);
+        const sumListed = ngs.reduce((s, x) => s + (parseFloat(x.weight) || 0), 0);
+        const totalNgWeight = Math.max(prev.totalNgWeight ?? 0, sumListed);
+        return {
+          ngCount,
+          totalNgWeight,
+          lastNgWeight: weight,
+          lastNgAt:     pressedAt,
+          ngEvents:     ngs,
+        };
+      });
+    }
+
+    if (
+      !(snapBefore?.sheetName && snapBefore?.orderId)
+      || eidNorm !== undefined
+    ) {
+      /* Laravel+ESP32 path — ไม่ log ซ้ำไป GAS */
+    } else if (canManageProduction) {
+      const seq = (snapBefore?.pipeCounter ?? 0) + (snapBefore?.ngCount ?? 0) + 1;
+      const evParams = {
+        machineId,
+        sheetName: snapBefore.sheetName,
+        orderId:   snapBefore.orderId,
+        seq,
+        type,
+        weight,
+        pressedAt,
+      };
+      logWeightEvent(evParams).catch(() => {
+        weightRetryQueueRef.current.push({ params: evParams, attempts: 1 });
+      });
+    }
+  }, [updateMachineState, canManageProduction]);
+
   // SSE handler for scale_weight events (real-time weight from scale ESP32)
   const handleSseScaleWeight = useCallback(({ machineId, event: ev }) => {
     if (!machineId || !ev) return;
     const dedupKey = scaleEventDedupKey(ev);
     if (!dedupKey || seenScaleEventsRef.current.has(dedupKey)) return;
     seenScaleEventsRef.current.add(dedupKey);
+
+    const weight = parseFloat(ev.weight) || 0;
+    const type = ev.type === 'good' ? 'good' : 'ng';
+    applyMachineWeightEvent(machineId, type, weight, ev);
+
     window.dispatchEvent(new CustomEvent('sse:scale_weight', {
       detail: { machineId, event: ev },
+    }));
+  }, [applyMachineWeightEvent]);
+
+  // SSE: ป้ายไฟเปลี่ยนทันที (Dashboard + หน้าอื่น)
+  const [sseLedByMachine, setSseLedByMachine] = useState({});
+  const handleSseLedState = useCallback(({ machineId, state }) => {
+    if (!machineId || !state) return;
+    setSseLedByMachine((prev) => ({
+      ...prev,
+      [machineId]: {
+        text: state.text ?? null,
+        updatedAt: state.updatedAt ?? Date.now(),
+      },
     }));
   }, []);
 
@@ -828,8 +884,8 @@ const ProductionMonitoring = () => {
         removeFromQueue(machineId, tempItem.queueId);
         addToQueue(machineId, res.item);
       }
-    } catch (err) {
-      console.warn('[queue] dbEnqueueItem failed (local-only):', err?.message);
+    } catch {
+      /* local-only fallback */
     }
   }, [addToQueue, removeFromQueue, machines]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -850,9 +906,7 @@ const ProductionMonitoring = () => {
     removeFromQueue(machineId, queueId);
 
     if (!Number.isNaN(dbId)) {
-      dbDeleteQueueItem(machineId, dbId).catch((err) =>
-        console.warn('[queue] dbDeleteQueueItem failed:', err?.message),
-      );
+      dbDeleteQueueItem(machineId, dbId).catch(() => {});
     }
   }, [removeFromQueue]);
 
@@ -891,11 +945,10 @@ const ProductionMonitoring = () => {
     onProductionUpdated: handleSseProductionUpdated,
     onSessionConfirmed:  handleSseSessionConfirmed,
     onLedUpdated:        handleSseLedUpdated,
+    onLedState:          handleSseLedState,
     onQueueUpdated:      handleSseQueueUpdated,
     onSessionUpdated:    handleSseSessionUpdated,
-    onStatusChange:      setSseStatus,
     onReconnect:         handleSseReconnect,
-    // LED state is handled inside LedSignView directly
   });
 
   // Clear LED changed badge when user selects that machine
@@ -935,6 +988,30 @@ const ProductionMonitoring = () => {
     const id = setInterval(doFallbackPoll, 15_000);
     return () => clearInterval(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Dashboard: poll ถี่ขึ้น (3s) เผื่อ SSE พลาด — ให้ wallboard อัปเดตโดยไม่รีเฟรช
+  useEffect(() => {
+    if (view !== 'dashboard') return undefined;
+
+    const pollDashboard = async () => {
+      try {
+        const data = await fetchAllMachineSessions();
+        if (!data?.sessions) return;
+        Object.entries(data.sessions).forEach(([mid, serverState]) => {
+          const serverTs = Number(serverState?._ts) || 0;
+          const localTs  = Number(allStatesRef.current[mid]?._ts) || 0;
+          if (serverTs > localTs) {
+            sessionSyncTsRef.current[mid] = serverTs;
+          }
+        });
+        mergeServerStatesRef.current(data.sessions);
+      } catch { /* ignore */ }
+    };
+
+    pollDashboard();
+    const id = setInterval(pollDashboard, 3_000);
+    return () => clearInterval(id);
+  }, [view]);
 
   // ── Auto-fetch remainingQty จาก Daily Plan เมื่อ remainingQty = 0 ───────────
   // กรณี production ถูก start ก่อน remainingQty feature พร้อมใช้งาน
@@ -1045,6 +1122,7 @@ const ProductionMonitoring = () => {
         machines={machines}
         allStates={allStates}
         getMachineState={getMachineState}
+        sseLedByMachine={sseLedByMachine}
         lastSyncAt={lastSyncAt}
         onClose={() => {
           navigate('/production-monitoring');
@@ -1055,7 +1133,7 @@ const ProductionMonitoring = () => {
   }
 
   // views ที่แสดง sidebar
-  const hasSidebar = isLedPage || view === 'plan' || view === 'machines';
+  const hasSidebar = isLedPage || view === 'machines';
 
   return (
     <div className="flex flex-col h-[100dvh] bg-gray-950 text-white overflow-hidden">
@@ -1089,64 +1167,36 @@ const ProductionMonitoring = () => {
             <span className="text-sm text-gray-500 hidden lg:block flex-shrink-0">· {t('production.subtitle')}</span>
           </div>
 
-          {/* Right: active count (desktop) + SSE status + language switcher + back */}
+          {/* Right: ใบแจ้งซ่อม + ภาษา */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            {/* SSE connection status badge */}
-            <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] font-semibold flex-shrink-0"
-              style={{
-                background:   sseStatus === 'open'       ? 'rgba(34,197,94,0.07)'  : sseStatus === 'connecting' ? 'rgba(251,191,36,0.07)'  : 'rgba(239,68,68,0.07)',
-                borderColor:  sseStatus === 'open'       ? 'rgba(34,197,94,0.3)'   : sseStatus === 'connecting' ? 'rgba(251,191,36,0.3)'   : 'rgba(239,68,68,0.3)',
-                color:        sseStatus === 'open'       ? '#4ade80'               : sseStatus === 'connecting' ? '#fbbf24'                : '#f87171',
-              }}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                sseStatus === 'open'       ? 'bg-green-400'
-                : sseStatus === 'connecting' ? 'bg-yellow-400 animate-pulse'
-                : 'bg-red-400 animate-pulse'
-              }`} />
-              {sseStatus === 'open' ? 'Live' : sseStatus === 'connecting' ? 'Reconnecting…' : 'Offline'}
-            </div>
-
-            {!loading && machines.length > 0 && (
-              <div className="hidden sm:flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-xs text-gray-400">{liveCount}/{machines.length}</span>
-                {/* Sync (อยู่กับ HDPE Lines x/x) */}
-                <button
-                  onClick={refresh}
-                  disabled={syncing || loading}
-                  title={t('production.titleRefetchMachines')}
-                  className="flex-shrink-0 flex items-center gap-1.5 text-xs font-semibold text-cyan-400 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400/60 bg-cyan-500/5 hover:bg-cyan-500/10 px-2.5 py-1.5 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-                >
-                  {syncing ? <SpinnerIcon className="w-3.5 h-3.5" /> : (
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                      />
-                    </svg>
-                  )}
-                  {syncing ? t('production.syncing') : t('production.sync')}
-                </button>
-              </div>
-            )}
-            {lastSyncAt && !syncing && (
-              <span className="text-[11px] text-gray-600 hidden xl:block">
-                {t('production.syncedAt')} {lastSyncAt.toLocaleTimeString()}
-              </span>
-            )}
             <div className="flex flex-shrink-0 items-center">
               <MaintenanceNavSuite variant="dark" />
             </div>
-            {!isLive && (
-              <div className="hidden sm:block">
-                <LanguageSwitcher variant="dark" />
-              </div>
-            )}
+            <div className="hidden sm:block">
+              <LanguageSwitcher variant="dark" />
+            </div>
           </div>
         </div>
 
-        {/* ── Row 2: nav tabs — always visible, scrollable ── */}
-        <div className="flex items-center gap-1.5 px-3 sm:px-5 pb-2 overflow-x-auto scrollbar-none">
+        {/* ── Row 2: xl+ แถบแท็บ / ต่ำกว่า xl = ปุ่มเปิดหน้าต่างเลือกหน้าจอ ── */}
+        <div className="flex items-center gap-2 px-3 pb-2 sm:px-5">
+          <button
+            type="button"
+            onClick={() => setProductionViewsMenuOpen(true)}
+            className="xl:hidden flex min-h-[40px] flex-shrink-0 items-center gap-2 rounded-lg border border-gray-600 bg-gray-800/80 px-3 py-2 text-xs font-semibold text-gray-200 transition hover:border-cyan-500/40 hover:bg-gray-800 hover:text-white"
+            aria-label={t('production.ariaOpenViewsMenu')}
+            aria-expanded={productionViewsMenuOpen}
+            aria-haspopup="dialog"
+          >
+            <svg className="h-4 w-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
+              />
+            </svg>
+            {t('production.viewsMenuTitle')}
+          </button>
+
+          <div className="hidden min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-none xl:flex">
           {/* LED Sign */}
           <button
             onClick={() => {
@@ -1186,20 +1236,7 @@ const ProductionMonitoring = () => {
             {t('production.dashboard')}
           </button>
 
-          {/* Plan */}
-          <button
-            onClick={() => { navigate('/production-monitoring'); setView((v) => (v === 'plan' ? 'machines' : 'plan')); }}
-            className={`flex-shrink-0 flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-all whitespace-nowrap ${
-              view === 'plan' ? 'bg-amber-500/20 border-amber-500/50 text-amber-300' : 'border-gray-700 text-gray-500 hover:text-gray-200 hover:border-gray-500'
-            }`}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-            </svg>
-            {t('production.plan')}
-          </button>
-
-          {/* Schedule — cross-machine daily plan */}
+          {/* Schedule — ตารางผลิตรวมทุกเครื่อง */}
           <button
             onClick={() => { navigate('/production-monitoring'); setView((v) => (v === 'schedule' ? 'machines' : 'schedule')); }}
             className={`flex-shrink-0 flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-all whitespace-nowrap ${
@@ -1227,13 +1264,125 @@ const ProductionMonitoring = () => {
             {t('production.history')}
           </button>
 
-          {/* Language switcher (mobile — shown inline in nav row; hidden on live เพราะใช้ตัวใน LiveMonitoring) */}
-          {!isLive && (
-            <div className="sm:hidden ml-auto">
-              <LanguageSwitcher variant="dark" />
-            </div>
-          )}
+          </div>
+
+          {/* ภาษา: โทรศัพท์เท่านั้นในแถวนี้ (แท็บเดสก์ท็อปอยู่แถว 1) */}
+          <div className="ml-auto sm:hidden">
+            <LanguageSwitcher variant="dark" />
+          </div>
         </div>
+
+        {productionViewsMenuOpen && (
+          <div
+            className="fixed inset-0 z-[90] flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="production-views-menu-title"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setProductionViewsMenuOpen(false);
+            }}
+          >
+            <div
+              className="flex max-h-[min(520px,calc(100dvh-2rem))] w-full max-w-md flex-col overflow-hidden rounded-t-2xl border border-gray-700/60 bg-gray-900 shadow-2xl sm:rounded-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex-shrink-0 border-b border-gray-700/50 px-4 py-3">
+                <h2 id="production-views-menu-title" className="text-base font-bold text-white">
+                  {t('production.viewsModalTitle')}
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">{t('production.viewsModalHint')}</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3">
+                <div className="grid gap-2">
+                  <button
+                    type="button"
+                    className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                      isLedPage ? 'border-indigo-500/50 bg-indigo-500/10 text-indigo-200' : 'border-gray-700 bg-gray-800/40 text-gray-200 hover:border-gray-600'
+                    }`}
+                    onClick={() => {
+                      setProductionViewsMenuOpen(false);
+                      if (isLedPage) navigate('/production-monitoring');
+                      else {
+                        const id = selectedMachineId || machines[0]?.id;
+                        if (id) navigate(`/production-monitoring/led-sign/${encodeURIComponent(id)}`);
+                      }
+                    }}
+                  >
+                    <svg className="h-5 w-5 flex-shrink-0 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                      />
+                    </svg>
+                    {t('production.ledSign')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                      view === 'dashboard' ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-200' : 'border-gray-700 bg-gray-800/40 text-gray-200 hover:border-gray-600'
+                    }`}
+                    onClick={() => {
+                      setProductionViewsMenuOpen(false);
+                      navigate('/production-monitoring');
+                      setView((v) => (v === 'dashboard' ? 'machines' : 'dashboard'));
+                    }}
+                  >
+                    <svg className="h-5 w-5 flex-shrink-0 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"
+                      />
+                    </svg>
+                    {t('production.dashboard')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                      view === 'schedule' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200' : 'border-gray-700 bg-gray-800/40 text-gray-200 hover:border-gray-600'
+                    }`}
+                    onClick={() => {
+                      setProductionViewsMenuOpen(false);
+                      navigate('/production-monitoring');
+                      setView((v) => (v === 'schedule' ? 'machines' : 'schedule'));
+                    }}
+                  >
+                    <svg className="h-5 w-5 flex-shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                      />
+                    </svg>
+                    {t('production.schedule')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                      view === 'history' ? 'border-purple-500/50 bg-purple-500/10 text-purple-200' : 'border-gray-700 bg-gray-800/40 text-gray-200 hover:border-gray-600'
+                    }`}
+                    onClick={() => {
+                      setProductionViewsMenuOpen(false);
+                      navigate('/production-monitoring');
+                      setView((v) => (v === 'history' ? 'machines' : 'history'));
+                    }}
+                  >
+                    <svg className="h-5 w-5 flex-shrink-0 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
+                      />
+                    </svg>
+                    {t('production.history')}
+                  </button>
+                </div>
+              </div>
+              <div className="flex-shrink-0 border-t border-gray-700/50 p-3">
+                <button
+                  type="button"
+                  className="w-full rounded-xl border border-gray-600 bg-gray-800 py-3 text-sm font-semibold text-gray-300 hover:bg-gray-700"
+                  onClick={() => setProductionViewsMenuOpen(false)}
+                >
+                  {t('common.close')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* ── Body ──────────────────────────────────────────────────────────── */}
@@ -1264,7 +1413,7 @@ const ProductionMonitoring = () => {
                   canAutoPushQtyToLed={canManageProduction}
                   onPauseOrder={canManageProduction ? (mid) => pauseOrder(mid) : undefined}
                   onResumeOrder={canManageProduction ? (mid) => { void resumeOrderWithLed(mid); } : undefined}
-                  onBack={() => navigate('/production-monitoring')}
+                  onBack={handleExitView}
                 />
               )}
               {!loading && machines.length === 0 && (
@@ -1279,7 +1428,7 @@ const ProductionMonitoring = () => {
         {/* History view (full width, replaces machine panel) */}
         {!isLedPage && view === 'history' && (
           <div className="flex-1 overflow-hidden flex flex-col bg-gray-900/20">
-            <HistoryView machines={machines} allowDeleteHistory={canManageProduction} />
+            <HistoryView machines={machines} allowDeleteHistory={canManageProduction} onExit={handleExitView} />
           </div>
         )}
 
@@ -1290,6 +1439,7 @@ const ProductionMonitoring = () => {
               <LoadingSplash />
             ) : (
               <ScheduleView
+                onExit={handleExitView}
                 machines={machines}
                 queuedMap={queuedMap}
                 onAddToQueue={canManageProduction
@@ -1302,35 +1452,6 @@ const ProductionMonitoring = () => {
             )}
           </div>
         )}
-
-        {/* Plan view — sidebar + ProductionPlanView */}
-        {!isLedPage && view === 'plan' && <>
-          <SidebarDrawer open={sidebarOpen} onClose={() => setSidebarOpen(false)}>
-            <MachineSidebar
-              machines={machines}
-              selectedMachineId={selectedMachineId}
-              onSelectMachine={handleSelectMachine}
-              allStates={allStates}
-              loading={loading}
-              onClose={() => setSidebarOpen(false)}
-              ledChangedMachineIds={ledChangedMachineIds}
-            />
-          </SidebarDrawer>
-          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-            {loading && <LoadingSplash />}
-            {!loading && machines.length > 0 && (
-              <ProductionPlanView
-                selectedMachine={selectedMachine}
-                planData={planData}
-              />
-            )}
-            {!loading && machines.length === 0 && (
-              <div className="flex-1 flex items-center justify-center text-gray-600">
-                <p className="text-sm">{t('production.noMachinesFound')}</p>
-              </div>
-            )}
-          </div>
-        </>}
 
         {/* Machine sidebar + content (hidden when history is active) */}
         {!isLedPage && view === 'machines' && <>
@@ -1354,7 +1475,7 @@ const ProductionMonitoring = () => {
 
           {/* ── Error state (fetch failed, no machines available) ── */}
           {!loading && error && machines.length === 0 && (
-            <ErrorSplash message={error} raw={errorRaw} onRetry={refresh} showDebugLink={canManageProduction} />
+            <ErrorSplash message={error} onRetry={refresh} />
           )}
 
           {/* ── Soft error banner (re-sync failed but machines still cached) ── */}
@@ -1375,7 +1496,7 @@ const ProductionMonitoring = () => {
           {!loading && machines.length > 0 && selectedMachine && machineState && (
             <>
               {/* Content sub-header */}
-              <div className="flex-shrink-0 flex flex-col gap-2 border-b border-gray-700/30 bg-gray-900/50 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-2 sm:px-6 md:px-8">
+              <div className="flex-shrink-0 flex flex-col gap-1.5 border-b border-gray-700/30 bg-gray-900/50 px-2 py-2 xs:gap-2 xs:px-3 xs:py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6 md:px-8">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-semibold text-gray-300">
                     {selectedMachine.label}
@@ -1424,7 +1545,7 @@ const ProductionMonitoring = () => {
               </div>
 
               {/* Scrollable content */}
-              <main className="flex-1 overflow-y-auto p-3 sm:p-5 lg:p-8">
+              <main className="flex-1 overflow-y-auto p-2 xs:p-3 sm:p-5 lg:p-6 3xl:p-8">
                 {isLive ? (
                   <LiveMonitoring
                     machineId={selectedMachineId}
@@ -1433,89 +1554,7 @@ const ProductionMonitoring = () => {
                     resumeScalePollSinceId={liveScalePollResumeSinceId}
                     canManageProduction={canManageProduction}
                     onWeightUpdate={(type, weight, ev) => {
-                      const eidRaw =
-                        ev?.eventId ??
-                        ev?.event_id ??
-                        (ev?.id !== undefined ? ev.id : undefined);
-                      const pressedAt = ev?.pressedAt ?? new Date().toISOString();
-                      const eidNorm =
-                        eidRaw !== undefined && eidRaw !== null && String(eidRaw) !== ''
-                          ? eidRaw
-                          : undefined;
-                      const entry = {
-                        weight,
-                        pressedAt,
-                        ...(eidNorm !== undefined ? { eventId: eidNorm } : {}),
-                      };
-                      const mid = selectedMachineId;
-                      const live = getMachineState(mid);
-                      const incomingKey = scaleEventDedupKey(type === 'good' ? { ...ev, type: 'good' } : { ...ev, type: 'ng' });
-                      if (!incomingKey) return;
-                      if (type === 'good') {
-                        const dup = (live.goodEvents ?? []).some(
-                          (g) => incomingKey === scaleEventDedupKey({ ...g, type: 'good' }),
-                        );
-                        if (dup) return;
-                      } else {
-                        const dup = (live.ngEvents ?? []).some(
-                          (g) => incomingKey === scaleEventDedupKey({ ...g, type: 'ng' }),
-                        );
-                        if (dup) return;
-                      }
-
-                      const snapBefore = getMachineState(mid);
-
-                      if (type === 'good') {
-                        updateMachineState(mid, (prev) => {
-                          const goods = [...(prev.goodEvents ?? []), entry];
-                          const pipeCounter = Math.max(prev.pipeCounter ?? 0, goods.length);
-                          const sumListed = goods.reduce((s, g) => s + (parseFloat(g.weight) || 0), 0);
-                          const totalGoodWeight = Math.max(prev.totalGoodWeight ?? 0, sumListed);
-                          return {
-                            pipeCounter,
-                            totalGoodWeight,
-                            lastGoodWeight: weight,
-                            lastGoodAt:     pressedAt,
-                            goodEvents:     goods,
-                          };
-                        });
-                      } else {
-                        updateMachineState(mid, (prev) => {
-                          const ngs = [...(prev.ngEvents ?? []), entry];
-                          const ngCount = Math.max(prev.ngCount ?? 0, ngs.length);
-                          const sumListed = ngs.reduce((s, x) => s + (parseFloat(x.weight) || 0), 0);
-                          const totalNgWeight = Math.max(prev.totalNgWeight ?? 0, sumListed);
-                          return {
-                            ngCount,
-                            totalNgWeight,
-                            lastNgWeight: weight,
-                            lastNgAt:     pressedAt,
-                            ngEvents:     ngs,
-                          };
-                        });
-                      }
-
-                      // Laravel เก็บ DB + SyncWeightEventToGas เมื่อตาชั่ง POST มี eventId — อย่ายิง logWeightEvent ซ้ำ (เดิมทำแถวใน Sheet เท่าทวีคู่ และคอลัมลำดับเพี้ยน)
-                      if (
-                        !(snapBefore.sheetName && snapBefore.orderId)
-                        || eidNorm !== undefined
-                      ) {
-                        /* เคสปกติของ ESP32+Laravel — อยู่เมื่อมี eventId; ถ้าไม่มีข้อมูลชีต/order ไม่ส่งไปที่ GAS */
-                      } else if (canManageProduction) {
-                        const seq = (snapBefore.pipeCounter ?? 0) + (snapBefore.ngCount ?? 0) + 1;
-                        const evParams = {
-                          machineId: mid,
-                          sheetName: snapBefore.sheetName,
-                          orderId:   snapBefore.orderId,
-                          seq,
-                          type,
-                          weight,
-                          pressedAt,
-                        };
-                        logWeightEvent(evParams).catch(() => {
-                          weightRetryQueueRef.current.push({ params: evParams, attempts: 1 });
-                        });
-                      }
+                      applyMachineWeightEvent(selectedMachineId, type, weight, ev);
                     }}
                     onCloseOrder={() => {
                       pushPrepLed(selectedMachineId);
@@ -1551,8 +1590,8 @@ const ProductionMonitoring = () => {
                       void (async () => {
                         try {
                           await dbCancelSession(mid);
-                        } catch (err) {
-                          console.warn('[cancel] dbCancelSession failed:', err?.message);
+                        } catch {
+                          /* session cancel is best-effort */
                         }
                         pushPrepLed(mid);
                         resetMachineState(mid);
@@ -1590,7 +1629,7 @@ const ProductionMonitoring = () => {
                         planDate:    item.planDate     ?? '',
                         sheetName:   item.sheetName ?? selectedMachine.sheetName,
                         ledIp:       item.ledIp     ?? selectedMachine.ledIp,
-                      }).catch((err) => console.warn('[start] dbStartSession(closeAndStart) failed:', err?.message));
+                      }).catch(() => {});
                       queueProductionLedForMachine(mid, { ...item }, 0).catch(() => {});
                       logStartNow({
                         machineId:    mid,
@@ -1681,7 +1720,7 @@ const ProductionMonitoring = () => {
                         stdWeight:    data.stdWeight   ?? null,
                         minWeight:    data.minWeight   ?? null,
                         maxWeight:    data.maxWeight   ?? null,
-                      }).catch((err) => console.warn('[start] dbStartSession failed:', err?.message));
+                      }).catch(() => {});
                       queueProductionLedForMachine(mid, data, 0).catch(() => {});
                       logStartNow({
                         machineId:    mid,

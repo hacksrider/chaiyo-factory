@@ -61,8 +61,8 @@ const ProblemDetail = () => {
     if (loading) {
         return (
             <PublicLayout>
-                <div className="h-full bg-gray-50 flex items-center justify-center">
-                    <div className="text-xl">{t('common.loading')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg sm:text-xl">{t('common.loading')}</div>
                 </div>
             </PublicLayout>
         );
@@ -71,8 +71,8 @@ const ProblemDetail = () => {
     if (!problem) {
         return (
             <PublicLayout>
-                <div className="h-full bg-gray-50 flex items-center justify-center">
-                    <div className="text-xl text-red-600">{t('errors.notFound')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg text-red-600 sm:text-xl">{t('errors.notFound')}</div>
                 </div>
             </PublicLayout>
         );
@@ -80,8 +80,8 @@ const ProblemDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="min-h-0 bg-gray-50">
-                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden bg-gray-50">
+                <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <BackButton to={getBackPath()} />
                         <button

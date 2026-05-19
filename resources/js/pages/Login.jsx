@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useSubmitGuard } from '../hooks/useSubmitGuard';
 
 const Login = () => {
     const navigate = useNavigate();
@@ -8,22 +9,21 @@ const Login = () => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
-    const [loading, setLoading] = useState(false);
+    const { isSubmitting: loading, run } = useSubmitGuard();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
-        setLoading(true);
+        await run(async () => {
+            const result = await login(username, password);
 
-        const result = await login(username, password);
-        
-        if (result.success) {
-            navigate('/admin/problems');
-        } else {
-            setError(result.error || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
-        }
-        
-        setLoading(false);
+            if (result.success) {
+                const role = result.user?.role;
+                navigate(role === 'admin' ? '/admin/problems' : '/');
+            } else {
+                setError(result.error || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
+            }
+        });
     };
 
     return (
@@ -31,10 +31,10 @@ const Login = () => {
             <div className="w-full max-w-md space-y-8 rounded-xl bg-white p-6 shadow-lg sm:p-8">
                 <div>
                     <h2 className="mt-6 text-center text-2xl font-extrabold text-gray-900 sm:text-3xl">
-                        เข้าสู่ระบบ Admin
+                        เข้าสู่ระบบ
                     </h2>
                     <p className="mt-2 text-center text-sm text-gray-600">
-                        กรุณาเข้าสู่ระบบเพื่อจัดการระบบ
+                        กรุณาเข้าสู่ระบบเพื่อใช้งานระบบ
                     </p>
                 </div>
                 <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
@@ -85,16 +85,6 @@ const Login = () => {
                             className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
                         >
                             {loading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
-                        </button>
-                    </div>
-
-                    <div className="text-center">
-                        <button
-                            type="button"
-                            onClick={() => navigate('/')}
-                            className="text-blue-600 hover:text-blue-800"
-                        >
-                            กลับหน้าหลัก
                         </button>
                     </div>
                 </form>

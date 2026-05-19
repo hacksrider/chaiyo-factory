@@ -53,8 +53,8 @@ const MachineZoneProblemDetail = () => {
     if (loading) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl">{t('common.loading')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg sm:text-xl">{t('common.loading')}</div>
                 </div>
             </PublicLayout>
         );
@@ -63,8 +63,8 @@ const MachineZoneProblemDetail = () => {
     if (!problem) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl text-red-600">{t('errors.notFound')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg text-red-600 sm:text-xl">{t('errors.notFound')}</div>
                 </div>
             </PublicLayout>
         );
@@ -72,8 +72,8 @@ const MachineZoneProblemDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="min-h-0 bg-gray-50">
-                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden bg-gray-50">
+                <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <BackButton to={`/machine-zones/${problem.machine_zone_id}`} />
                         <button

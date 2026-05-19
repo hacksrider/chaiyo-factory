@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import { DEFAULT_MACHINE_STATE } from '../hooks/useProductionStates';
+import { getLedStatus, getLedHeartbeat } from '../api/productionApi';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -21,18 +22,6 @@ function groupByZone(machines, unzoned) {
     });
 }
 
-// Dynamic column count for machine grid inside a zone
-function zoneCols(count) {
-  if (count <= 2)  return 2;
-  if (count <= 4)  return 2;
-  if (count <= 6)  return 3;
-  if (count <= 9)  return 3;
-  if (count <= 12) return 4;
-  if (count <= 16) return 4;
-  return Math.ceil(Math.sqrt(count));
-}
-
-// Live clock
 function useClock() {
   const [tick, setTick] = useState(new Date());
   useEffect(() => {
@@ -52,185 +41,528 @@ function fmtNum(n) {
   return isNaN(v) ? '—' : v.toLocaleString('th-TH');
 }
 
-// ─── MachineCard ──────────────────────────────────────────────────────────────
+function fmtWeight(n) {
+  const v = Number(n);
+  return isNaN(v) ? '—' : v.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
-const MachineCard = ({ machine, state }) => {
-  const { language } = useLanguage();
-  const { t } = useTranslation(language);
+function isMaintenanceLedText(text) {
+  return /แก้งาน|break\s*down|breakdown|fixing|fix/i.test(String(text || ''));
+}
 
-  const s        = state ?? DEFAULT_MACHINE_STATE;
-  const isLive   = s.mode === 'live';
+function resolveMachineStatus(machine, state, ledText, t) {
   const isActive = machine.status?.toLowerCase() !== 'unactive';
-  const produced = s.pipeCounter   ?? 0;
-  const target   = (s.remainingQty > 0 ? s.remainingQty : s.targetQty) ?? 0;
-  const progress = pct(produced, target);
-  const queueLen = s.queue?.length ?? 0;
-  const hasPause = !!s.pausedOrder;
-
-  // ── Status style ──────────────────────────────────────────────────────────
-  let card, dot, badge, badgeTxt;
+  const isLive = state?.mode === 'live';
+  const hasPause = !!state?.pausedOrder;
+  const maintenance = isMaintenanceLedText(ledText);
 
   if (!isActive) {
-    card     = 'bg-gray-800/25 border-gray-700/20 opacity-40';
-    dot      = 'bg-gray-600';
-    badge    = 'text-gray-600 bg-gray-800/50 border-gray-700/30';
-    badgeTxt = t('production.dashboardStatusOff');
-  } else if (isLive) {
-    card     = 'bg-green-500/8 border-green-500/30 shadow-[0_0_12px_rgba(74,222,128,0.08)]';
-    dot      = 'bg-green-400 animate-pulse shadow-[0_0_6px_rgba(74,222,128,0.6)]';
-    badge    = 'text-green-300 bg-green-500/15 border-green-500/35';
-    badgeTxt = t('production.dashboardStatusLive');
-  } else if (hasPause) {
-    card     = 'bg-amber-500/6 border-amber-500/25';
-    dot      = 'bg-amber-400';
-    badge    = 'text-amber-300 bg-amber-500/15 border-amber-500/30';
-    badgeTxt = t('production.dashboardStatusPaused');
-  } else {
-    card     = 'bg-gray-800/30 border-gray-700/35';
-    dot      = 'bg-gray-500';
-    badge    = 'text-gray-500 bg-gray-700/30 border-gray-600/30';
-    badgeTxt = t('production.dashboardStatusIdle');
+    return {
+      key: 'off',
+      label: t('production.dashboardStatusOff'),
+      rowClass: 'bg-[#141414] text-white border-b border-gray-800/80',
+      cardClass: 'bg-gray-700 text-white',
+    };
   }
+  if (maintenance || (hasPause && !isLive)) {
+    return {
+      key: 'fix',
+      label: t('production.dashboardStatusFixing'),
+      rowClass: 'bg-yellow-400 text-black border-b border-yellow-500/40',
+      cardClass: 'bg-yellow-400 text-black',
+    };
+  }
+  if (isLive) {
+    return {
+      key: 'on',
+      label: t('production.dashboardStatusOpen'),
+      rowClass: 'bg-green-500 text-white border-b border-green-600/40',
+      cardClass: 'bg-green-500 text-white',
+    };
+  }
+  return {
+    key: 'off',
+    label: t('production.dashboardStatusOff'),
+    rowClass: 'bg-[#141414] text-white border-b border-gray-800/80',
+    cardClass: 'bg-gray-700 text-white',
+  };
+}
 
-  const progColor = progress >= 100
-    ? 'bg-green-400'
-    : progress >= 80
-    ? 'bg-cyan-400'
-    : progress >= 50
-    ? 'bg-cyan-500'
-    : 'bg-blue-500';
+function useLedBoardStatuses(machines, sseLedByMachine) {
+  const machineKey = machines.map((m) => m.id).join(',');
+  const [ledData, setLedData] = useState({});
+
+  // รวม SSE push จาก parent ทันที (ไม่รอ poll)
+  useEffect(() => {
+    if (!sseLedByMachine || !Object.keys(sseLedByMachine).length) return;
+    setLedData((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      Object.entries(sseLedByMachine).forEach(([id, patch]) => {
+        const merged = {
+          ...(prev[id] ?? { text: null, online: false, noIp: false }),
+          ...patch,
+        };
+        if (JSON.stringify(merged) !== JSON.stringify(prev[id])) {
+          next[id] = merged;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [sseLedByMachine]);
+
+  useEffect(() => {
+    const list = machines;
+    if (!list.length) {
+      setLedData({});
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchAll = async () => {
+      const entries = await Promise.all(
+        list.map(async (m) => {
+          if (!m.ledIp) {
+            return [m.id, { text: null, online: false, noIp: true }];
+          }
+          try {
+            const [statusRes, hbRes] = await Promise.all([
+              getLedStatus(m.id).catch(() => null),
+              getLedHeartbeat(m.id).catch(() => null),
+            ]);
+            return [
+              m.id,
+              {
+                text: statusRes?.state?.text ?? null,
+                online: hbRes?.online ?? false,
+                noIp: false,
+              },
+            ];
+          } catch {
+            return [m.id, { text: null, online: false, noIp: false }];
+          }
+        }),
+      );
+      if (!cancelled) setLedData(Object.fromEntries(entries));
+    };
+
+    fetchAll();
+    const id = setInterval(fetchAll, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [machineKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return ledData;
+}
+
+function useFluidTableMetrics(containerRef, rowCount) {
+  const [metrics, setMetrics] = useState({
+    fontSize: 13,
+    headerFont: 10,
+    subFont: 9,
+    padX: 8,
+    padY: 6,
+    titleFont: 13,
+    dot: 8,
+    barH: 4,
+    rowH: 32,
+  });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return undefined;
+
+    const update = () => {
+      const h = el.clientHeight;
+      const w = el.clientWidth;
+      const titleH = Math.max(24, h * 0.07);
+      const theadH = Math.max(22, h * 0.075);
+      const bodyH = Math.max(48, h - titleH - theadH);
+      const rows = Math.max(rowCount, 1);
+      const rowH = bodyH / rows;
+
+      const fontSize = Math.max(9, Math.min(20, rowH * 0.42));
+      const padY = Math.max(1, Math.min(12, rowH * 0.1));
+      const padX = Math.max(2, Math.min(14, w * 0.007));
+      const headerFont = Math.max(8, Math.min(13, fontSize * 0.82));
+      const subFont = Math.max(7, Math.min(11, fontSize * 0.72));
+      const titleFont = Math.max(10, Math.min(16, titleH * 0.45));
+      const dot = Math.max(6, Math.min(12, fontSize * 0.65));
+      const barH = Math.max(2, Math.min(6, rowH * 0.1));
+
+      setMetrics({ fontSize, headerFont, subFont, padX, padY, titleFont, dot, barH, rowH });
+    };
+
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    update();
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [rowCount]);
+
+  return metrics;
+}
+
+function useFluidStatusMetrics(containerRef, zoneGroups) {
+  const zoneCount = zoneGroups.length;
+  const totalCards = zoneGroups.reduce((n, z) => n + z.machines.length, 0);
+
+  const [metrics, setMetrics] = useState({
+    titleFont: 14,
+    zoneFont: 10,
+    labelFont: 12,
+    valueFont: 22,
+    gap: 6,
+    pad: 6,
+    zoneGap: 8,
+    gridCols: 1,
+  });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || zoneCount === 0) return undefined;
+
+    const update = () => {
+      const h = el.clientHeight;
+      const w = el.clientWidth;
+      const titleH = Math.max(24, h * 0.07);
+      const bodyH = Math.max(60, h - titleH);
+      const bodyW = w;
+
+      const gridCols = zoneCount <= 2 ? 1 : zoneCount <= 6 ? 2 : 2;
+      const gridRows = Math.ceil(zoneCount / gridCols);
+      const zoneH = bodyH / gridRows;
+      const zoneW = bodyW / gridCols;
+
+      const maxCardsInZone = Math.max(...zoneGroups.map((z) => z.machines.length), 1);
+      const cardRows = Math.ceil(maxCardsInZone / 2);
+      const cardH = (zoneH - 20) / cardRows;
+      const cardW = (zoneW - 16) / 2;
+
+      const valueFont = Math.max(12, Math.min(36, Math.min(cardH, cardW) * 0.38));
+      const labelFont = Math.max(9, Math.min(16, valueFont * 0.5));
+      const zoneFont = Math.max(8, Math.min(12, zoneH * 0.1));
+      const titleFont = Math.max(10, Math.min(18, titleH * 0.45));
+      const gap = Math.max(3, Math.min(8, cardH * 0.06));
+      const pad = Math.max(3, Math.min(10, cardH * 0.08));
+      const zoneGap = Math.max(4, Math.min(10, bodyH * 0.012));
+
+      setMetrics({ titleFont, zoneFont, labelFont, valueFont, gap, pad, zoneGap, gridCols });
+    };
+
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    update();
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [zoneCount, totalCards, zoneGroups]);
+
+  return metrics;
+}
+
+// ─── MachineTable ─────────────────────────────────────────────────────────────
+
+const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
+  const containerRef = useRef(null);
+
+  const rows = useMemo(
+    () =>
+      [...machines].sort((a, b) => {
+        const sa = resolveMachineStatus(a, getMachineState(a.id), ledData[a.id]?.text, t);
+        const sb = resolveMachineStatus(b, getMachineState(b.id), ledData[b.id]?.text, t);
+        const rank = { on: 0, fix: 1, off: 2 };
+        const diff = (rank[sa.key] ?? 9) - (rank[sb.key] ?? 9);
+        if (diff !== 0) return diff;
+        return String(a.label).localeCompare(String(b.label), 'th');
+      }),
+    [machines, allStates, getMachineState, ledData, t],
+  );
+
+  const m = useFluidTableMetrics(containerRef, rows.length);
+  const cellPad = { padding: `${m.padY}px ${m.padX}px` };
 
   return (
-    <div className={`flex flex-col rounded-xl border p-2 transition-all duration-300 min-h-0 min-w-0 overflow-hidden w-full ${card}`}>
-
-      {/* ── Top row: machine name + status badge ── */}
-      <div className="flex items-center justify-between gap-1 mb-1 flex-shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
-          <span className="text-[11px] font-bold text-white leading-none truncate">
-            {machine.label}
-          </span>
-        </div>
-        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 leading-tight ${badge}`}>
-          {badgeTxt}
-        </span>
+    <div
+      ref={containerRef}
+      className="flex flex-col min-h-0 h-full bg-[#0a0a0a] rounded-xl border border-gray-800/60 overflow-hidden"
+    >
+      <div
+        className="flex-shrink-0 border-b border-gray-800/80 bg-gray-900/80"
+        style={{ padding: `${Math.max(4, m.padY)}px ${m.padX}px` }}
+      >
+        <h2 className="font-bold text-white leading-none" style={{ fontSize: m.titleFont }}>
+          {t('production.dashboardTableTitle')}
+        </h2>
       </div>
-
-      {/* ── Live content ── */}
-      {isLive && (
-        <div className="flex flex-col gap-1 flex-1 min-h-0">
-          {/* Order ID */}
-            {s.orderId && (
-            <p className="truncate flex-shrink-0 font-mono text-base text-cyan-400/80 sm:text-lg md:text-[20px]">
-              {s.orderId}
-            </p>
-          )}
-          {/* Product name */}
-          {s.productName && (
-            <p
-              className="text-[12px] text-gray-300 leading-tight flex-shrink-0 break-words"
-              title={s.productName}
-              style={{ wordBreak: 'break-word', whiteSpace: 'pre-line', overflowWrap: 'break-word' }}
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+        <table
+          className="w-full h-full text-left border-collapse table-fixed"
+          style={{ fontSize: m.fontSize }}
+        >
+          <colgroup>
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '17%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '22%' }} />
+          </colgroup>
+          <thead className="bg-gray-900/95">
+            <tr
+              className="uppercase tracking-wide text-gray-400 border-b border-gray-700/60"
+              style={{ fontSize: m.headerFont, height: Math.max(22, m.rowH * 0.85) }}
             >
-              {s.productName}
-            </p>
-          )}
-          {/* Progress bar */}
-          {target > 0 && (
-            <div className="flex-shrink-0 mt-auto pt-1">
-              <div className="flex justify-between items-center mb-0.5">
-                <span className="text-[9px] text-gray-600 font-mono">
-                  {fmtNum(produced)}/{fmtNum(target)}
-                </span>
-                <span className={`text-[10px] font-mono font-bold ${
-                  progress >= 100 ? 'text-green-400' : 'text-cyan-400'
-                }`}>
-                  {progress}%
-                </span>
-              </div>
-              <div className="h-1.5 bg-gray-700/60 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-700 ${progColor}`}
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            </div>
-          )}
-          {/* NG indicator */}
-          {(s.ngCount ?? 0) > 0 && (
-            <p className="text-[9px] text-red-400/70 flex-shrink-0 mt-0.5">
-              {t('production.dashboardNgPrefix')}{fmtNum(s.ngCount)}
-            </p>
-          )}
-        </div>
-      )}
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColMachine')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColStatus')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColEmployee')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColLed')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColGoodQty')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColGoodWeight')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColNgWeight')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColTarget')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColProduct')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((machine) => {
+              const state = allStates[machine.id] ?? getMachineState(machine.id) ?? DEFAULT_MACHINE_STATE;
+              const led = ledData[machine.id] ?? {};
+              const status = resolveMachineStatus(machine, state, led.text, t);
+              const produced = state.pipeCounter ?? 0;
+              const goodWeight = state.totalGoodWeight ?? 0;
+              const ngWeight = state.totalNgWeight ?? 0;
+              const target = (state.remainingQty > 0 ? state.remainingQty : state.targetQty) ?? 0;
+              const progress = pct(produced, target);
+              const ledLabel = led.noIp
+                ? t('production.ledStatusNoIp')
+                : led.text || t('production.dashboardLedNoText');
 
-      {/* ── Paused order ── */}
-      {hasPause && !isLive && (
-        <p className="text-[9px] text-amber-400/80 truncate mt-1 flex-shrink-0">
-          ⏸ {s.pausedOrder?.orderId || t('production.dashboardPausedFallback')}
-        </p>
-      )}
-
-      {/* ── IDLE with queue ── */}
-      {!isLive && !hasPause && isActive && queueLen > 0 && (
-        <p className="text-[9px] text-gray-500 mt-1 flex-shrink-0">
-          {t('production.dashboardQueueSummary', { count: queueLen })}
-        </p>
-      )}
+              return (
+                <tr
+                  key={machine.id}
+                  className={status.rowClass}
+                  style={{ height: m.rowH }}
+                >
+                  <td className="font-bold truncate align-middle" style={cellPad} title={machine.label}>
+                    {machine.label}
+                  </td>
+                  <td className="font-semibold truncate align-middle" style={cellPad} title={status.label}>
+                    {status.label}
+                  </td>
+                  <td
+                    className="font-bold font-mono truncate align-middle tabular-nums"
+                    style={cellPad}
+                    title={state.employeeId || ''}
+                  >
+                    {state.mode === 'live' && state.employeeId ? state.employeeId : '—'}
+                  </td>
+                  <td className="align-middle min-w-0" style={cellPad}>
+                    <div className="flex items-center min-w-0" style={{ gap: Math.max(4, m.padX * 0.5) }}>
+                      <span
+                        className={`rounded-full flex-shrink-0 ${
+                          led.noIp
+                            ? 'bg-gray-500'
+                            : led.online
+                              ? 'bg-green-300 shadow-[0_0_6px_rgba(134,239,172,0.8)]'
+                              : 'bg-red-400 animate-pulse'
+                        }`}
+                        style={{ width: m.dot, height: m.dot }}
+                        title={
+                          led.noIp
+                            ? t('production.ledStatusNoIp')
+                            : led.online
+                              ? t('production.ledStatusOnline')
+                              : t('production.ledStatusOffline')
+                        }
+                      />
+                      <span className="truncate font-medium min-w-0" title={ledLabel}>
+                        {ledLabel}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="font-bold font-mono truncate align-middle tabular-nums" style={cellPad}>
+                    {fmtNum(produced)}
+                  </td>
+                  <td className="font-bold font-mono truncate align-middle tabular-nums" style={cellPad}>
+                    {fmtWeight(goodWeight)}
+                  </td>
+                  <td className="font-bold font-mono truncate align-middle tabular-nums" style={cellPad}>
+                    {fmtWeight(ngWeight)}
+                  </td>
+                  <td className="align-middle min-w-0" style={cellPad}>
+                    <div className="font-bold font-mono truncate tabular-nums">{fmtNum(target)}</div>
+                    {target > 0 && (
+                      <div
+                        className="mt-0.5 w-full max-w-full bg-black/20 rounded-full overflow-hidden"
+                        style={{ height: m.barH }}
+                      >
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            status.key === 'fix' ? 'bg-black/50' : 'bg-cyan-300'
+                          }`}
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                    )}
+                  </td>
+                  <td className="align-middle min-w-0" style={cellPad}>
+                    <div
+                      className="truncate font-medium"
+                      title={state.productName || state.productCode || ''}
+                    >
+                      {state.productCode || state.productName || '—'}
+                    </div>
+                    {state.orderId && (
+                      <div
+                        className={`font-mono truncate ${status.key === 'fix' ? 'text-black/55' : 'text-white/55'}`}
+                        style={{ fontSize: m.subFont }}
+                        title={state.orderId}
+                      >
+                        {state.orderId}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };
 
-// ─── ZonePanel ────────────────────────────────────────────────────────────────
+// ─── StatusMachineCard ────────────────────────────────────────────────────────
 
-const ZonePanel = ({ zone, machines, allStates, getMachineState, maxGridCols }) => {
+const StatusMachineCard = ({ machine, state, ledText, t, metrics }) => {
+  const status = resolveMachineStatus(machine, state, ledText, t);
+  const isLive = state?.mode === 'live';
+  const value = isLive ? (state.pipeCounter ?? 0) : 0;
+
+  return (
+    <div
+      className={`flex flex-col items-center justify-center h-full min-h-0 rounded-lg border border-black/10 overflow-hidden ${status.cardClass}`}
+      style={{ padding: metrics.pad }}
+    >
+      <span
+        className="font-black leading-tight truncate max-w-full text-center"
+        style={{ fontSize: metrics.labelFont }}
+        title={machine.label}
+      >
+        {machine.label}
+      </span>
+      <span
+        className="font-black leading-none tabular-nums transition-all duration-300"
+        style={{ fontSize: metrics.valueFont, marginTop: metrics.gap * 0.5 }}
+      >
+        {fmtNum(value)}
+      </span>
+    </div>
+  );
+};
+
+// ─── StatusZonePanel ──────────────────────────────────────────────────────────
+
+const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, metrics }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
-  const liveCnt = machines.filter((m) => allStates[m.id]?.mode === 'live').length;
-  const baseCols = zoneCols(machines.length);
-  const cols =
-    maxGridCols != null ? Math.min(baseCols, maxGridCols) : baseCols;
+  const cardRows = Math.ceil(machines.length / 2);
 
   return (
-    <div className="flex flex-col bg-gray-900/40 rounded-2xl border border-gray-700/30 p-2.5 min-h-0 min-w-0 overflow-hidden w-full">
-      {/* Zone header */}
-      <div className="flex items-center justify-between mb-2 flex-shrink-0 px-0.5">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xs font-bold text-gray-300 tracking-wide uppercase">{zone}</h2>
-          <span className="text-[10px] text-gray-600">
-            {machines.length}{t('production.dashboardMachinesSuffix')}
-          </span>
-        </div>
-        {liveCnt > 0 && (
-          <span className="flex items-center gap-1 text-[10px] font-bold text-green-400
-                           bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-            {liveCnt} {t('production.dashboardStatusLive')}
-          </span>
-        )}
-      </div>
-
-      {/* Machine cards — fill all remaining space, no scroll */}
+    <div
+      className="rounded-xl border border-gray-700/40 bg-gray-900/30 min-w-0 min-h-0 h-full flex flex-col overflow-hidden"
+      style={{ padding: metrics.pad }}
+    >
+      <h3
+        className="font-bold text-gray-300 uppercase tracking-wide truncate flex-shrink-0"
+        style={{ fontSize: metrics.zoneFont, marginBottom: metrics.gap * 0.5 }}
+      >
+        {zone}
+      </h3>
       <div
-        className="flex-1 min-h-0 min-w-0"
+        className="flex-1 min-h-0 grid grid-cols-2"
         style={{
-          display:               'grid',
-          gridTemplateColumns:   `repeat(${cols}, minmax(0, 1fr))`,
-          gridAutoRows:          '1fr',
-          gap:                   '6px',
-          overflow:              'hidden',
-          minWidth:              0,
+          gap: metrics.gap,
+          gridTemplateRows: `repeat(${cardRows}, minmax(0, 1fr))`,
         }}
       >
-        {machines.map((m) => (
-          <MachineCard
-            key={m.id}
-            machine={m}
-            state={getMachineState(m.id)}
-          />
-        ))}
+        {machines.map((m) => {
+          const state = allStates[m.id] ?? getMachineState(m.id);
+          return (
+            <StatusMachineCard
+              key={m.id}
+              machine={m}
+              state={state}
+              ledText={ledData[m.id]?.text}
+              t={t}
+              metrics={metrics}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ─── StatusMachinePanel ───────────────────────────────────────────────────────
+
+const StatusMachinePanel = ({ zoneGroups, allStates, getMachineState, ledData, t }) => {
+  const containerRef = useRef(null);
+  const metrics = useFluidStatusMetrics(containerRef, zoneGroups);
+  const gridRows = Math.ceil(zoneGroups.length / metrics.gridCols);
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex flex-col min-h-0 h-full bg-[#0a0a0a] rounded-xl border border-gray-800/60 overflow-hidden"
+    >
+      <div
+        className="flex-shrink-0 border-b border-gray-800/80 bg-gray-900/80"
+        style={{ padding: `${Math.max(4, metrics.pad)}px ${metrics.pad}px` }}
+      >
+        <h2 className="font-bold text-white leading-none" style={{ fontSize: metrics.titleFont }}>
+          {t('production.dashboardStatusMachine')}
+        </h2>
+      </div>
+      <div
+        className="flex-1 min-h-0 min-w-0 overflow-hidden"
+        style={{ padding: metrics.pad }}
+      >
+        <div
+          className="h-full w-full"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${metrics.gridCols}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${gridRows}, minmax(0, 1fr))`,
+            gap: metrics.zoneGap,
+          }}
+        >
+          {zoneGroups.map(({ zone, machines: zm }) => (
+            <StatusZonePanel
+              key={zone}
+              zone={zone}
+              machines={zm}
+              allStates={allStates}
+              getMachineState={getMachineState}
+              ledData={ledData}
+              metrics={metrics}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -238,29 +570,17 @@ const ZonePanel = ({ zone, machines, allStates, getMachineState, maxGridCols }) 
 
 // ─── DashboardView ────────────────────────────────────────────────────────────
 
-const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClose }) => {
+const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, lastSyncAt, onClose }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
-  const now        = useClock();
-  const UNZONED    = t('production.zoneUnspecified');
+  const now = useClock();
+  const UNZONED = t('production.zoneUnspecified');
   const zoneGroups = useMemo(() => groupByZone(machines, UNZONED), [machines, UNZONED]);
+  const ledData = useLedBoardStatuses(machines, sseLedByMachine);
 
-  const liveCount   = Object.values(allStates).filter((s) => s?.mode === 'live').length;
+  const liveCount = Object.values(allStates).filter((s) => s?.mode === 'live').length;
   const activeCount = machines.filter((m) => m.status?.toLowerCase() !== 'unactive').length;
-
-  // Dynamic zone layout — minmax(0,1fr) prevents grid blowout
-  const zoneCnt = zoneGroups.length;
-  const gridCols = zoneCnt <= 4
-    ? `repeat(${zoneCnt}, minmax(0, 1fr))`
-    : zoneCnt <= 6
-    ? `repeat(3, minmax(0, 1fr))`
-    : `repeat(4, minmax(0, 1fr))`;
-  const gridRows = zoneCnt <= 4
-    ? 'minmax(0, 1fr)'
-    : zoneCnt <= 8
-    ? 'repeat(2, minmax(0, 1fr))'
-    : 'repeat(3, minmax(0, 1fr))';
 
   return (
     <div className="h-[100dvh] w-screen max-w-[100vw] bg-gray-950 text-white flex flex-col select-none" style={{ boxSizing: 'border-box' }}>
@@ -269,7 +589,6 @@ const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClo
       <header className="flex-shrink-0 h-11 bg-gray-900/80 border-b border-gray-700/40
                          px-3 sm:px-5 flex items-center justify-between gap-2 backdrop-blur-sm">
         <div className="flex items-center gap-2 sm:gap-5 min-w-0">
-          {/* Brand */}
           <div className="flex items-center gap-2 flex-shrink-0">
             <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -279,7 +598,6 @@ const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClo
             <span className="text-sm font-bold tracking-tight text-white sm:hidden">{t('production.dashboardTitleShort')}</span>
           </div>
 
-          {/* Stats pills */}
           <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             <span className="flex-shrink-0 flex items-center gap-1.5 text-xs bg-green-500/10 border border-green-500/20
                              text-green-300 font-semibold px-2 py-0.5 rounded-full">
@@ -295,14 +613,12 @@ const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClo
           </div>
         </div>
 
-        {/* Right: clock + close */}
         <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
           {lastSyncAt && (
             <span className="text-[11px] text-gray-600 hidden lg:block">
               {t('production.dashboardSyncPrefix')}{lastSyncAt.toLocaleTimeString('th-TH')}
             </span>
           )}
-          {/* Live clock */}
           <div className="flex items-center gap-1.5 bg-gray-800/60 border border-gray-700/40
                           rounded-lg px-2 sm:px-3 py-1">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
@@ -310,7 +626,6 @@ const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClo
               {now.toLocaleTimeString('th-TH')}
             </span>
           </div>
-          {/* Back button */}
           <button
             onClick={onClose}
             className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-200
@@ -325,42 +640,29 @@ const DashboardView = ({ machines, allStates, getMachineState, lastSyncAt, onClo
         </div>
       </header>
 
-      {/* ── Zone grid ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden p-2 sm:p-3">
-        {/* Mobile: single-column stack */}
-        <div className="flex flex-col gap-3 md:hidden">
-          {zoneGroups.map(({ zone, machines: zm }) => (
-            <ZonePanel
-              key={zone}
-              zone={zone}
-              machines={zm}
-              allStates={allStates}
-              getMachineState={getMachineState}
-              maxGridCols={2}
-            />
-          ))}
+      {/* ── Main: table (left) + status cards (right) ─────────────────────── */}
+      <div className="flex-1 min-h-0 p-1 sm:p-1.5 flex flex-col lg:flex-row gap-1 sm:gap-1.5 overflow-hidden">
+
+        {/* Left — machine table (~58%) */}
+        <div className="flex-[3] min-h-0 min-w-0 h-[52%] lg:h-auto lg:max-w-[58%]">
+          <MachineTable
+            machines={machines}
+            allStates={allStates}
+            getMachineState={getMachineState}
+            ledData={ledData}
+            t={t}
+          />
         </div>
-        {/* Desktop: CSS grid wallboard */}
-        <div
-          className="hidden md:grid h-full"
-          style={{
-            gridTemplateColumns: gridCols,
-            gridTemplateRows:    gridRows,
-            gap:                 '10px',
-            overflow:            'hidden',
-            width:               '100%',
-            boxSizing:           'border-box',
-          }}
-        >
-          {zoneGroups.map(({ zone, machines: zm }) => (
-            <ZonePanel
-              key={zone}
-              zone={zone}
-              machines={zm}
-              allStates={allStates}
-              getMachineState={getMachineState}
-            />
-          ))}
+
+        {/* Right — status machine grid (~42%) */}
+        <div className="flex-[2] min-h-0 min-w-0 h-[48%] lg:h-auto">
+          <StatusMachinePanel
+            zoneGroups={zoneGroups}
+            allStates={allStates}
+            getMachineState={getMachineState}
+            ledData={ledData}
+            t={t}
+          />
         </div>
       </div>
     </div>

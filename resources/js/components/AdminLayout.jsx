@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -7,6 +7,7 @@ import LanguageSwitcher from './LanguageSwitcher';
 import { adminAPI } from '../api';
 import { useAlert } from '../contexts/AlertContext';
 import MaintenanceNavSuite from '../features/maintenance-requests/MaintenanceNavSuite';
+import { useSubmitGuard } from '../hooks/useSubmitGuard';
 
 const AdminLayout = ({ children }) => {
     const navigate = useNavigate();
@@ -15,7 +16,7 @@ const AdminLayout = ({ children }) => {
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const { showSuccess, showError, showConfirm } = useAlert();
-    const [isAIDropdownOpen, setIsAIDropdownOpen] = useState(false);
+    const { isSubmitting: aiGemSubmitting, run: runAiGemSubmit } = useSubmitGuard();
     const [aiGems, setAiGems] = useState([]);
     const [loadingAiGems, setLoadingAiGems] = useState(false);
     const [showAiModal, setShowAiModal] = useState(false);
@@ -26,7 +27,6 @@ const AdminLayout = ({ children }) => {
         order: 0,
         is_active: true,
     });
-    const aiDropdownRef = useRef(null);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
     const sortedActiveGems = useMemo(() => {
@@ -56,22 +56,6 @@ const AdminLayout = ({ children }) => {
             document.body.style.overflow = prev;
         };
     }, [mobileNavOpen]);
-
-    useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (aiDropdownRef.current && !aiDropdownRef.current.contains(event.target)) {
-                setIsAIDropdownOpen(false);
-            }
-        };
-
-        if (isAIDropdownOpen) {
-            document.addEventListener('mousedown', handleClickOutside);
-        }
-
-        return () => {
-            document.removeEventListener('mousedown', handleClickOutside);
-        };
-    }, [isAIDropdownOpen]);
 
     const fetchAiGems = async () => {
         try {
@@ -120,27 +104,27 @@ const AdminLayout = ({ children }) => {
 
     const handleAiGemSubmit = async (e) => {
         e.preventDefault();
-        try {
-            // Ensure order is a valid number (at least 1)
-            const formDataToSubmit = {
-                ...aiGemFormData,
-                order: aiGemFormData.order && aiGemFormData.order >= 1 ? aiGemFormData.order : 1,
-            };
-            
-            if (editingAiGem) {
-                await adminAPI.updateAiGem(editingAiGem.id, formDataToSubmit);
-                showSuccess(t('admin.aiGemUpdated'));
-            } else {
-                await adminAPI.createAiGem(formDataToSubmit);
-                showSuccess(t('admin.aiGemCreated'));
+        await runAiGemSubmit(async () => {
+            try {
+                const formDataToSubmit = {
+                    ...aiGemFormData,
+                    order: aiGemFormData.order && aiGemFormData.order >= 1 ? aiGemFormData.order : 1,
+                };
+
+                if (editingAiGem) {
+                    await adminAPI.updateAiGem(editingAiGem.id, formDataToSubmit);
+                    showSuccess(t('admin.aiGemUpdated'));
+                } else {
+                    await adminAPI.createAiGem(formDataToSubmit);
+                    showSuccess(t('admin.aiGemCreated'));
+                }
+                handleCloseAiModal();
+                await fetchAiGems();
+            } catch (error) {
+                console.error('Error saving AI Gem:', error);
+                showError(error.response?.data?.message || t('admin.errorSaving'));
             }
-            handleCloseAiModal();
-            // Refresh the list to show updated order
-            await fetchAiGems();
-        } catch (error) {
-            console.error('Error saving AI Gem:', error);
-            showError(error.response?.data?.message || t('admin.errorSaving'));
-        }
+        });
     };
 
     const handleDeleteAiGem = (aiGem) => {
@@ -175,14 +159,15 @@ const AdminLayout = ({ children }) => {
     };
 
     return (
-        <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
+        <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-gray-50">
             <nav className="z-30 flex-shrink-0 border-b bg-white shadow-sm">
-                <div className="mx-auto max-w-[1920px] px-3 sm:px-4 lg:px-6">
+                <div className="mx-auto w-full px-3 sm:px-4 lg:px-6">
                     <div className="flex h-14 items-center justify-between gap-2 sm:h-16">
-                        <div className="flex min-w-0 flex-1 items-center gap-2 xl:gap-6">
+                        <div className="flex min-w-0 flex-1 items-center gap-2 lg:gap-4">
                             <button
                                 type="button"
-                                aria-label="Menu"
+                                aria-label={t('nav.menuOpen')}
+                                aria-expanded={mobileNavOpen}
                                 className="inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 xl:hidden"
                                 onClick={() => setMobileNavOpen(true)}
                             >
@@ -194,158 +179,37 @@ const AdminLayout = ({ children }) => {
                                 onClick={() => navigate('/')}
                                 className="cursor-pointer truncate text-lg font-bold text-blue-600 transition hover:text-blue-800 sm:text-xl"
                             >
-                                Home
+                                {t('landing.title')}
                             </h1>
-                            <div className="hidden flex-shrink-0 gap-1 text-[15px] xl:flex">
-                                <button
-                                    onClick={() => navigate('/problems')}
-                                    className={`px-3 py-1 text-sm rounded transition ${location.pathname.startsWith('/problems') && !location.pathname.startsWith('/machine')
-                                            ? 'bg-blue-600 text-white'
-                                            : 'text-blue-600 hover:text-blue-800 border border-blue-600 hover:bg-blue-50'
-                                        }`}
-                                >
-                                    {t('nav.problems')}
-                                </button>
-                                <button
-                                    onClick={() => navigate('/machines')}
-                                    className={`px-3 py-1 text-sm rounded transition ${location.pathname.startsWith('/machines') || location.pathname.startsWith('/machine-zone')
-                                            ? 'bg-green-600 text-white'
-                                            : 'text-green-600 hover:text-green-800 border border-green-600 hover:bg-green-50'
-                                        }`}
-                                >
-                                    {t('nav.machines')}
-                                </button>
-                                <button
-                                    onClick={() => navigate('/production-monitoring')}
-                                    className={`px-3 py-1 text-sm rounded transition ${location.pathname.startsWith('/production-monitoring')
-                                            ? 'bg-orange-600 text-white'
-                                            : 'text-orange-600 hover:text-orange-800 border border-orange-600 hover:bg-orange-50'
-                                        }`}
-                                >
-                                    Production
-                                </button>
-                                <div className="relative" ref={aiDropdownRef}>
-                                    <button
-                                        onClick={() => setIsAIDropdownOpen(!isAIDropdownOpen)}
-                                        className="px-3 py-1 text-sm text-purple-600 hover:text-purple-800 font-medium border border-purple-600 rounded hover:bg-purple-50 transition flex items-center gap-1"
-                                    >
-                                        {t('nav.askAI')}
-                                        <svg 
-                                            className={`w-4 h-4 transition-transform ${isAIDropdownOpen ? 'rotate-180' : ''}`} 
-                                            fill="none" 
-                                            stroke="currentColor" 
-                                            viewBox="0 0 24 24"
-                                        >
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                        </svg>
-                                    </button>
-                                    {isAIDropdownOpen && (
-                                        <div className="absolute top-full left-0 mt-1 bg-white border border-purple-200 rounded-md shadow-lg min-w-[200px] z-50 overflow-hidden max-h-[400px] overflow-y-auto">
-                                            {loadingAiGems ? (
-                                                <div className="px-4 py-2 text-sm text-gray-500 text-center">
-                                                    {t('common.loading')}
-                                                </div>
-                                            ) : sortedActiveGems.length > 0 ? (
-                                                <>
-                                                    {sortedActiveGems.map((gem) => (
-                                                            <div key={gem.id} className="flex items-center group">
-                                                                <button
-                                                                    onClick={() => {
-                                                                        window.open(gem.gem_url, '_blank');
-                                                                        setIsAIDropdownOpen(false);
-                                                                    }}
-                                                                    className="flex-1 text-left px-4 py-2 text-sm text-purple-600 hover:bg-purple-50 transition"
-                                                                >
-                                                                    {gem.name}
-                                                                </button>
-                                                                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                                                    <button
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            handleOpenAiModal(gem);
-                                                                            setIsAIDropdownOpen(false);
-                                                                        }}
-                                                                        className="px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-                                                                        title={t('common.edit')}
-                                                                    >
-                                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                                                        </svg>
-                                                                    </button>
-                                                                    <button
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            handleDeleteAiGem(gem);
-                                                                            setIsAIDropdownOpen(false);
-                                                                        }}
-                                                                        className="px-2 py-1 text-xs text-red-600 hover:bg-red-50"
-                                                                        title={t('common.delete')}
-                                                                    >
-                                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                                        </svg>
-                                                                    </button>
-                                                                </div>
-                                                            </div>
-                                                        ))}
-                                                    <div className="border-t border-purple-100">
-                                                        <button
-                                                            onClick={() => {
-                                                                handleOpenAiModal();
-                                                                setIsAIDropdownOpen(false);
-                                                            }}
-                                                            className="w-full text-left px-4 py-2 text-sm text-purple-600 hover:bg-purple-50 transition font-medium flex items-center gap-2"
-                                                        >
-                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                                                            </svg>
-                                                            {t('admin.addAiGem')}
-                                                        </button>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <div className="px-4 py-2 text-sm text-gray-500 text-center">
-                                                    {t('admin.noAiGems')}
-                                                    <button
-                                                        onClick={() => {
-                                                            handleOpenAiModal();
-                                                            setIsAIDropdownOpen(false);
-                                                        }}
-                                                        className="mt-2 w-full px-3 py-1 text-sm text-purple-600 hover:bg-purple-50 rounded border border-purple-200"
-                                                    >
-                                                        {t('admin.addAiGem')}
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
                         </div>
                         <div className="flex flex-shrink-0 items-center gap-2 sm:gap-4">
                             <div className="hidden flex-wrap gap-2 xl:flex">
 
                                 <button
+                                    type="button"
                                     onClick={() => navigate('/admin/problems')}
-                                    className={`px-2 py-2 rounded-lg transition ${isActive('/admin/problems')}`}
+                                    className={`rounded-lg px-2 py-2 transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 ${isActive('/admin/problems')}`}
                                 >
                                     {t('admin.manageProblems')}
                                 </button>
                                 <button
+                                    type="button"
                                     onClick={() => navigate('/admin/machines')}
-                                    className={`px-2 py-2 rounded-lg transition ${isActive('/admin/machines')}`}
+                                    className={`rounded-lg px-2 py-2 transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 ${isActive('/admin/machines')}`}
                                 >
                                     {t('admin.manageMachines')}
                                 </button>
                                 <button
+                                    type="button"
                                     onClick={() => navigate('/admin/categories')}
-                                    className={`px-2 py-2 rounded-lg transition ${isActive('/admin/categories')}`}
+                                    className={`rounded-lg px-2 py-2 transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 ${isActive('/admin/categories')}`}
                                 >
                                     {t('admin.manageCategories')}
                                 </button>
                                 <button
+                                    type="button"
                                     onClick={() => navigate('/admin/users')}
-                                    className={`px-2 py-2 rounded-lg transition ${isActive('/admin/users')}`}
+                                    className={`rounded-lg px-2 py-2 transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 ${isActive('/admin/users')}`}
                                 >
                                     {t('admin.manageUsers')}
                                 </button>
@@ -361,10 +225,11 @@ const AdminLayout = ({ children }) => {
                             <div className="relative group">
                                 <button
                                     type="button"
-                                    className="flex max-w-[9rem] items-center gap-1 rounded px-2 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none sm:max-w-xs sm:px-3"
+                                    className="flex max-w-[9rem] items-center gap-1 rounded px-2 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 sm:max-w-xs sm:px-3"
+                                    aria-haspopup="menu"
                                 >
                                     <span className="truncate">{user?.name}</span>
-                                    <svg className="ml-1 h-4 w-4 flex-shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg className="ml-1 h-4 w-4 flex-shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                     </svg>
                                 </button>
@@ -382,20 +247,20 @@ const AdminLayout = ({ children }) => {
                     </div>
                 </div>
                 {mobileNavOpen && (
-                    <div className="fixed inset-0 z-40 xl:hidden" role="dialog" aria-modal="true">
+                    <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
                         <button
                             type="button"
                             className="absolute inset-0 bg-black/40"
-                            aria-label="Close menu"
+                            aria-label={t('common.close')}
                             onClick={() => setMobileNavOpen(false)}
                         />
-                        <div className="absolute inset-y-0 right-0 flex w-[min(100%,21rem)] flex-col bg-white shadow-xl">
+                        <div className="absolute inset-y-0 right-0 flex w-[min(100%,22rem)] flex-col bg-white shadow-xl sm:w-[min(100%,24rem)]">
                             <div className="flex items-center justify-between border-b px-4 py-3">
-                                <span className="font-semibold text-gray-900">Menu</span>
+                                <span className="font-semibold text-gray-900">{t('landing.title')}</span>
                                 <button
                                     type="button"
                                     className="flex h-10 w-10 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100"
-                                    aria-label="Close"
+                                    aria-label={t('common.close')}
                                     onClick={() => setMobileNavOpen(false)}
                                 >
                                     <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -433,7 +298,7 @@ const AdminLayout = ({ children }) => {
                                         }}
                                         className="rounded-lg bg-orange-50 px-4 py-3 text-left text-sm font-medium text-orange-900"
                                     >
-                                        Production
+                                        {t('nav.production')}
                                     </button>
                                     <p className="mt-2 px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">{t('nav.askAI')}</p>
                                     {loadingAiGems ? (
@@ -492,7 +357,9 @@ const AdminLayout = ({ children }) => {
                                     >
                                         + {t('admin.addAiGem')}
                                     </button>
-                                    <p className="mt-4 px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Admin</p>
+                                </div>
+                                <div className="mt-3 flex flex-col gap-2">
+                                    <p className="px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Admin</p>
                                     <button
                                         type="button"
                                         onClick={() => {
@@ -541,12 +408,14 @@ const AdminLayout = ({ children }) => {
             </nav>
 
             {/* Page Content */}
-            <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+            <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
+                <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">{children}</div>
+            </main>
 
             {/* AI Gem Modal */}
             {showAiModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 animate-scale-in">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+                    <div className="animate-scale-in mx-4 max-h-[min(90dvh,720px)] w-full max-w-md overflow-y-auto rounded-lg bg-white shadow-xl">
                         <div className="p-6">
                             <h3 className="text-lg font-semibold text-gray-900 mb-4">
                                 {editingAiGem ? t('admin.editAiGem') : t('admin.addAiGem')}
@@ -616,9 +485,10 @@ const AdminLayout = ({ children }) => {
                                     </button>
                                     <button
                                         type="submit"
-                                        className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors"
+                                        disabled={aiGemSubmitting}
+                                        className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        {t('common.save')}
+                                        {aiGemSubmitting ? t('common.loading') : t('common.save')}
                                     </button>
                                 </div>
                             </form>

@@ -8,6 +8,7 @@ import {
   bangkokDayStartUtcMs,
   bangkokDayEndUtcMs,
 } from '../utils/formatProductionBangkok';
+import ProductionViewExitButton from './ProductionViewExitButton';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -233,7 +234,7 @@ const FilterBar = ({ machines, filters, onChange, total, filtered, t }) => (
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-const HistoryView = ({ machines, allowDeleteHistory = false }) => {
+const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
@@ -516,9 +517,12 @@ const HistoryView = ({ machines, allowDeleteHistory = false }) => {
       {/* ── Top bar ── */}
       <div className="flex-shrink-0 border-b border-gray-700/40 px-4 py-3 sm:px-6 sm:py-4
         flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-base font-bold text-white">{t('production.historyTitle')}</h2>
-          <p className="text-xs text-gray-500 mt-0.5">{t('production.historySubtitle')}</p>
+        <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-base font-bold text-white">{t('production.historyTitle')}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">{t('production.historySubtitle')}</p>
+          </div>
+          {onExit && <ProductionViewExitButton onClick={onExit} size="sm" className="shrink-0" />}
         </div>
 
         <div className="flex w-full flex-wrap items-stretch gap-2 sm:w-auto sm:items-center sm:justify-end">

@@ -103,6 +103,8 @@ const QueueRow = ({
 }) => {
   // 'idle' | 'waiting' | 'timeout'
   const [phase, setPhase]   = useState('idle');
+  const [starting, setStarting] = useState(false);
+  const startLockRef = useRef(false);
   const [notice, setNotice] = useState(null);
   const [, setTickPulse] = useState(0); // รีเรนเดอร์เหลือเวลาเมื่อ phase = waiting
   const { language } = useLanguage();
@@ -198,8 +200,8 @@ const QueueRow = ({
     }
     try {
       await dbCancelSession(machineId);
-    } catch (err) {
-      console.warn('[QueueRow] dbCancelSession after timeout:', err?.message);
+    } catch {
+      /* best-effort cancel after timeout */
     }
     setPhase('timeout');
     setNotice({ type: 'warn', text: t('production.scaleConfirmTimeout') });
@@ -207,6 +209,9 @@ const QueueRow = ({
 
   // ─── กดปุ่ม Start Now ──────────────────────────────────────────────
   const handleStart = async () => {
+    if (startLockRef.current || phase === 'waiting') return;
+    startLockRef.current = true;
+    setStarting(true);
     hydratedAwaitingRef.current = true;
     setPhase('waiting');
     setNotice(null);
@@ -234,7 +239,6 @@ const QueueRow = ({
         maxWeight:    item.maxWeight ?? null,
       });
     } catch (err) {
-      console.warn('[QueueRow] dbStartSession error:', err.message);
       setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
     }
 
@@ -251,7 +255,6 @@ const QueueRow = ({
         productLen:  item.length      ?? 0,
       });
     } catch (err) {
-      console.warn('[QueueRow] storeScaleCommand error:', err.message);
       setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
     }
 
@@ -273,6 +276,8 @@ const QueueRow = ({
 
     pollRef.current = setInterval(() => void tickPoll(), 2500);
     void tickPoll();
+    setStarting(false);
+    startLockRef.current = false;
   };
 
   const secondsLeftWaiting = phase === 'waiting'
@@ -299,8 +304,8 @@ const QueueRow = ({
         shift,
         employeeId,
       });
-    } catch (err) {
-      console.warn('[QueueRow] createOrder error (proceeding locally):', err.message);
+    } catch {
+      /* proceed locally if GAS order row fails */
     }
 
     // ส่ง callback ไปยัง parent พร้อม shift + employeeId
@@ -313,8 +318,8 @@ const QueueRow = ({
     hydratedAwaitingRef.current = false;
     try {
       await dbCancelSession(machineId);
-    } catch (err) {
-      console.warn('[QueueRow] cancel wait:', err?.message);
+    } catch {
+      /* best-effort cancel */
     }
     setPhase('idle');
     setNotice(null);
@@ -328,7 +333,7 @@ const QueueRow = ({
   };
 
   return (
-    <div className="bg-gray-900/60 border border-gray-700/50 rounded-xl p-4 flex flex-col gap-3">
+    <div className="flex flex-col gap-2.5 rounded-xl border border-gray-700/50 bg-gray-900/60 p-3 sm:gap-3 sm:p-4">
       {/* Header row */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -440,8 +445,10 @@ const QueueRow = ({
       {phase !== 'waiting' && interactive && (
         <div className="flex gap-2">
           <button
+            type="button"
+            disabled={starting || phase === 'waiting'}
             onClick={phase === 'timeout' ? handleRetry : handleStart}
-            className={`flex-1 flex items-center justify-center gap-2 font-semibold text-sm py-2 px-4 rounded-lg transition-all border ${
+            className={`flex-1 flex items-center justify-center gap-2 font-semibold text-sm py-2 px-4 rounded-lg transition-all border disabled:opacity-50 disabled:cursor-not-allowed ${
               phase === 'timeout'
                 ? 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/40 text-amber-400'
                 : 'bg-green-500/10 hover:bg-green-500/20 active:bg-green-500/30 border-green-500/40 text-green-400'
@@ -517,8 +524,8 @@ const PausedOrderBanner = ({
     setClosing(true);
     try {
       await closeOrder({ machineId, sheetName: pausedOrder.sheetName, orderId: pausedOrder.orderId });
-    } catch (err) {
-      console.warn('[PausedOrderBanner] closeOrder API error:', err.message);
+    } catch {
+      /* close is best-effort before clearing paused state */
     }
     onClosePaused();
     setClosing(false);
@@ -767,7 +774,7 @@ const SetupMode = ({
   };
 
   return (
-    <div className="max-w-full mx-auto space-y-6">
+    <div className="mx-auto w-full max-w-[1600px] space-y-3 xs:space-y-4 sm:space-y-5 lg:space-y-6 3xl:max-w-[1920px]">
 
       {/* ── Header ── */}
       <div>

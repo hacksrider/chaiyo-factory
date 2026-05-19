@@ -80,8 +80,8 @@ const ProblemsList = () => {
 
     return (
         <PublicLayout>
-            <div className="min-h-0 bg-gray-50">
-                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50">
+                <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                     <div className="mb-4">
                         <BackButton to="/" label="Back" className="mb-4" />
                         <h1 className="mb-2 text-xl font-bold text-gray-800 sm:text-2xl">{t('problems.title')}</h1>
@@ -106,13 +106,13 @@ const ProblemsList = () => {
                         </div>
                     </form>
 
-                    <div className="flex flex-wrap gap-2 sm:gap-2">
+                    <div className="-mx-1 flex gap-2 overflow-x-auto pb-2 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:pb-0">
                         <button
                             onClick={() => {
                                 setSelectedCategory('');
                                 setSearch('');
                             }}
-                            className={`px-4 py-2 rounded-lg ${
+                            className={`shrink-0 px-4 py-2 rounded-lg ${
                                 !selectedCategory
                                     ? 'bg-blue-600 text-white'
                                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -124,7 +124,7 @@ const ProblemsList = () => {
                             <button
                                 key={category.id}
                                 onClick={() => setSelectedCategory(category.id.toString())}
-                                className={`px-4 py-2 rounded-lg ${
+                                className={`shrink-0 px-4 py-2 rounded-lg ${
                                     selectedCategory === category.id.toString()
                                         ? 'bg-blue-600 text-white'
                                         : 'bg-gray-200 text-gray-700 hover:bg-gray-300'

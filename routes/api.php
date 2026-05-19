@@ -50,6 +50,7 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
 
     Route::get('/plan', [ProductionMonitorController::class, 'getProductionPlan']);
     Route::get('/monthly-plan', [ProductionMonitorController::class, 'getMonthlyPlan']);
+    Route::get('/calendar', [ProductionMonitorController::class, 'getCalendar']);
     Route::get('/daily-plan', [ProductionMonitorController::class, 'getDailyPlan']);
 
     Route::get('/product-lookup', [ProductionMonitorController::class, 'getProductLookup']);

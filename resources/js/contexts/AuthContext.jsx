@@ -46,8 +46,8 @@ export const AuthProvider = ({ children }) => {
             localStorage.setItem('auth_token', token);
             localStorage.setItem('auth_user', JSON.stringify(user));
             setUser(user);
-            
-            return { success: true };
+
+            return { success: true, user };
         } catch (error) {
             return {
                 success: false,
@@ -74,6 +74,7 @@ export const AuthProvider = ({ children }) => {
         logout,
         loading,
         isAdmin: user?.role === 'admin',
+        isTechnician: user?.role === 'technician',
     };
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

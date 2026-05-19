@@ -8,6 +8,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { AlertProvider } from './contexts/AlertContext';
 import ProtectedRoute from './components/ProtectedRoute';
+import GuestRoute from './components/GuestRoute';
 
 // Pages
 import Landing from './pages/Landing';
@@ -36,14 +37,62 @@ function App() {
                 <AlertProvider>
                     <BrowserRouter>
                 <Routes>
-                    {/* Public Routes */}
-                    <Route path="/" element={<Landing />} />
-                    <Route path="/problems" element={<ProblemsList />} />
-                    <Route path="/problems/:id" element={<ProblemDetail />} />
-                    <Route path="/machines" element={<MachinesMode />} />
-                    <Route path="/machines/:id" element={<MachineDetail />} />
-                    <Route path="/machine-zones/:id" element={<MachineZoneDetail />} />
-                    <Route path="/machine-zone-problems/:id" element={<MachineZoneProblemDetail />} />
+                    <Route
+                        path="/"
+                        element={
+                            <ProtectedRoute>
+                                <Landing />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/problems"
+                        element={
+                            <ProtectedRoute>
+                                <ProblemsList />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/problems/:id"
+                        element={
+                            <ProtectedRoute>
+                                <ProblemDetail />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/machines"
+                        element={
+                            <ProtectedRoute>
+                                <MachinesMode />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/machines/:id"
+                        element={
+                            <ProtectedRoute>
+                                <MachineDetail />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/machine-zones/:id"
+                        element={
+                            <ProtectedRoute>
+                                <MachineZoneDetail />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/machine-zone-problems/:id"
+                        element={
+                            <ProtectedRoute>
+                                <MachineZoneProblemDetail />
+                            </ProtectedRoute>
+                        }
+                    />
                     <Route
                         path="/production-monitoring/led-sign/:machineId"
                         element={
@@ -61,8 +110,14 @@ function App() {
                         }
                     />
 
-                    {/* Admin Routes */}
-                    <Route path="/admin/login" element={<Login />} />
+                    <Route
+                        path="/admin/login"
+                        element={
+                            <GuestRoute>
+                                <Login />
+                            </GuestRoute>
+                        }
+                    />
                     <Route
                         path="/admin/problems"
                         element={

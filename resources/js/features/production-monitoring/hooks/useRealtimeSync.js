@@ -119,7 +119,6 @@ export const useRealtimeSync = ({
     if (deadTimerRef.current) clearTimeout(deadTimerRef.current);
     deadTimerRef.current = setTimeout(() => {
       if (!mountedRef.current) return;
-      console.warn('[SSE] Dead connection (no event for 30s) — forcing reconnect');
       esRef.current?.close();
       esRef.current = null;
       scheduleReconnect(false); // eslint-disable-line no-use-before-define
@@ -156,8 +155,8 @@ export const useRealtimeSync = ({
         writeLastTs(data.machineId, Number(data._ts));
       }
       cbRefs.current[cbKey]?.(data);
-    } catch (err) {
-      console.error(`[SSE] ${cbKey} parse error:`, err);
+    } catch {
+      /* ignore malformed SSE payload */
     }
   }, [resetDeadTimer]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -186,8 +185,7 @@ export const useRealtimeSync = ({
     let es;
     try {
       es = new EventSource(url);
-    } catch (err) {
-      console.error('[SSE] EventSource creation failed:', err);
+    } catch {
       scheduleReconnect(false);
       return;
     }

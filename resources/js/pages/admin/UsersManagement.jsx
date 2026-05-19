@@ -7,6 +7,21 @@ import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { useAlert } from '../../contexts/AlertContext';
 import { formatValidationErrors } from '../../utils/errorTranslator';
+import { useSubmitGuard } from '../../hooks/useSubmitGuard';
+
+const VALID_ROLES = ['admin', 'user', 'technician'];
+
+const roleBadgeClasses = (role) => {
+    if (role === 'admin') return 'bg-amber-500/15 text-amber-700 border-amber-500/35';
+    if (role === 'technician') return 'bg-teal-50 text-teal-800 border-teal-200';
+    return 'bg-gray-100 text-gray-600 border-gray-200';
+};
+
+const roleLabel = (role, t) => {
+    if (role === 'admin') return t('admin.roleAdmin');
+    if (role === 'technician') return t('admin.roleTechnician');
+    return t('admin.roleUser');
+};
 
 const UsersManagement = () => {
     const { language } = useLanguage();
@@ -14,6 +29,7 @@ const UsersManagement = () => {
     const navigate = useNavigate();
     const { user: currentUser } = useAuth();
     const { showSuccess, showError, showWarning, showConfirm } = useAlert();
+    const { isSubmitting, run } = useSubmitGuard();
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
@@ -47,7 +63,7 @@ const UsersManagement = () => {
                 name: user.name,
                 username: user.username,
                 password: '',
-                role: user.role === 'admin' ? 'admin' : 'user',
+                role: VALID_ROLES.includes(user.role) ? user.role : 'user',
             });
         } else {
             setEditingUser(null);
@@ -68,36 +84,38 @@ const UsersManagement = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        try {
-            const data = { ...formData };
-            if (!data.password) {
-                delete data.password;
-            }
-
-            if (editingUser) {
-                await adminAPI.updateUser(editingUser.id, data);
-            } else {
+        await run(async () => {
+            try {
+                const data = { ...formData };
                 if (!data.password) {
-                    showWarning(t('admin.passwordRequired'));
-                    return;
+                    delete data.password;
                 }
-                await adminAPI.createUser(data);
+
+                if (editingUser) {
+                    await adminAPI.updateUser(editingUser.id, data);
+                } else {
+                    if (!data.password) {
+                        showWarning(t('admin.passwordRequired'));
+                        return;
+                    }
+                    await adminAPI.createUser(data);
+                }
+                handleCloseModal();
+                fetchUsers();
+                showSuccess(editingUser ? t('admin.userUpdated') : t('admin.userCreated'));
+            } catch (error) {
+                console.error('Error saving user:', error);
+                let errorMessage = t('errors.cannotSave');
+
+                if (error.response?.data?.errors) {
+                    errorMessage = formatValidationErrors(error.response.data.errors, t) || errorMessage;
+                } else if (error.response?.data?.message) {
+                    errorMessage = error.response.data.message;
+                }
+
+                showError(errorMessage);
             }
-            handleCloseModal();
-            fetchUsers();
-            showSuccess(editingUser ? t('admin.userUpdated') : t('admin.userCreated'));
-        } catch (error) {
-            console.error('Error saving user:', error);
-            let errorMessage = t('errors.cannotSave');
-            
-            if (error.response?.data?.errors) {
-                errorMessage = formatValidationErrors(error.response.data.errors, t) || errorMessage;
-            } else if (error.response?.data?.message) {
-                errorMessage = error.response.data.message;
-            }
-            
-            showError(errorMessage);
-        }
+        });
     };
 
     const handleDelete = async (id) => {
@@ -127,12 +145,18 @@ const UsersManagement = () => {
     };
 
     if (loading) {
-        return <div className="text-center py-12">{t('common.loading')}</div>;
+        return (
+            <AdminLayout>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
+                    <div className="text-lg text-gray-600 sm:text-xl">{t('common.loading')}</div>
+                </div>
+            </AdminLayout>
+        );
     }
 
     return (
         <AdminLayout>
-            <div className="mx-auto w-full max-w-[1920px] px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageUsers')}</h1>
                     <button
@@ -169,8 +193,8 @@ const UsersManagement = () => {
                                         <div className="text-sm text-gray-500">{user.username}</div>
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`text-xs font-semibold px-2 py-1 rounded-full border ${user.role === 'admin' ? 'bg-amber-500/15 text-amber-700 border-amber-500/35' : 'bg-gray-100 text-gray-600 border-gray-200'}`}>
-                                            {user.role === 'admin' ? t('admin.roleAdmin') : t('admin.roleUser')}
+                                        <span className={`text-xs font-semibold px-2 py-1 rounded-full border ${roleBadgeClasses(user.role)}`}>
+                                            {roleLabel(user.role, t)}
                                         </span>
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
@@ -245,6 +269,7 @@ const UsersManagement = () => {
                                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                                     >
                                         <option value="user">{t('admin.roleUser')}</option>
+                                        <option value="technician">{t('admin.roleTechnician')}</option>
                                         <option value="admin">{t('admin.roleAdmin')}</option>
                                     </select>
                                 </div>
@@ -272,9 +297,10 @@ const UsersManagement = () => {
                                     </button>
                                     <button
                                         type="submit"
-                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                        disabled={isSubmitting}
+                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        {t('common.save')}
+                                        {isSubmitting ? t('common.loading') : t('common.save')}
                                     </button>
                                 </div>
                             </form>

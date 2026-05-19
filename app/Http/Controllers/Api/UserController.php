@@ -12,6 +12,7 @@ class UserController extends Controller
     public function index()
     {
         $users = User::orderBy('created_at', 'desc')->get();
+
         return response()->json($users);
     }
 
@@ -21,7 +22,7 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'username' => 'required|string|max:255|unique:users',
             'password' => 'required|string|min:8',
-            'role' => 'required|string|in:admin,user',
+            'role' => 'required|string|in:admin,user,technician',
         ]);
 
         $user = User::create([
@@ -40,16 +41,16 @@ class UserController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'username' => 'required|string|max:255|unique:users,username,' . $id,
+            'username' => 'required|string|max:255|unique:users,username,'.$id,
             'password' => 'nullable|string|min:8',
-            'role' => 'required|string|in:admin,user',
+            'role' => 'required|string|in:admin,user,technician',
         ]);
 
         $user->name = $validated['name'];
         $user->username = $validated['username'];
         $user->role = $validated['role'];
 
-        if (!empty($validated['password'])) {
+        if (! empty($validated['password'])) {
             $user->password = Hash::make($validated['password']);
         }
 
@@ -61,7 +62,7 @@ class UserController extends Controller
     public function destroy($id)
     {
         $user = User::findOrFail($id);
-        
+
         // Prevent deleting yourself
         if ($user->id === auth()->id()) {
             return response()->json(['message' => 'Cannot delete your own account'], 400);

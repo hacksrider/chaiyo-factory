@@ -61,10 +61,69 @@ export const maintenanceAPI = {
     update: (id, formData) => api.post(`/maintenance-requests/${id}`, formData),
     approve: (id, data) => api.post(`/maintenance-requests/${id}/approve`, data),
     reject: (id, data) => api.post(`/maintenance-requests/${id}/reject`, data),
+    technicianComplete: (id) => api.post(`/maintenance-requests/${id}/technician-complete`),
+    ownerSubmitInspection: (id, formData) => api.post(`/maintenance-requests/${id}/owner-submit-inspection`, formData),
+    adminCloseMaintenance: (id, formData) => api.post(`/maintenance-requests/${id}/admin-close`, formData),
+    delete: (id) => api.delete(`/maintenance-requests/${id}`),
+    /** เปิด PDF ในแท็บใหม่ (ผู้ใช้กดพิมพ์จากเบราว์เซอร์เอง ไม่เรียก print อัตโนมัติ) */
+    openPdfForPrint: async (id) => {
+        let response;
+        try {
+            response = await api.get(`/maintenance-requests/${id}/pdf`, {
+                responseType: 'arraybuffer',
+                headers: { Accept: 'application/pdf' },
+            });
+        } catch (err) {
+            const d = err.response?.data;
+            let msg = 'โหลด PDF ไม่สำเร็จ';
+            if (d instanceof ArrayBuffer) {
+                try {
+                    const j = JSON.parse(new TextDecoder('utf-8').decode(d));
+                    if (j.message) msg = j.message;
+                } catch {
+                    /* keep default */
+                }
+            } else if (err.response?.data?.message) {
+                msg = err.response.data.message;
+            }
+            throw new Error(msg);
+        }
+        const buf = response.data;
+        const bytes = new Uint8Array(buf);
+        const head =
+            bytes.length >= 4
+                ? String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3])
+                : '';
+        if (head !== '%PDF') {
+            let msg = 'ได้รับข้อมูลที่ไม่ใช่ PDF (อาจเป็นข้อความผิดพลาดจากเซิร์ฟเวอร์)';
+            try {
+                const j = JSON.parse(new TextDecoder('utf-8').decode(buf));
+                if (j.message) msg = j.message;
+            } catch {
+                /* */
+            }
+            throw new Error(msg);
+        }
+        const blob = new Blob([buf], { type: 'application/pdf' });
+        const url = window.URL.createObjectURL(blob);
+        const pdfTab = window.open(url, '_blank');
+        if (!pdfTab) {
+            window.URL.revokeObjectURL(url);
+            throw new Error('POPUP_BLOCKED');
+        }
+        try {
+            pdfTab.focus();
+        } catch {
+            /* */
+        }
+        // อย่า revoke blob เร็ว — บางเบราว์เซอร์โหลด PDF/ทรัพยากรในเอกสารยังไม่จบ จะได้ตัวว่างหรือไม่มีรูป
+    },
     notifications: () => api.get('/maintenance-notifications'),
     unreadCount: () => api.get('/maintenance-notifications/unread-count'),
     markNotificationRead: (id) => api.post(`/maintenance-notifications/${id}/read`),
     markAllNotificationsRead: () => api.post('/maintenance-notifications/read-all'),
+    deleteNotification: (id) => api.delete(`/maintenance-notifications/${id}`),
+    deleteAllNotifications: () => api.delete('/maintenance-notifications'),
 };
 
 export const publicAPI = {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -11,14 +11,12 @@ import MaintenanceNavSuite from '../features/maintenance-requests/MaintenanceNav
 const PublicLayout = ({ children }) => {
     const navigate = useNavigate();
     const location = useLocation();
-    const { isAdmin } = useAuth();
+    const { isAdmin, user, logout } = useAuth();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
-    const [isAIDropdownOpen, setIsAIDropdownOpen] = useState(false);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [aiGems, setAiGems] = useState([]);
     const [loadingAiGems, setLoadingAiGems] = useState(false);
-    const aiDropdownRef = useRef(null);
 
     const sortedActiveGems = useMemo(() => {
         return [...aiGems]
@@ -38,22 +36,6 @@ const PublicLayout = ({ children }) => {
     useEffect(() => {
         setMobileNavOpen(false);
     }, [location.pathname]);
-
-    useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (aiDropdownRef.current && !aiDropdownRef.current.contains(event.target)) {
-                setIsAIDropdownOpen(false);
-            }
-        };
-
-        if (isAIDropdownOpen) {
-            document.addEventListener('mousedown', handleClickOutside);
-        }
-
-        return () => {
-            document.removeEventListener('mousedown', handleClickOutside);
-        };
-    }, [isAIDropdownOpen]);
 
     useEffect(() => {
         if (!mobileNavOpen) return;
@@ -78,8 +60,12 @@ const PublicLayout = ({ children }) => {
 
     const openGem = (url) => {
         window.open(url, '_blank');
-        setIsAIDropdownOpen(false);
         setMobileNavOpen(false);
+    };
+
+    const handleLogout = async () => {
+        await logout();
+        navigate('/admin/login');
     };
 
     // If admin is logged in, use AdminLayout
@@ -89,103 +75,94 @@ const PublicLayout = ({ children }) => {
 
     // Otherwise use simple public layout
     return (
-        <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
-            <header className="flex-shrink-0 bg-white shadow-sm z-30">
-                <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-2 px-3 py-3 sm:px-4 sm:py-4 lg:px-6">
-                    <div className="flex min-w-0 flex-1 items-center gap-2 lg:gap-4">
-                        <button
-                            type="button"
-                            aria-label="Menu"
-                            className="inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 lg:hidden"
-                            onClick={() => setMobileNavOpen(true)}
+        <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-gray-50">
+            <header className="z-30 flex-shrink-0 bg-white shadow-sm">
+                <div className="mx-auto w-full px-3 py-3 sm:px-4 lg:px-6">
+                    <div className="flex w-full items-center gap-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-2 lg:gap-4">
+                            <button
+                                type="button"
+                                aria-label={t('nav.menuOpen')}
+                                aria-expanded={mobileNavOpen}
+                                className="inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 md:hidden"
+                                onClick={() => setMobileNavOpen(true)}
+                            >
+                                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                </svg>
+                            </button>
+                            <h1
+                                onClick={() => navigate('/')}
+                                className="min-w-0 shrink cursor-pointer truncate text-lg font-bold text-blue-600 transition hover:text-blue-800 sm:text-xl lg:text-2xl"
+                            >
+                                {t('landing.title')}
+                            </h1>
+                        </div>
+                        <nav
+                            className="hidden shrink-0 flex-wrap items-center gap-1.5 md:flex lg:gap-2"
+                            role="navigation"
+                            aria-label={t('nav.home')}
                         >
-                            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                            </svg>
-                        </button>
-                        <h1
-                            onClick={() => navigate('/')}
-                            className="cursor-pointer truncate text-lg font-bold text-blue-600 transition hover:text-blue-800 sm:text-xl lg:text-2xl"
-                        >
-                            {t('landing.title')}
-                        </h1>
-                        <div className="hidden items-center gap-2 lg:flex">
                             <button
                                 type="button"
                                 onClick={() => navigate('/problems')}
-                                className="rounded border border-blue-600 px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50"
+                                className="rounded-lg bg-blue-50 px-2.5 py-1.5 text-left text-xs font-medium text-blue-800 transition hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 lg:px-3 lg:text-sm"
                             >
                                 {t('nav.problems')}
                             </button>
                             <button
                                 type="button"
                                 onClick={() => navigate('/machines')}
-                                className="rounded border border-green-600 px-3 py-2 text-sm font-medium text-green-600 hover:bg-green-50"
+                                className="rounded-lg bg-green-50 px-2.5 py-1.5 text-left text-xs font-medium text-green-800 transition hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-offset-1 lg:px-3 lg:text-sm"
                             >
                                 {t('nav.machines')}
                             </button>
-                            <div className="relative" ref={aiDropdownRef}>
+                            <button
+                                type="button"
+                                onClick={() => navigate('/production-monitoring')}
+                                className="rounded-lg bg-cyan-50 px-2.5 py-1.5 text-left text-xs font-medium text-cyan-900 transition hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:ring-offset-1 lg:px-3 lg:text-sm"
+                            >
+                                {t('nav.production')}
+                            </button>
+                        </nav>
+                        <div className="flex flex-shrink-0 items-center gap-2 sm:gap-3">
+                            <MaintenanceNavSuite />
+                            <LanguageSwitcher />
+                            <div className="relative group">
                                 <button
                                     type="button"
-                                    onClick={() => setIsAIDropdownOpen(!isAIDropdownOpen)}
-                                    className="flex items-center gap-1 rounded border border-purple-600 px-3 py-2 text-sm font-medium text-purple-600 transition hover:bg-purple-50"
+                                    className="flex max-w-[9rem] items-center gap-1 rounded px-2 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 sm:max-w-xs sm:px-3"
+                                    aria-haspopup="menu"
                                 >
-                                    {t('nav.askAI')}
-                                    <svg
-                                        className={`h-4 w-4 transition-transform ${isAIDropdownOpen ? 'rotate-180' : ''}`}
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                    >
+                                    <span className="truncate">{user?.name || user?.username || '—'}</span>
+                                    <svg className="ml-1 h-4 w-4 flex-shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                     </svg>
                                 </button>
-                                {isAIDropdownOpen && (
-                                    <div className="absolute left-0 top-full z-50 mt-1 max-h-[min(400px,70vh)] min-w-[200px] overflow-y-auto rounded-md border border-purple-200 bg-white shadow-lg">
-                                        {loadingAiGems ? (
-                                            <div className="px-4 py-3 text-center text-sm text-gray-500">{t('common.loading')}</div>
-                                        ) : sortedActiveGems.length > 0 ? (
-                                            sortedActiveGems.map((gem) => (
-                                                <button
-                                                    key={gem.id}
-                                                    type="button"
-                                                    onClick={() => openGem(gem.gem_url)}
-                                                    className="w-full px-4 py-2.5 text-left text-sm text-purple-600 transition hover:bg-purple-50"
-                                                >
-                                                    {gem.name}
-                                                </button>
-                                            ))
-                                        ) : (
-                                            <div className="px-4 py-3 text-center text-sm text-gray-500">{t('admin.noAiGems')}</div>
-                                        )}
-                                    </div>
-                                )}
+                                <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 min-w-[150px] rounded-md border border-gray-200 bg-white opacity-0 shadow-lg transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                                    <button
+                                        type="button"
+                                        onClick={handleLogout}
+                                        className="w-full rounded-md px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                                    >
+                                        {t('nav.logout')}
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    <div className="flex flex-shrink-0 items-center gap-2 sm:gap-3">
-                        <MaintenanceNavSuite />
-                        <LanguageSwitcher />
-                        <button
-                            type="button"
-                            onClick={() => navigate('/admin/login')}
-                            className="whitespace-nowrap px-2 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 sm:px-4"
-                        >
-                            {t('nav.adminLogin')}
-                        </button>
                     </div>
                 </div>
             </header>
 
             {mobileNavOpen && (
-                <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true">
+                <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
                     <button
                         type="button"
                         className="absolute inset-0 bg-black/40"
                         aria-label="Close menu"
                         onClick={() => setMobileNavOpen(false)}
                     />
-                    <div className="absolute inset-y-0 left-0 flex w-[min(100%,20rem)] flex-col bg-white shadow-xl">
+                    <div className="absolute inset-y-0 left-0 flex w-[min(100%,22rem)] flex-col bg-white shadow-xl sm:w-[min(100%,24rem)]">
                         <div className="flex items-center justify-between border-b px-4 py-3">
                             <span className="font-semibold text-gray-900">{t('landing.title')}</span>
                             <button
@@ -201,50 +178,62 @@ const PublicLayout = ({ children }) => {
                         </div>
                         <nav className="flex-1 overflow-y-auto p-3">
                             <div className="flex flex-col gap-2">
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        navigate('/problems');
-                                        setMobileNavOpen(false);
-                                    }}
-                                    className="rounded-lg bg-blue-50 px-4 py-3 text-left text-sm font-medium text-blue-700"
-                                >
-                                    {t('nav.problems')}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        navigate('/machines');
-                                        setMobileNavOpen(false);
-                                    }}
-                                    className="rounded-lg bg-green-50 px-4 py-3 text-left text-sm font-medium text-green-700"
-                                >
-                                    {t('nav.machines')}
-                                </button>
-                                <p className="px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{t('nav.askAI')}</p>
-                                {loadingAiGems ? (
-                                    <div className="px-2 py-2 text-sm text-gray-500">{t('common.loading')}</div>
-                                ) : sortedActiveGems.length > 0 ? (
-                                    sortedActiveGems.map((gem) => (
-                                        <button
-                                            key={gem.id}
-                                            type="button"
-                                            onClick={() => openGem(gem.gem_url)}
-                                            className="rounded-lg px-4 py-2.5 text-left text-sm text-purple-700 hover:bg-purple-50"
-                                        >
-                                            {gem.name}
-                                        </button>
-                                    ))
-                                ) : (
-                                    <div className="px-2 py-2 text-sm text-gray-500">{t('admin.noAiGems')}</div>
-                                )}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/problems');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="rounded-lg bg-blue-50 px-4 py-3 text-left text-sm font-medium text-blue-700"
+                                    >
+                                        {t('nav.problems')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/machines');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="rounded-lg bg-green-50 px-4 py-3 text-left text-sm font-medium text-green-700"
+                                    >
+                                        {t('nav.machines')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            navigate('/production-monitoring');
+                                            setMobileNavOpen(false);
+                                        }}
+                                        className="rounded-lg bg-cyan-50 px-4 py-3 text-left text-sm font-medium text-cyan-800"
+                                    >
+                                        {t('nav.production')}
+                                    </button>
+                                    <p className="px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{t('nav.askAI')}</p>
+                                    {loadingAiGems ? (
+                                        <div className="px-2 py-2 text-sm text-gray-500">{t('common.loading')}</div>
+                                    ) : sortedActiveGems.length > 0 ? (
+                                        sortedActiveGems.map((gem) => (
+                                            <button
+                                                key={gem.id}
+                                                type="button"
+                                                onClick={() => openGem(gem.gem_url)}
+                                                className="rounded-lg px-4 py-2.5 text-left text-sm text-purple-700 hover:bg-purple-50"
+                                            >
+                                                {gem.name}
+                                            </button>
+                                        ))
+                                    ) : (
+                                        <div className="px-2 py-2 text-sm text-gray-500">{t('admin.noAiGems')}</div>
+                                    )}
                             </div>
                         </nav>
                     </div>
                 </div>
             )}
 
-            <main className="flex-1 overflow-y-auto min-h-0">{children}</main>
+            <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
+                <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">{children}</div>
+            </main>
         </div>
     );
 };

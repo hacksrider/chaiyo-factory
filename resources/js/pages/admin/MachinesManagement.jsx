@@ -6,11 +6,13 @@ import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { useAlert } from '../../contexts/AlertContext';
 import { formatValidationErrors } from '../../utils/errorTranslator';
+import { useSubmitGuard } from '../../hooks/useSubmitGuard';
 
 const MachinesManagement = () => {
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const { showSuccess, showError, showConfirm } = useAlert();
+    const { isSubmitting, run } = useSubmitGuard();
     const [machines, setMachines] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
@@ -92,6 +94,7 @@ const MachinesManagement = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        await run(async () => {
         try {
             const data = new FormData();
             Object.keys(formData).forEach((key) => {
@@ -137,6 +140,7 @@ const MachinesManagement = () => {
             
             showError(errorMessage);
         }
+        });
     };
 
     const handleDelete = async (id) => {
@@ -209,6 +213,7 @@ const MachinesManagement = () => {
 
     const handleZoneSubmit = async (e) => {
         e.preventDefault();
+        await run(async () => {
         try {
             const data = new FormData();
             data.append('machine_id', selectedMachine.id);
@@ -253,6 +258,7 @@ const MachinesManagement = () => {
             
             showError(errorMessage);
         }
+        });
     };
 
     const handleDeleteZone = async (id) => {
@@ -279,8 +285,8 @@ const MachinesManagement = () => {
     if (loading) {
         return (
             <AdminLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl">{t('common.loading')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
+                    <div className="text-lg text-gray-600 sm:text-xl">{t('common.loading')}</div>
                 </div>
             </AdminLayout>
         );
@@ -288,7 +294,7 @@ const MachinesManagement = () => {
 
     return (
         <AdminLayout>
-            <div className="mx-auto w-full max-w-[1920px] px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageMachines')}</h1>
                     <button
@@ -480,9 +486,10 @@ const MachinesManagement = () => {
                                         </button>
                                         <button
                                             type="submit"
-                                            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                            disabled={isSubmitting}
+                                            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
-                                            {t('common.save')}
+                                            {isSubmitting ? t('common.loading') : t('common.save')}
                                         </button>
                                     </div>
                                 </form>
@@ -685,9 +692,10 @@ const MachinesManagement = () => {
                                         </button>
                                         <button
                                             type="submit"
-                                            className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                                            disabled={isSubmitting}
+                                            className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
-                                            {t('common.save')}
+                                            {isSubmitting ? t('common.loading') : t('common.save')}
                                         </button>
                                     </div>
                                 </form>

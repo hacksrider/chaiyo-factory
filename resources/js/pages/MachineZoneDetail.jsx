@@ -9,6 +9,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useTranslation } from '../utils/translations';
 import { getLocalized } from '../utils/languageHelper';
 import MediaPreview from '../components/MediaPreview';
+import { useSubmitGuard } from '../hooks/useSubmitGuard';
 
 const MachineZoneDetail = () => {
     const navigate = useNavigate();
@@ -16,6 +17,7 @@ const MachineZoneDetail = () => {
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const { isAdmin } = useAuth();
+    const { isSubmitting, run } = useSubmitGuard();
     const [zone, setZone] = useState(null);
     const [problems, setProblems] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -81,29 +83,31 @@ const MachineZoneDetail = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        try {
-            const data = new FormData();
-            data.append('machine_zone_id', id);
-            Object.keys(formData).forEach((key) => {
-                if (formData[key] !== null && formData[key] !== '') {
-                    if (typeof formData[key] === 'boolean') {
-                        data.append(key, formData[key] ? '1' : '0');
-                    } else {
-                        data.append(key, formData[key]);
+        await run(async () => {
+            try {
+                const data = new FormData();
+                data.append('machine_zone_id', id);
+                Object.keys(formData).forEach((key) => {
+                    if (formData[key] !== null && formData[key] !== '') {
+                        if (typeof formData[key] === 'boolean') {
+                            data.append(key, formData[key] ? '1' : '0');
+                        } else {
+                            data.append(key, formData[key]);
+                        }
                     }
-                }
-            });
-            data.append('order', '0');
-            if (videoFile) data.append('video', videoFile);
-            if (solutionVideoFile) data.append('solution_video', solutionVideoFile);
+                });
+                data.append('order', '0');
+                if (videoFile) data.append('video', videoFile);
+                if (solutionVideoFile) data.append('solution_video', solutionVideoFile);
 
-            await adminAPI.createMachineZoneProblem(data);
-            handleCloseModal();
-            fetchProblems();
-        } catch (error) {
-            console.error('Error saving problem:', error);
-            alert('เกิดข้อผิดพลาด: ' + (error.response?.data?.message || 'ไม่สามารถบันทึกได้'));
-        }
+                await adminAPI.createMachineZoneProblem(data);
+                handleCloseModal();
+                fetchProblems();
+            } catch (error) {
+                console.error('Error saving problem:', error);
+                alert('เกิดข้อผิดพลาด: ' + (error.response?.data?.message || 'ไม่สามารถบันทึกได้'));
+            }
+        });
     };
 
     const getVideoUrl = (path) => {
@@ -114,8 +118,8 @@ const MachineZoneDetail = () => {
     if (loading) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl">{t('common.loading')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg sm:text-xl">{t('common.loading')}</div>
                 </div>
             </PublicLayout>
         );
@@ -124,8 +128,8 @@ const MachineZoneDetail = () => {
     if (!zone) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl text-red-600">{t('errors.notFound')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg text-red-600 sm:text-xl">{t('errors.notFound')}</div>
                 </div>
             </PublicLayout>
         );
@@ -133,8 +137,8 @@ const MachineZoneDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="min-h-0 bg-gray-50">
-                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-5">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden bg-gray-50">
+                <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                     <div className="mb-4">
                         <BackButton 
                             to={`/machines/${zone.machine?.id || zone.machine_id}`} 
@@ -380,9 +384,10 @@ const MachineZoneDetail = () => {
                                     </button>
                                     <button
                                         type="submit"
-                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                        disabled={isSubmitting}
+                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        บันทึก
+                                        {isSubmitting ? t('common.loading') : t('common.save')}
                                     </button>
                                 </div>
                             </form>

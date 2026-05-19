@@ -6,12 +6,14 @@ import { useAlert } from '../../contexts/AlertContext';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { formatValidationErrors } from '../../utils/errorTranslator';
+import { useSubmitGuard } from '../../hooks/useSubmitGuard';
 
 const PageContentsManagement = () => {
     const navigate = useNavigate();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const { showSuccess, showError, showConfirm } = useAlert();
+    const { isSubmitting, run } = useSubmitGuard();
     const [contents, setContents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
@@ -63,27 +65,29 @@ const PageContentsManagement = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        try {
-            if (editingContent) {
-                await adminAPI.updatePageContent(editingContent.id, formData);
-            } else {
-                await adminAPI.createPageContent(formData);
+        await run(async () => {
+            try {
+                if (editingContent) {
+                    await adminAPI.updatePageContent(editingContent.id, formData);
+                } else {
+                    await adminAPI.createPageContent(formData);
+                }
+                handleCloseModal();
+                fetchContents();
+                showSuccess(editingContent ? t('admin.contentUpdated') : t('admin.contentCreated'));
+            } catch (error) {
+                console.error('Error saving page content:', error);
+                let errorMessage = t('errors.cannotSave');
+
+                if (error.response?.data?.errors) {
+                    errorMessage = formatValidationErrors(error.response.data.errors, t) || errorMessage;
+                } else if (error.response?.data?.message) {
+                    errorMessage = error.response.data.message;
+                }
+
+                showError(errorMessage);
             }
-            handleCloseModal();
-            fetchContents();
-            showSuccess(editingContent ? t('admin.contentUpdated') : t('admin.contentCreated'));
-        } catch (error) {
-            console.error('Error saving page content:', error);
-            let errorMessage = t('errors.cannotSave');
-            
-            if (error.response?.data?.errors) {
-                errorMessage = formatValidationErrors(error.response.data.errors, t) || errorMessage;
-            } else if (error.response?.data?.message) {
-                errorMessage = error.response.data.message;
-            }
-            
-            showError(errorMessage);
-        }
+        });
     };
 
     const handleDelete = async (id) => {
@@ -108,12 +112,18 @@ const PageContentsManagement = () => {
     };
 
     if (loading) {
-        return <div className="text-center py-12">กำลังโหลด...</div>;
+        return (
+            <AdminLayout>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
+                    <div className="text-lg text-gray-600 sm:text-xl">กำลังโหลด...</div>
+                </div>
+            </AdminLayout>
+        );
     }
 
     return (
         <AdminLayout>
-            <div className="mx-auto w-full max-w-[1920px] px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">จัดการเนื้อหา</h1>
                     <button
@@ -231,9 +241,10 @@ const PageContentsManagement = () => {
                                     </button>
                                     <button
                                         type="submit"
-                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                        disabled={isSubmitting}
+                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        บันทึก
+                                        {isSubmitting ? t('common.loading') : t('common.save')}
                                     </button>
                                 </div>
                             </form>

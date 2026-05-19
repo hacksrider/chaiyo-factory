@@ -2,6 +2,30 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+    html {
+        height: 100%;
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+    }
+
+    body {
+        margin: 0;
+        min-height: 100dvh;
+        min-height: 100%;
+        overflow-x: hidden;
+    }
+
+    #app {
+        display: flex;
+        flex-direction: column;
+        min-height: 100dvh;
+        min-height: 100%;
+        min-width: 0;
+        width: 100%;
+    }
+}
+
 @layer utilities {
     @keyframes slide-in {
         from {

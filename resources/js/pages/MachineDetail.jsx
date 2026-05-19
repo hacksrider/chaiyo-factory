@@ -34,8 +34,8 @@ const MachineDetail = () => {
     if (loading) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl">{t('common.loading')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg sm:text-xl">{t('common.loading')}</div>
                 </div>
             </PublicLayout>
         );
@@ -44,8 +44,8 @@ const MachineDetail = () => {
     if (!machine) {
         return (
             <PublicLayout>
-                <div className="flex justify-center items-center h-screen">
-                    <div className="text-xl text-red-600">{t('errors.notFound')}</div>
+                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4">
+                    <div className="text-lg text-red-600 sm:text-xl">{t('errors.notFound')}</div>
                 </div>
             </PublicLayout>
         );
@@ -53,8 +53,8 @@ const MachineDetail = () => {
 
     return (
         <PublicLayout>
-            <div className="min-h-0 bg-gray-50">
-                <div className="mx-auto w-full max-w-[1920px] px-3 py-4 sm:px-4 lg:px-6 sm:py-6">
+            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden bg-gray-50">
+                <div className="w-full px-3 py-4 sm:px-4 sm:py-6 lg:px-6">
                     <div className="mb-4">
                         <BackButton to="/machines" label="Back" className="mb-4" />
                         <h1 className="mb-2 text-xl font-bold sm:text-2xl">{machine.code} - {getLocalized(machine, 'name', language)}</h1>
@@ -66,11 +66,11 @@ const MachineDetail = () => {
                             {machine.layout_image && (
                                 <div className="mb-6 rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6 lg:mb-0">
                                     <h2 className="mb-4 text-xl font-semibold sm:text-2xl">{t('machines.machineLayout')}</h2>
-                                    <div className="relative w-full bg-gray-100 rounded-lg overflow-hidden">
+                                    <div className="w-full overflow-x-auto rounded-lg bg-gray-100">
                                         <img
                                             src={`/storage/${machine.layout_image}`}
                                             alt={t('machines.machineLayout')}
-                                            className="w-full h-auto"
+                                            className="mx-auto block h-auto w-full min-w-[400px] max-w-none sm:min-w-0 sm:max-w-full"
                                         />
                                     </div>
                                 </div>

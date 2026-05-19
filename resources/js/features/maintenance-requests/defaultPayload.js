@@ -10,6 +10,8 @@ function maintenancePayloadShape() {
         department: '',
         /** @deprecated */
         requesterDepartment: '',
+        /** ประเภทงานคอลัมน์ F ใน Sheet ทะเบียน */
+        registerWorkCategory: '',
         machineEquipment: '',
         workType: {
             bm: false,
@@ -62,6 +64,7 @@ function maintenancePayloadShape() {
         },
         inspection: {
             result: '',
+            abnormalReason: '',
             inspectorName: '',
             inspectorDate: '',
             productionPlanningName: '',
@@ -102,6 +105,10 @@ export function normalizePayload(raw) {
     return {
         ...base,
         ...raw,
+        registerWorkCategory:
+            raw.registerWorkCategory !== undefined && raw.registerWorkCategory !== null
+                ? String(raw.registerWorkCategory)
+                : (base.registerWorkCategory ?? ''),
         notifiedAt: raw.notifiedAt != null && String(raw.notifiedAt).length > 0 ? raw.notifiedAt : base.notifiedAt,
         requesterName,
         department,

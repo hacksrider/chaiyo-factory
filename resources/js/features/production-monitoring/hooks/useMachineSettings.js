@@ -24,8 +24,7 @@ export const useMachineSettings = () => {
   const [machines, setMachines]     = useState([]);
   const [loading, setLoading]       = useState(true);
   const [syncing, setSyncing]       = useState(false);
-  const [error, setError]           = useState(null);     // human-readable message
-  const [errorRaw, setErrorRaw]     = useState(null);     // raw GAS response body
+  const [error, setError]           = useState(null);
   const [lastSyncAt, setLastSyncAt] = useState(null);
 
   const load = useCallback(async (isManualSync = false) => {
@@ -35,16 +34,13 @@ export const useMachineSettings = () => {
       setLoading(true);
     }
     setError(null);
-    setErrorRaw(null);
 
     try {
       const data = await fetchMachineSettings();
       setMachines(data);
       setLastSyncAt(new Date());
     } catch (err) {
-      console.error('[useMachineSettings] Fetch failed:', err.message);
       setError(err.message);
-      setErrorRaw(err.raw ?? null);   // raw GAS HTML / text body for debugging
     } finally {
       setLoading(false);
       setSyncing(false);
@@ -60,7 +56,6 @@ export const useMachineSettings = () => {
     loading,
     syncing,
     error,
-    errorRaw,
     lastSyncAt,
     refresh: () => load(true),
   };

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef, useLayoutEffect } from 'react';
+import ProductionViewExitButton from './ProductionViewExitButton';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import {
@@ -164,7 +165,6 @@ const COLOR_PRESETS = [
   { hex: '#ffff00', label: 'เหลือง' },
   { hex: '#aaff00', label: 'เขียวเหลือง' },
   { hex: '#00ff00', label: 'เขียว' },
-  { hex: '#00ffaa', label: 'เขียวฟ้า' },
   { hex: '#ffffff', label: 'ขาว' },
 ];
 
@@ -924,23 +924,11 @@ const ControlPanel = ({
     <div className="flex flex-col gap-4">
 
       {/* ── Machine Header ── */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-col gap-1.5 min-w-0">
-          <h3 className="truncate text-2xl font-bold leading-none text-white sm:text-3xl md:text-4xl lg:text-5xl">{machine?.label || machine?.id}</h3>
-          {hasIp ? (
-            <div className="flex flex-wrap gap-1">
-              {String(machine.ledIp).split(',').map((ip) => ip.trim()).filter(Boolean).map((ip) => (
-                <span key={ip} className="text-[11px] font-mono text-indigo-400 bg-indigo-500/10 border border-indigo-500/25 px-1.5 py-0.5 rounded">
-                  {ip}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-yellow-500/80">{t('production.ledNoIpHint')}</p>
-          )}
-        </div>
-        {/* WiFi status badge + Force Sync */}
-        <div className="flex flex-col items-start gap-1.5 sm:items-end">
+      <div className="flex w-full flex-wrap items-center gap-2 sm:gap-3">
+        <h3 className="min-w-0 flex-1 truncate text-2xl font-bold leading-none text-white sm:text-3xl md:text-4xl lg:text-5xl">
+          {machine?.label || machine?.id}
+        </h3>
+        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
           <WiFiBadge status={wifiStatus} onPing={onPing} />
           {hasIp && config.text && (
             <button
@@ -948,7 +936,7 @@ const ControlPanel = ({
               onClick={onForceSync}
               disabled={syncStatus === 'syncing'}
               title={t('production.ledForceSyncTitle')}
-              className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
+              className={`shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
                 syncStatus === 'syncing' ? 'bg-gray-700/40 border-gray-600/30 text-gray-500 cursor-wait' :
                 syncStatus === 'ok'      ? 'bg-green-500/15 border-green-500/30 text-green-400' :
                 syncStatus === 'error'   ? 'bg-red-500/15 border-red-500/30 text-red-400' :
@@ -1072,7 +1060,7 @@ const ControlPanel = ({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
           </svg>
           เปลี่ยนข้อความด่วน
-          <span className="text-[10px] font-normal opacity-60">(ไม่บันทึกสถานะ)</span>
+          <span className="text-[10px] font-normal opacity-60"></span>
         </button>
 
         {/* Full change — บันทึก Machine Log */}
@@ -1109,7 +1097,7 @@ const ControlPanel = ({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
               </svg>
               {t('production.ledSendBtn')}
-              <span className="text-[10px] font-normal opacity-60">(บันทึกสถานะ)</span>
+              <span className="text-[10px] font-normal opacity-60"></span>
             </>
           )}
         </button>
@@ -1141,7 +1129,6 @@ const LedSignView = ({
   const [errorMsgs,    setErrorMsgs]  = useState({});
   const [ledStates,    setLedStates]  = useState({});
   const [speedForAll,  setSpeedForAll] = useState(true);
-  const [copied,       setCopied]     = useState(false);
   const [wifiStatuses, setWifiStatuses] = useState({});
 
   // Popup state (full — พร้อม log สถานะเครื่องจักร)
@@ -1472,9 +1459,7 @@ const LedSignView = ({
         productCode: formData.productCode,
         detail:      formData.detail,
         fix:         formData.fix,
-      }).catch((err) => {
-        console.warn('[LedSign] appendMachineLog failed (non-critical):', err?.message ?? err);
-      });
+      }).catch(() => {});
 
       setPopupOpen(false);
     } catch (err) {
@@ -1572,18 +1557,9 @@ const LedSignView = ({
     setTimeout(() => setSyncStatus('idle'), 3000);
   }, [sid, selectedMachine, configs]);
 
-  const handleCopyLink = () => {
-    if (!sid) return;
-    const url = `${window.location.origin}/production-monitoring/led-sign/${encodeURIComponent(sid)}`;
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900/20">
-      <div className="flex-shrink-0 flex flex-col gap-3 border-b border-gray-800 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6 sm:py-4">
+      <div className="flex-shrink-0 flex items-center justify-between gap-3 border-b border-gray-800 px-3 py-3 sm:px-6 sm:py-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
             <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1598,26 +1574,9 @@ const LedSignView = ({
             </p>
           </div>
         </div>
-        <div className="flex w-full flex-wrap items-stretch gap-2 sm:w-auto sm:items-center sm:justify-end">
-          <button
-            type="button"
-            onClick={handleCopyLink}
-            disabled={!sid}
-            title={t('production.ledCopyLinkTitle')}
-            className="text-xs font-semibold text-cyan-400 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400/60 bg-cyan-500/5 px-3 py-1.5 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {copied ? t('production.ledCopyLinkCopied') : t('production.ledCopyLink')}
-          </button>
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="text-xs font-semibold text-gray-400 hover:text-white border border-gray-600/60 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-all"
-            >
-              ← {t('production.ledBackBtn')}
-            </button>
-          )}
-        </div>
+        {onBack && (
+          <ProductionViewExitButton onClick={onBack} size="sm" className="shrink-0" />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 sm:p-6 max-w-3xl mx-auto w-full">
@@ -1691,12 +1650,12 @@ const LedSignView = ({
         )}
       </div>
 
-      <div className="flex-shrink-0 px-4 sm:px-6 py-3 border-t border-gray-800 bg-gray-900/50">
+      {/* <div className="flex-shrink-0 px-4 sm:px-6 py-3 border-t border-gray-800 bg-gray-900/50">
         <p className="text-[11px] text-gray-600">
           <span className="text-yellow-500/70">⚠</span>{' '}
           {t('production.ledFooterHint')}
         </p>
-      </div>
+      </div> */}
 
       {/* ── LED Form Popup (บันทึก Machine Log) ── */}
       <LedFormPopup

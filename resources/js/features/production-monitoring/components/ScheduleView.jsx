@@ -1,35 +1,89 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
-import { fetchDailyPlan, fetchProductDetails } from '../api/productionApi';
+import { fetchDailyPlan, fetchProductDetails, fetchProductionCalendar } from '../api/productionApi';
+import ProductionViewExitButton from './ProductionViewExitButton';
+import {
+  todayBangkokIso,
+  yesterdayBangkokIso,
+  normalizePlanDateKey,
+  compareBangkokDates,
+  isBangkokDateBefore,
+  bangkokWeekdayIndex,
+} from '../utils/formatProductionBangkok';
 
-// ─── Date helpers ─────────────────────────────────────────────────────────────
+// ─── Date helpers (ปฏิทินโรงงาน GMT+7 — ไม่ใช้ timezone เครื่องผู้ใช้) ─────
 
-const toDateStr = (raw) => {
-  if (!raw && raw !== 0) return null;
-  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const d = new Date(typeof raw === 'string' ? raw + (raw.length === 10 ? 'T00:00:00' : '') : raw);
-  if (isNaN(d)) return null;
-  const y  = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const dy = String(d.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${dy}`;
-};
-
-const TODAY_STR     = toDateStr(new Date());
-const YESTERDAY_STR = toDateStr(new Date(Date.now() - 86_400_000));
 const DAY_NAMES = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
 const MONTH_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
+const bangkokCalendarParts = (isoStr) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoStr);
+  if (!m) return null;
+  return { year: Number(m[1]), month: Number(m[2]) - 1, date: Number(m[3]) };
+};
+
 const fmtDateLabel = (isoStr) => {
-  const d = new Date(isoStr + 'T00:00:00');
-  return `${DAY_NAMES[d.getDay()]} ${d.getDate()} ${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+  const p = bangkokCalendarParts(isoStr);
+  if (!p) return isoStr;
+  return `${DAY_NAMES[bangkokWeekdayIndex(isoStr)]} ${p.date} ${MONTH_SHORT[p.month]} ${p.year}`;
 };
 
 const fmtShortDate = (isoStr) => {
-  const d = new Date(isoStr + 'T00:00:00');
-  return { day: DAY_NAMES[d.getDay()], date: d.getDate(), month: MONTH_SHORT[d.getMonth()] };
+  const p = bangkokCalendarParts(isoStr);
+  if (!p) return { day: '—', date: '—', month: '—' };
+  return { day: DAY_NAMES[bangkokWeekdayIndex(isoStr)], date: p.date, month: MONTH_SHORT[p.month] };
 };
+
+/**
+ * วันนี้/เมื่อวานจากเซิร์ฟเวอร์ (Asia/Bangkok) — แหล่งจริงของ "วันที่ระบบ"
+ * fallback ฝั่ง client ถ้า API ล้มเหลว
+ */
+function useProductionCalendar() {
+  const [calendar, setCalendar] = useState(() => ({
+    today:     todayBangkokIso(),
+    yesterday: yesterdayBangkokIso(),
+    source:    'client',
+  }));
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const sync = async () => {
+      try {
+        const cal = await fetchProductionCalendar();
+        if (!cancelled && cal?.today) {
+          setCalendar({
+            today:     cal.today,
+            yesterday: cal.yesterday || yesterdayBangkokIso(),
+            source:    'server',
+            timezone:  cal.timezone,
+            now:       cal.now,
+          });
+          return;
+        }
+      } catch {
+        /* fallback ด้านล่าง */
+      }
+      if (!cancelled) {
+        setCalendar({
+          today:     todayBangkokIso(),
+          yesterday: yesterdayBangkokIso(),
+          source:    'client',
+        });
+      }
+    };
+
+    sync();
+    const id = setInterval(sync, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  return calendar;
+}
 
 // ─── Number helpers ───────────────────────────────────────────────────────────
 
@@ -63,9 +117,104 @@ const Spinner = ({ className = 'w-4 h-4' }) => (
   </svg>
 );
 
+// ─── Scroll spy: วันที่ของ section ที่อยู่ใกล้ด้านบนสุดของรายการ ─────────────
+
+const SCROLL_SPY_TOP_PX = 12;
+
+function defaultScheduleDate(grouped, todayStr) {
+  if (grouped.some(([k]) => compareBangkokDates(k, todayStr) === 0)) return todayStr;
+  const next = grouped.find(([k]) => compareBangkokDates(k, todayStr) > 0);
+  if (next) return next[0];
+  return todayStr;
+}
+
+function useScheduleScrollSpy(contentRef, grouped, enabled) {
+  const [visibleDateKey, setVisibleDateKey] = useState(null);
+
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!enabled || !root || !grouped.length) {
+      if (!enabled) setVisibleDateKey(null);
+      else if (!grouped.length) setVisibleDateKey(null);
+      return undefined;
+    }
+
+    const pickVisible = () => {
+      const rootTop = root.getBoundingClientRect().top + SCROLL_SPY_TOP_PX;
+      let current   = grouped[0][0];
+
+      for (const [dateKey] of grouped) {
+        const el = document.getElementById(`day-${dateKey}`);
+        if (!el) continue;
+        if (el.getBoundingClientRect().top <= rootTop) {
+          current = dateKey;
+        }
+      }
+
+      setVisibleDateKey((prev) => (prev === current ? prev : current));
+    };
+
+    pickVisible();
+    root.addEventListener('scroll', pickVisible, { passive: true });
+    const ro = new ResizeObserver(pickVisible);
+    ro.observe(root);
+
+    return () => {
+      root.removeEventListener('scroll', pickVisible);
+      ro.disconnect();
+    };
+  }, [contentRef, grouped, enabled]);
+
+  return visibleDateKey;
+}
+
+// ─── แถบบอกวันที่กำลังเลื่อนดู (อยู่เหนืนรายการ ไม่เลื่อนหาย) ─────────────────
+
+const ViewingDateBar = ({ dateKey, rowCount, todayStr, t }) => {
+  if (!dateKey) return null;
+
+  const dayCmp  = compareBangkokDates(dateKey, todayStr);
+  const isToday = dayCmp === 0;
+  const isPast  = dayCmp != null && dayCmp < 0;
+  const isFuture = dayCmp != null && dayCmp > 0;
+
+  return (
+    <div className="flex-shrink-0 flex items-center justify-between gap-3 border-b border-cyan-500/25 bg-gray-950/95 px-3 py-2 backdrop-blur-sm sm:px-4">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+          {t('production.scheduleViewing')}
+        </span>
+        <span className="truncate text-sm font-bold text-cyan-200">
+          {fmtDateLabel(dateKey)}
+        </span>
+        {isToday && (
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-300">
+            {t('production.scheduleToday')}
+          </span>
+        )}
+        {isFuture && (
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400">
+            {t('production.scheduleFuture')}
+          </span>
+        )}
+        {isPast && (
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-700/40 border border-gray-600/50 text-gray-500">
+            {t('production.schedulePast')}
+          </span>
+        )}
+      </div>
+      {rowCount > 0 && (
+        <span className="flex-shrink-0 text-[11px] text-gray-500 tabular-nums">
+          {t('production.scheduleRowCount', { count: rowCount })}
+        </span>
+      )}
+    </div>
+  );
+};
+
 // ─── DateStrip ────────────────────────────────────────────────────────────────
 
-const DateStrip = ({ availableDates, selectedDate, onSelect }) => {
+const DateStrip = ({ availableDates, selectedDate, onSelect, todayStr }) => {
   const stripRef  = useRef(null);
   const activeRef = useRef(null);
 
@@ -86,9 +235,10 @@ const DateStrip = ({ availableDates, selectedDate, onSelect }) => {
     >
       {availableDates.map((iso) => {
         const { day, date, month } = fmtShortDate(iso);
-        const isToday    = iso === TODAY_STR;
+        const dayCmp     = compareBangkokDates(iso, todayStr);
+        const isToday    = dayCmp === 0;
         const isSelected = iso === selectedDate;
-        const isPast     = iso < TODAY_STR;
+        const isPast     = dayCmp != null && dayCmp < 0;
 
         return (
           <button
@@ -205,7 +355,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
   return (
     <div
       id={`day-${dateKey}`}
-      className={`border rounded-2xl overflow-hidden transition-all ${
+      className={`scroll-mt-3 border rounded-2xl overflow-hidden transition-all ${
         isToday
           ? 'border-cyan-500/40 bg-cyan-500/3'
           : isPast
@@ -223,7 +373,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
               {t('production.scheduleToday')}
             </span>
           )}
-          {!isToday && !isPast && (
+          {!isToday && !isPast && compareBangkokDates(dateKey, todayStr) > 0 && (
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400">
               {t('production.scheduleFuture')}
             </span>
@@ -408,9 +558,10 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
 
 // ─── ScheduleView ─────────────────────────────────────────────────────────────
 
-const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) => {
+const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap, onExit }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
+  const { today: todayStr, yesterday: yesterdayStr } = useProductionCalendar();
 
   const [allRows,         setAllRows]         = useState([]);
   const [loadingCount,    setLoadingCount]    = useState(0);
@@ -418,12 +569,12 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
   const [errors,          setErrors]          = useState([]);
   const [lastSyncAt,      setLastSyncAt]      = useState(null);
   const [filterMachineId, setFilterMachineId] = useState('');
-  const [selectedDateKey, setSelectedDateKey] = useState(null);
-  const [showDebug,       setShowDebug]       = useState(false);
-  const [rawSamples,      setRawSamples]      = useState([]);
+  const [selectedDateKey, setSelectedDateKey] = useState(null); // คลิกจากแถบวันที่
   const [productDetails,   setProductDetails]   = useState({});
 
-  const contentRef = useRef(null);
+  const contentRef            = useRef(null);
+  const initialScrollDoneRef  = useRef(false);
+  const [scrollSpyEnabled, setScrollSpyEnabled] = useState(false);
   const loading = loadingCount > 0;
 
   const machineByNorm = useMemo(() => {
@@ -441,19 +592,23 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
     setErrors([]);
     setAllRows([]);
     setLoadedMachines([]);
-    setRawSamples([]);
     setLoadingCount(1);
 
     const norm = (s) => String(s || '').replace(/\s+/g, '').toLowerCase();
 
-    fetchDailyPlan({ sinceDate: YESTERDAY_STR })
+    fetchDailyPlan({ sinceDate: yesterdayStr })
       .then((raw) => {
         const rows = (raw ?? [])
-          .filter((row) => !row.date || String(row.date).slice(0, 10) >= YESTERDAY_STR)
+          .filter((row) => {
+            const d = normalizePlanDateKey(row.date);
+            return !d || compareBangkokDates(d, yesterdayStr) >= 0;
+          })
           .map((row) => {
             const match = machineByNorm.get(norm(row.machineId));
+            const planDate = normalizePlanDateKey(row.date) || row.date;
             return {
               ...row,
+              date:          planDate,
               _machineId:    match?.id        || row.machineId || '',
               _machineLabel: match?.label     || row.machineId || '',
               _sheetName:    match?.sheetName || row.machineId || '',
@@ -463,10 +618,6 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
 
         setAllRows(rows);
         setLoadedMachines(machines.map((m) => m.id));
-
-        if (raw?.length > 0) {
-          setRawSamples([{ machine: 'Daily sheet (all)', count: raw.length, sample: raw[0] }]);
-        }
       })
       .catch((e) => {
         setErrors([`Daily sheet: ${e.message}`]);
@@ -475,7 +626,7 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
         setLoadingCount(0);
         setLastSyncAt(new Date());
       });
-  }, [machines, machineByNorm]);
+  }, [machines, machineByNorm, yesterdayStr]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -494,32 +645,110 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
 
     const map = new Map();
     filtered.forEach((row) => {
-      const key = toDateStr(row.date);
+      const key = normalizePlanDateKey(row.date);
       if (!key) return;
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(row);
     });
 
-    return Array.from(map.entries()).sort(([a], [b]) => (a < b ? -1 : 1));
+    return Array.from(map.entries()).sort(([a], [b]) => compareBangkokDates(a, b) ?? 0);
   }, [allRows, filterMachineId]);
 
-  const availableDates = useMemo(() => grouped.map(([k]) => k), [grouped]);
+  /** แถบวันที่ต้องมี "วันนี้" เสมอ แม้ Sheet ยังไม่มีแถวของวันนี้ */
+  const availableDates = useMemo(() => {
+    const set = new Set(grouped.map(([k]) => k));
+    set.add(todayStr);
+    set.add(yesterdayStr);
+    return Array.from(set).sort((a, b) => compareBangkokDates(a, b) ?? 0);
+  }, [grouped, todayStr, yesterdayStr]);
+
+  const scrollVisibleDateKey = useScheduleScrollSpy(contentRef, grouped, scrollSpyEnabled);
+
+  const activeDateKey = scrollSpyEnabled
+    ? (scrollVisibleDateKey ?? selectedDateKey)
+    : selectedDateKey;
+
+  const activeRowCount = useMemo(() => {
+    if (!activeDateKey) return 0;
+    const hit = grouped.find(([k]) => k === activeDateKey);
+    return hit ? hit[1].length : 0;
+  }, [grouped, activeDateKey]);
+
+  const scrollToDateSection = useCallback((iso, { behavior = 'smooth' } = {}) => {
+    setSelectedDateKey(iso);
+    const root = contentRef.current;
+    const el   = document.getElementById(`day-${iso}`);
+    if (!el) return false;
+
+    if (root) {
+      const top = el.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - 8;
+      root.scrollTo({ top: Math.max(0, top), behavior });
+    } else {
+      el.scrollIntoView({ behavior, block: 'start' });
+    }
+    return true;
+  }, []);
+
+  const scrollToDate = useCallback((iso) => {
+    scrollToDateSection(iso, { behavior: 'smooth' });
+  }, [scrollToDateSection]);
 
   useEffect(() => {
-    if (!selectedDateKey) return;
-    const el = document.getElementById(`day-${selectedDateKey}`);
-    if (el && contentRef.current) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, [selectedDateKey]);
+    if (todayStr) setSelectedDateKey((prev) => prev ?? todayStr);
+  }, [todayStr]);
 
   useEffect(() => {
-    if (!allRows.length || selectedDateKey) return;
-    const todayOrAfter = availableDates.find((d) => d >= TODAY_STR);
-    if (todayOrAfter) {
-      setSelectedDateKey(todayOrAfter);
+    initialScrollDoneRef.current = false;
+    setScrollSpyEnabled(false);
+  }, []);
+
+  useEffect(() => {
+    initialScrollDoneRef.current = false;
+    setScrollSpyEnabled(false);
+  }, [filterMachineId]);
+
+  /** เปิดหน้าครั้งแรก / โหลดข้อมูลเสร็จ → เลื่อนไปวันปัจจุบัน (รอ DOM section พร้อม) */
+  useLayoutEffect(() => {
+    if (loading || !todayStr || initialScrollDoneRef.current) return;
+
+    const target = defaultScheduleDate(grouped, todayStr);
+    setSelectedDateKey(target);
+
+    if (grouped.length === 0) {
+      initialScrollDoneRef.current = true;
+      setScrollSpyEnabled(true);
+      return undefined;
     }
-  }, [allRows.length, availableDates, selectedDateKey]);
+
+    let cancelled = false;
+    let attempts  = 0;
+    const maxAttempts = 40;
+
+    const finish = () => {
+      if (cancelled) return;
+      initialScrollDoneRef.current = true;
+      setScrollSpyEnabled(true);
+    };
+
+    const tryScroll = () => {
+      if (cancelled || initialScrollDoneRef.current) return;
+      attempts += 1;
+      if (scrollToDateSection(target, { behavior: 'auto' })) {
+        finish();
+        return;
+      }
+      if (attempts < maxAttempts) {
+        requestAnimationFrame(tryScroll);
+      } else {
+        finish();
+      }
+    };
+
+    tryScroll();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, grouped, todayStr, scrollToDateSection]);
 
   if (!machines.length) {
     return (
@@ -534,11 +763,11 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
 
       {/* ── Top bar ── */}
       <div className="flex-shrink-0 flex flex-col gap-2 border-b border-gray-700/30 bg-gray-900/50 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:px-4">
-        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
+        <div className="flex w-full min-w-0 items-center gap-2 sm:flex-1">
           <select
             value={filterMachineId}
             onChange={(e) => setFilterMachineId(e.target.value)}
-            className="w-full min-w-0 text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500 sm:w-auto sm:min-w-[11rem]"
+            className="min-w-0 flex-1 text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500 sm:flex-none sm:w-auto sm:min-w-[11rem]"
           >
             <option value="">{t('production.scheduleAllMachines')}</option>
             {machines.map((m) => (
@@ -546,8 +775,27 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
             ))}
           </select>
 
+          <span
+            className="hidden text-[11px] text-cyan-500/90 tabular-nums sm:inline"
+            title="ปฏิทินระบบ (Asia/Bangkok)"
+          >
+            {t('production.scheduleToday')}: {fmtDateLabel(todayStr)}
+          </span>
+
           {grouped.length > 0 && (
-            <span className="text-xs text-gray-500">
+            <span className="hidden text-xs text-gray-500 sm:inline">
+              {t('production.scheduleDateRangeMeta', { days: grouped.length, rows: allRows.length })}
+            </span>
+          )}
+
+          {onExit && (
+            <ProductionViewExitButton onClick={onExit} size="sm" className="ml-auto shrink-0" />
+          )}
+        </div>
+
+        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
+          {grouped.length > 0 && (
+            <span className="text-xs text-gray-500 sm:hidden">
               {t('production.scheduleDateRangeMeta', { days: grouped.length, rows: allRows.length })}
             </span>
           )}
@@ -578,18 +826,6 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
               {t('production.planSynced')}{lastSyncAt.toLocaleTimeString()}
             </span>
           )}
-          {/* Debug toggle */}
-          <button
-            onClick={() => setShowDebug((v) => !v)}
-            title={t('production.openDebug')}
-            className={`text-xs px-2.5 py-1.5 rounded-lg border transition-all ${
-              showDebug
-                ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-                : 'border-gray-700/50 text-gray-600 hover:text-gray-400'
-            }`}
-          >
-            Debug
-          </button>
           <button
             onClick={fetchAll}
             disabled={loading}
@@ -626,8 +862,16 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
       {/* ── Date strip ── */}
       <DateStrip
         availableDates={availableDates}
-        selectedDate={selectedDateKey}
-        onSelect={setSelectedDateKey}
+        selectedDate={activeDateKey}
+        onSelect={scrollToDate}
+        todayStr={todayStr}
+      />
+
+      <ViewingDateBar
+        dateKey={activeDateKey}
+        rowCount={activeRowCount}
+        todayStr={todayStr}
+        t={t}
       />
 
       {/* ── Scrollable content ── */}
@@ -641,31 +885,6 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
                 d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <pre className="whitespace-pre-wrap leading-relaxed">{errors.join('\n')}</pre>
-          </div>
-        )}
-
-        {/* Debug panel */}
-        {showDebug && (
-          <div className="bg-gray-900 border border-amber-500/20 rounded-xl p-4 text-xs">
-            <p className="text-amber-400 font-semibold mb-2">{t('production.scheduleDebugInfo')}</p>
-            {rawSamples.length === 0 && !loading && (
-              <p className="text-gray-600">{t('production.scheduleDebugNoData')}</p>
-            )}
-            <div className="space-y-3">
-              {rawSamples.map((s, i) => (
-                <div key={i}>
-                  <p className="text-gray-400 font-semibold mb-1">
-                    {s.machine} — <span className="text-cyan-400">{t('production.scheduleDebugRows', { count: s.count })}</span>
-                    {s.count > 0 ? '' : ' (ว่าง)'}
-                  </p>
-                  {s.sample && (
-                    <pre className="text-[10px] text-gray-500 bg-gray-950 rounded p-2 overflow-x-auto max-h-32">
-                      {JSON.stringify(s.sample, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         )}
 
@@ -688,12 +907,6 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
             </svg>
             <p className="text-sm">{t('production.scheduleGasNoData')}</p>
             <p className="text-xs opacity-70">{t('production.scheduleGasNoDataHint')}</p>
-            <button
-              onClick={() => setShowDebug(true)}
-              className="mt-2 text-xs text-amber-400 border border-amber-500/30 px-3 py-1.5 rounded-lg hover:bg-amber-500/10 transition-all"
-            >
-              {t('production.scheduleOpenDebug')}
-            </button>
           </div>
         )}
 
@@ -703,8 +916,8 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap }) 
             key={dateKey}
             dateKey={dateKey}
             rows={rows}
-            isToday={dateKey === TODAY_STR}
-            isPast={dateKey < TODAY_STR}
+            isToday={compareBangkokDates(dateKey, todayStr) === 0}
+            isPast={isBangkokDateBefore(dateKey, todayStr)}
             onAddToQueue={onAddToQueue}
             onRemoveFromQueue={onRemoveFromQueue}
             productDetails={productDetails}
