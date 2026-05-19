@@ -389,6 +389,7 @@ export default {
         noItemsInQueue: 'ยังไม่มีรายการในคิว',
         switchBtn: 'Switch',
         goodListTitle: 'ของดี (Progress)',
+        goodWeightOutOfRangeHint: 'ของดี — น้ำหนักอยู่นอกช่วง Min–Max (ยังนับเป็นของดีตามปกติ)',
         ngListTitle: 'ของเสีย (NG)',
         totalWeight: 'น้ำหนักรวม',
         latest: 'ล่าสุด',

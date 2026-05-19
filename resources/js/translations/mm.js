@@ -389,6 +389,7 @@ export default {
         noItemsInQueue: 'တန်းစောင့်တွင် Order မရှိသေးပါ',
         switchBtn: 'လဲရန်',
         goodListTitle: 'ကောင်းသော (Progress)',
+        goodWeightOutOfRangeHint: 'ကောင်းသော — အလေးချိန် Min–Max ပြင်ပ (ကောင်းသော အဖြစ် ရေတွက်ဆက်မည်)',
         ngListTitle: 'ညံ့ဖျင်းသော (NG)',
         totalWeight: 'အလေးချိန်စုစုပေါင်း',
         latest: 'နောက်ဆုံး',

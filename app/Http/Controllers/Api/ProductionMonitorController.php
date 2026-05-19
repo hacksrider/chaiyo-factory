@@ -2530,6 +2530,11 @@ class ProductionMonitorController extends Controller
         $goods = collect($events)->where('type', 'good');
         $ngs = collect($events)->where('type', 'ng');
 
+        $session = ProductionSession::query()
+            ->where('machine_id', $machineId)
+            ->where('session_run_ulid', $sessionRunUlid)
+            ->first();
+
         return response()->json([
             'detail' => [
                 'events' => $events,
@@ -2538,6 +2543,9 @@ class ProductionMonitorController extends Controller
                     'ng'         => $ngs->count(),
                     'totalLines' => count($events),
                 ],
+                'productCode' => $session?->product_code,
+                'minWeight'   => $session?->min_weight !== null ? (float) $session->min_weight : null,
+                'maxWeight'   => $session?->max_weight !== null ? (float) $session->max_weight : null,
             ],
         ]);
     }

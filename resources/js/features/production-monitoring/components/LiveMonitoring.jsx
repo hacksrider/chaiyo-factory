@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { scaleEventDedupKey } from '../utils/scaleEventDedup';
+import { isGoodWeightOutsideMinMax } from '../utils/weightRangeCheck';
 import {
   formatProductionDateBangkok,
   formatProductionTimeBangkok,
@@ -312,7 +313,7 @@ const FIELD = 'w-full bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 te
 
 // ─── WeightEventListModal — รายการกดตาชั่งแต่ละครั้ง ─────────────────────────
 
-const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
+const WeightEventListModal = ({ type, events, totalWeight, minWeight, maxWeight, onClose }) => {
   const isGood = type === 'good';
   const { language } = useLanguage();
   const { t } = useTranslation(language);
@@ -438,6 +439,9 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
             list.map((ev, idx) => {
               const when = liveEvInstant(ev);
               const datePart = formatProductionDateBangkok(when);
+              const outOfRange = isGood
+                && isGoodWeightOutsideMinMax(ev.weight, minWeight, maxWeight);
+              const weightClass = outOfRange ? 'text-red-400' : accent.row;
 
               return (
               <div
@@ -449,7 +453,10 @@ const WeightEventListModal = ({ type, events, totalWeight, onClose }) => {
                   {sortMode === 'asc' ? (idx + 1) : (list.length - idx)}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-mono font-semibold ${accent.row}`}>
+                  <p
+                    className={`text-sm font-mono font-semibold ${weightClass}`}
+                    title={outOfRange ? t('production.goodWeightOutOfRangeHint') : undefined}
+                  >
                     {parseFloat(ev.weight).toFixed(3)} kg
                   </p>
                   <p className="text-[11px] text-gray-500 mt-0.5">
@@ -885,6 +892,8 @@ const LiveMonitoring = ({
           type="good"
           events={machineState.goodEvents ?? []}
           totalWeight={machineState.totalGoodWeight ?? 0}
+          minWeight={machineState.minWeight}
+          maxWeight={machineState.maxWeight}
           onClose={() => setShowGoodList(false)}
         />
       )}

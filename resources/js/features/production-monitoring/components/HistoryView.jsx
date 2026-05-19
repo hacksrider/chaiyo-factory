@@ -9,6 +9,7 @@ import {
   bangkokDayEndUtcMs,
 } from '../utils/formatProductionBangkok';
 import ProductionViewExitButton from './ProductionViewExitButton';
+import { isGoodWeightOutsideMinMax } from '../utils/weightRangeCheck';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -462,6 +463,9 @@ const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
     }
   };
 
+  const detailMinWeight = detailData?.minWeight ?? null;
+  const detailMaxWeight = detailData?.maxWeight ?? null;
+
   const sortedDetailEvents = useMemo(() => {
     const events = Array.isArray(detailData?.events) ? detailData.events : [];
     const rows = [...events];
@@ -831,7 +835,10 @@ const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
                           </tr>
                         </thead>
                         <tbody>
-                          {sortedDetailEvents.map((ev, idx) => (
+                          {sortedDetailEvents.map((ev, idx) => {
+                            const outOfRange = ev?.type === 'good'
+                              && isGoodWeightOutsideMinMax(ev?.weight, detailMinWeight, detailMaxWeight);
+                            return (
                             <tr key={ev?.id ?? `${idx}-${ev?.pressedAt}-${ev?.lineOrdinal ?? ev?.seq}`} className="border-t border-gray-800/60 hover:bg-gray-800/30 transition-colors">
                               <td className="px-2 py-1.5 text-center font-mono text-[11px] text-gray-300 whitespace-nowrap">
                                 {ev?.lineOrdinal ?? ev?.seq ?? '—'}
@@ -862,11 +869,17 @@ const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
                                   </span>
                                 )}
                               </td>
-                              <td className="px-2 py-1.5 text-center font-mono text-[11px] text-gray-300 whitespace-nowrap">
+                              <td
+                                className={`px-2 py-1.5 text-center font-mono text-[11px] whitespace-nowrap ${
+                                  outOfRange ? 'text-red-400 font-semibold' : 'text-gray-300'
+                                }`}
+                                title={outOfRange ? t('production.goodWeightOutOfRangeHint') : undefined}
+                              >
                                 {ev?.weight ?? '—'}
                               </td>
                             </tr>
-                          ))}
+                          );
+                          })}
                         </tbody>
                       </table>
                     </div>
