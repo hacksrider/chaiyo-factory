@@ -31,11 +31,24 @@ const groupByZone = (machines, unzoned) => {
   return sorted.map((zone) => ({ zone, machines: map[zone] }));
 };
 
-const MachineSidebar = ({ machines, selectedMachineId, onSelectMachine, allStates, loading, onClose, ledChangedMachineIds }) => {
+const MachineSidebar = ({
+  machines,
+  selectedMachineId,
+  onSelectMachine,
+  allStates,
+  loading,
+  syncing = false,
+  onSync,
+  lastSyncAt,
+  syncError,
+  onClose,
+  ledChangedMachineIds,
+}) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
   const UNZONED = t('production.zoneUnspecified');
+  const isSyncBusy = loading || syncing;
 
   const liveCount = machines.filter(
     (m) => (allStates[m.id] ?? DEFAULT_MACHINE_STATE).mode === 'live',
@@ -53,9 +66,33 @@ const MachineSidebar = ({ machines, selectedMachineId, onSelectMachine, allState
               loading ? 'bg-gray-600' : 'bg-cyan-400 animate-pulse'
             }`}
           />
-          <span className="text-xs font-semibold text-cyan-400 tracking-widest uppercase flex-1">
+          <span className="text-xs font-semibold text-cyan-400 tracking-widest uppercase flex-1 min-w-0 truncate">
             {t('production.sidebarHdpeLines')}
           </span>
+          {onSync && (
+            <button
+              type="button"
+              onClick={onSync}
+              disabled={isSyncBusy}
+              title={t('production.titleRefetchMachines')}
+              aria-label={t('production.titleRefetchMachines')}
+              className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-gray-600/80 bg-gray-800/80 text-gray-400 transition hover:border-cyan-500/50 hover:bg-gray-800 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <svg
+                className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+            </button>
+          )}
           {/* Close button — mobile drawer only */}
           {onClose && (
             <button
@@ -72,16 +109,56 @@ const MachineSidebar = ({ machines, selectedMachineId, onSelectMachine, allState
         <p className="text-xs text-gray-500">
           {loading ? (
             <span className="text-gray-600">{t('production.sidebarFetchingSettings')}</span>
+          ) : syncing ? (
+            <span className="text-cyan-500/90">{t('production.syncing')}</span>
           ) : (
             t('production.sidebarLinesActive', { live: liveCount, total: machines.length })
           )}
         </p>
+        {lastSyncAt && !loading && !syncing && (
+          <p className="mt-1 text-[10px] text-gray-600 tabular-nums">
+            {t('production.syncedAt')}{' '}
+            {lastSyncAt.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+          </p>
+        )}
+        {syncError && !loading && (
+          <p className="mt-1.5 text-[10px] text-amber-400/90 leading-snug" title={syncError}>
+            {syncError}
+          </p>
+        )}
       </div>
 
       {/* Machine list */}
       <div className="flex-1 overflow-y-auto py-1">
         {loading ? (
           Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
+        ) : machines.length === 0 ? (
+          <div className="px-4 py-8 text-center">
+            <p className="text-xs text-gray-500 mb-3">{t('production.noMachinesFound')}</p>
+            {onSync && (
+              <button
+                type="button"
+                onClick={onSync}
+                disabled={isSyncBusy}
+                className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <svg
+                  className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                  />
+                </svg>
+                {syncing ? t('production.syncing') : t('production.sync')}
+              </button>
+            )}
+          </div>
         ) : (
           zoneGroups.map(({ zone, machines: zoneMachines }) => (
             <div key={zone}>

@@ -538,7 +538,7 @@ export default {
         scheduleRowCount: (params) => `${params.count} แถว`,
         scheduleDebugInfo: 'Debug — ข้อมูลที่ได้รับจาก GAS',
         scheduleDebugNoData: 'ยังไม่มีข้อมูล — กด Sync',
-        scheduleNoMachines: 'ไม่พบเครื่องจักร — กด Sync Settings ก่อน',
+        scheduleNoMachines: 'ไม่พบเครื่องจักร — กดปุ่ม Sync ในเมนูเครื่องด้านซ้าย (หรือปุ่มด้านล่าง)',
         scheduleColMachine: 'เครื่อง',
         scheduleColOrderId: 'เลขใบขอ',
         scheduleColProduct: 'ชื่อ / รหัสสินค้า',

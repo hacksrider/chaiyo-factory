@@ -303,7 +303,7 @@ const ProductionMonitoring = () => {
 
   const [ledChangedMachineIds, setLedChangedMachineIds] = useState(new Set());
 
-  const { machines, loading, error, lastSyncAt, refresh } = useMachineSettings();
+  const { machines, loading, syncing, error, lastSyncAt, refresh } = useMachineSettings();
   const {
     allStates,
     getMachineState,
@@ -1133,7 +1133,7 @@ const ProductionMonitoring = () => {
   }
 
   // views ที่แสดง sidebar
-  const hasSidebar = isLedPage || view === 'machines';
+  const hasSidebar = isLedPage || view === 'machines' || view === 'schedule';
 
   return (
     <div className="flex flex-col h-[100dvh] bg-gray-950 text-white overflow-hidden">
@@ -1398,6 +1398,10 @@ const ProductionMonitoring = () => {
                 onSelectMachine={handleSelectMachine}
                 allStates={allStates}
                 loading={loading}
+                syncing={syncing}
+                onSync={refresh}
+                lastSyncAt={lastSyncAt}
+                syncError={error}
                 onClose={() => setSidebarOpen(false)}
                 ledChangedMachineIds={ledChangedMachineIds}
               />
@@ -1417,8 +1421,16 @@ const ProductionMonitoring = () => {
                 />
               )}
               {!loading && machines.length === 0 && (
-                <div className="flex-1 flex items-center justify-center text-gray-600">
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-600 px-4">
                   <p className="text-sm">{t('production.noMachinesFound')}</p>
+                  <button
+                    type="button"
+                    onClick={refresh}
+                    disabled={loading || syncing}
+                    className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {syncing ? t('production.syncing') : t('production.sync')}
+                  </button>
                 </div>
               )}
             </div>
@@ -1432,25 +1444,44 @@ const ProductionMonitoring = () => {
           </div>
         )}
 
-        {/* Schedule view — cross-machine daily production table (full width) */}
+        {/* Schedule view — cross-machine daily production table + sidebar สำหรับ Sync เครื่อง */}
         {!isLedPage && view === 'schedule' && (
-          <div className="flex-1 overflow-hidden flex flex-col bg-gray-900/20">
-            {loading ? (
-              <LoadingSplash />
-            ) : (
-              <ScheduleView
-                onExit={handleExitView}
+          <>
+            <SidebarDrawer open={sidebarOpen} onClose={() => setSidebarOpen(false)}>
+              <MachineSidebar
                 machines={machines}
-                queuedMap={queuedMap}
-                onAddToQueue={canManageProduction
-                  ? (machineId, item) => handleDbAddToQueue(machineId, item)
-                  : undefined}
-                onRemoveFromQueue={canManageProduction
-                  ? (machineId, queueId) => handleDbRemoveFromQueue(machineId, queueId)
-                  : undefined}
+                selectedMachineId={selectedMachineId}
+                onSelectMachine={handleSelectMachine}
+                allStates={allStates}
+                loading={loading}
+                syncing={syncing}
+                onSync={refresh}
+                lastSyncAt={lastSyncAt}
+                syncError={error}
+                onClose={() => setSidebarOpen(false)}
+                ledChangedMachineIds={ledChangedMachineIds}
               />
-            )}
-          </div>
+            </SidebarDrawer>
+            <div className="flex-1 overflow-hidden flex flex-col bg-gray-900/20 min-w-0">
+              {loading ? (
+                <LoadingSplash />
+              ) : (
+                <ScheduleView
+                  onExit={handleExitView}
+                  machines={machines}
+                  queuedMap={queuedMap}
+                  onSyncMachines={refresh}
+                  syncing={syncing}
+                  onAddToQueue={canManageProduction
+                    ? (machineId, item) => handleDbAddToQueue(machineId, item)
+                    : undefined}
+                  onRemoveFromQueue={canManageProduction
+                    ? (machineId, queueId) => handleDbRemoveFromQueue(machineId, queueId)
+                    : undefined}
+                />
+              )}
+            </div>
+          </>
         )}
 
         {/* Machine sidebar + content (hidden when history is active) */}
@@ -1462,6 +1493,10 @@ const ProductionMonitoring = () => {
             onSelectMachine={handleSelectMachine}
             allStates={allStates}
             loading={loading}
+            syncing={syncing}
+            onSync={refresh}
+            lastSyncAt={lastSyncAt}
+            syncError={error}
             onClose={() => setSidebarOpen(false)}
             ledChangedMachineIds={ledChangedMachineIds}
           />

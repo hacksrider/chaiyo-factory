@@ -558,7 +558,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
 
 // ─── ScheduleView ─────────────────────────────────────────────────────────────
 
-const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap, onExit }) => {
+const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap, onExit, onSyncMachines, syncing = false }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
   const { today: todayStr, yesterday: yesterdayStr } = useProductionCalendar();
@@ -752,8 +752,18 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap, on
 
   if (!machines.length) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-600">
-        <p className="text-sm">{t('production.scheduleNoMachines')}</p>
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-600 px-4">
+        <p className="text-sm text-center">{t('production.scheduleNoMachines')}</p>
+        {onSyncMachines && (
+          <button
+            type="button"
+            onClick={onSyncMachines}
+            disabled={syncing}
+            className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {syncing ? t('production.syncing') : t('production.sync')}
+          </button>
+        )}
       </div>
     );
   }

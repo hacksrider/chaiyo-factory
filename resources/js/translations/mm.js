@@ -538,7 +538,7 @@ export default {
         scheduleRowCount: (params) => `${params.count} တန်း`,
         scheduleDebugInfo: 'Debug — GAS မှ လက်ခံရရှိသောဒေတာ',
         scheduleDebugNoData: 'ဒေတာမရှိသေးပါ — Sync နှိပ်ပါ',
-        scheduleNoMachines: 'စက်မတွေ့ပါ — Sync Settings ဦးနှိပ်ပါ',
+        scheduleNoMachines: 'စက်မတွေ့ပါ — ဘယ်ဘက်မီနူးရှိ Sync ကိုနှိပ်ပါ (သို့မဟုတ် အောက်ပါခလုတ်)',
         scheduleColMachine: 'စက်',
         scheduleColOrderId: 'Order နံပါတ်',
         scheduleColProduct: 'ကုန်ပစ္စည်းအမည် / ကုဒ်',
