@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import { DEFAULT_MACHINE_STATE } from '../hooks/useProductionStates';
@@ -49,6 +49,95 @@ function fmtWeight(n) {
 function isMaintenanceLedText(text) {
   return /แก้งาน|break\s*down|breakdown|fixing|fix/i.test(String(text || ''));
 }
+
+function ledColorFromState(state) {
+  if (!state || state.r == null) return null;
+  return `rgb(${state.r}, ${state.g ?? 0}, ${state.b ?? 0})`;
+}
+
+function ledStateToPatch(state) {
+  if (!state) return {};
+  return {
+    text: state.text ?? null,
+    color: ledColorFromState(state),
+    speed: state.speed ?? 50,
+  };
+}
+
+// ─── LedMarqueeText ───────────────────────────────────────────────────────────
+
+const LedMarqueeText = ({ text, fontSize, color, rowKey }) => {
+  const boxRef = useRef(null);
+  const textRef = useRef(null);
+  const [scroll, setScroll] = useState(false);
+  const [boxW, setBoxW] = useState(0);
+  const [textW, setTextW] = useState(0);
+
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const el = textRef.current;
+    if (!box || !el) return undefined;
+    const measure = () => {
+      setBoxW(box.clientWidth);
+      setTextW(el.scrollWidth);
+      setScroll(el.scrollWidth > box.clientWidth + 2);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [text, fontSize]);
+
+  const animName = `ledScroll_${String(rowKey).replace(/\W/g, '_')}`;
+  const duration = scroll && boxW > 0 && textW > 0
+    ? Math.max(4, (boxW + textW) / 36)
+    : 0;
+
+  if (!text) {
+    return <span className="truncate font-medium opacity-60">—</span>;
+  }
+
+  return (
+    <div ref={boxRef} className="overflow-hidden min-w-0 flex-1 relative flex items-center">
+      <span
+        ref={textRef}
+        className="absolute invisible whitespace-nowrap pointer-events-none"
+        style={{ fontSize }}
+        aria-hidden
+      >
+        {text}
+      </span>
+      {scroll ? (
+        <>
+          <style>{`
+            @keyframes ${animName} {
+              from { transform: translateX(${Math.round(boxW)}px); }
+              to   { transform: translateX(-${Math.round(textW)}px); }
+            }
+          `}</style>
+          <span
+            className="inline-block whitespace-nowrap font-medium"
+            style={{
+              fontSize,
+              color: color ?? 'inherit',
+              animation: `${animName} ${duration}s linear infinite`,
+            }}
+          >
+            {text}
+          </span>
+        </>
+      ) : (
+        <span
+          className="truncate font-medium"
+          style={{ fontSize, color: color ?? 'inherit' }}
+          title={text}
+        >
+          {text}
+        </span>
+      )}
+    </div>
+  );
+};
 
 function resolveMachineStatus(machine, state, ledText, t) {
   const isActive = machine.status?.toLowerCase() !== 'unactive';
@@ -138,6 +227,7 @@ function useLedBoardStatuses(machines, sseLedByMachine) {
                 text: statusRes?.state?.text ?? null,
                 online: hbRes?.online ?? false,
                 noIp: false,
+                ...ledStateToPatch(statusRes?.state),
               },
             ];
           } catch {
@@ -328,12 +418,12 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColMachine')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColStatus')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColEmployee')}</th>
-              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColLed')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColProduct')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColGoodQty')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColGoodWeight')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColNgWeight')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColTarget')}</th>
-              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColProduct')}</th>
+              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColLed')}</th>
             </tr>
           </thead>
           <tbody>
@@ -370,28 +460,21 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
                     {state.mode === 'live' && state.employeeId ? state.employeeId : '—'}
                   </td>
                   <td className="align-middle min-w-0" style={cellPad}>
-                    <div className="flex items-center min-w-0" style={{ gap: Math.max(4, m.padX * 0.5) }}>
-                      <span
-                        className={`rounded-full flex-shrink-0 ${
-                          led.noIp
-                            ? 'bg-gray-500'
-                            : led.online
-                              ? 'bg-green-300 shadow-[0_0_6px_rgba(134,239,172,0.8)]'
-                              : 'bg-red-400 animate-pulse'
-                        }`}
-                        style={{ width: m.dot, height: m.dot }}
-                        title={
-                          led.noIp
-                            ? t('production.ledStatusNoIp')
-                            : led.online
-                              ? t('production.ledStatusOnline')
-                              : t('production.ledStatusOffline')
-                        }
-                      />
-                      <span className="truncate font-medium min-w-0" title={ledLabel}>
-                        {ledLabel}
-                      </span>
+                    <div
+                      className="truncate font-medium"
+                      title={state.productName || state.productCode || ''}
+                    >
+                      {state.productCode || state.productName || '—'}
                     </div>
+                    {state.orderId && (
+                      <div
+                        className={`font-mono truncate ${status.key === 'fix' ? 'text-black/55' : 'text-white/55'}`}
+                        style={{ fontSize: m.subFont }}
+                        title={state.orderId}
+                      >
+                        {state.orderId}
+                      </div>
+                    )}
                   </td>
                   <td className="font-bold font-mono truncate align-middle tabular-nums" style={cellPad}>
                     {fmtNum(produced)}
@@ -419,21 +502,31 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
                     )}
                   </td>
                   <td className="align-middle min-w-0" style={cellPad}>
-                    <div
-                      className="truncate font-medium"
-                      title={state.productName || state.productCode || ''}
-                    >
-                      {state.productCode || state.productName || '—'}
+                    <div className="flex items-center min-w-0 h-full" style={{ gap: Math.max(4, m.padX * 0.5) }}>
+                      <span
+                        className={`rounded-full flex-shrink-0 ${
+                          led.noIp
+                            ? 'bg-gray-500'
+                            : led.online
+                              ? 'bg-green-300 shadow-[0_0_6px_rgba(134,239,172,0.8)]'
+                              : 'bg-red-400 animate-pulse'
+                        }`}
+                        style={{ width: m.dot, height: m.dot }}
+                        title={
+                          led.noIp
+                            ? t('production.ledStatusNoIp')
+                            : led.online
+                              ? t('production.ledStatusOnline')
+                              : t('production.ledStatusOffline')
+                        }
+                      />
+                      <LedMarqueeText
+                        text={led.noIp ? t('production.ledStatusNoIp') : ledLabel}
+                        fontSize={m.fontSize}
+                        color={led.color ?? (status.key === 'fix' ? '#000' : undefined)}
+                        rowKey={machine.id}
+                      />
                     </div>
-                    {state.orderId && (
-                      <div
-                        className={`font-mono truncate ${status.key === 'fix' ? 'text-black/55' : 'text-white/55'}`}
-                        style={{ fontSize: m.subFont }}
-                        title={state.orderId}
-                      >
-                        {state.orderId}
-                      </div>
-                    )}
                   </td>
                 </tr>
               );

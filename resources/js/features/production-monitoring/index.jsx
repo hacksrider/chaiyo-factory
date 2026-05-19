@@ -813,6 +813,8 @@ const ProductionMonitoring = () => {
       [machineId]: {
         text: state.text ?? null,
         updatedAt: state.updatedAt ?? Date.now(),
+        color: state.r != null ? `rgb(${state.r}, ${state.g ?? 0}, ${state.b ?? 0})` : undefined,
+        speed: state.speed ?? 50,
       },
     }));
   }, []);
