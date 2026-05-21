@@ -640,12 +640,13 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
   const [text,       setText]      = useState('');
   const [errors,     setErrors]    = useState({});
 
+  // ตั้งค่าเริ่มต้นเฉพาะตอนเปิด popup — อย่าผูก currentConfig (SSE/merge จะทับขณะพิมพ์)
   useEffect(() => {
-    if (isOpen) {
-      setText(currentConfig?.text ?? '');
-      setErrors({});
-    }
-  }, [isOpen, currentConfig]);
+    if (!isOpen) return;
+    setText(currentConfig?.text ?? '');
+    setErrors({});
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once per open
+  }, [isOpen]);
 
   const handleConfirm = () => {
     if (!text.trim()) { setErrors({ text: 'กรุณาระบุข้อความ' }); return; }

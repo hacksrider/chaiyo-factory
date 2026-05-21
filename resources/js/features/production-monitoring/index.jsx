@@ -1706,6 +1706,28 @@ const ProductionMonitoring = () => {
                       }
                     }}
                     onClosePausedOrder={() => clearPausedOrder(selectedMachineId)}
+                    onScaleSessionStarted={async (sess) => {
+                      const mid = selectedMachineId;
+                      if (!mid || !sess) return;
+                      applyDbSessionUpdate({ machineId: mid, session: sess });
+                      try {
+                        const res = await dbGetQueue(mid);
+                        if (Array.isArray(res?.queue)) setQueueFromDb(mid, res.queue);
+                      } catch {
+                        /* queue refresh optional */
+                      }
+                    }}
+                    onCancelAwaitingScale={async () => {
+                      const mid = selectedMachineId;
+                      if (!mid) return;
+                      resetMachineState(mid);
+                      try {
+                        const res = await dbGetQueue(mid);
+                        if (Array.isArray(res?.queue)) setQueueFromDb(mid, res.queue);
+                      } catch {
+                        /* queue refresh optional */
+                      }
+                    }}
                     onStartProduction={(data) => {
                       const mid = selectedMachineId;
                       // Remove from queue (DB + local)

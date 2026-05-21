@@ -350,6 +350,8 @@ export default {
         emptyQueueHint: 'รอรายการจากแผนผลิต',
         sendToScale: 'ส่งไปตาชั่ง',
         waitingScaleConfirm: 'กำลังรอการยืนยันจากตาชั่ง...',
+        cancelAwaitingScale: 'ยกเลิกรอตาชั่ง',
+        cancelAwaitingScaleTitle: 'ยกเลิกการรอตาชั่ง — กลับไปคิวผลิต (ไม่เริ่มงาน)',
         resumeWithSameData: 'ดำเนินต่อ — รหัสพนักงานเดิม',
         resumeWithScale: 'กรอกข้อมูลใหม่ที่ตาชั่ง',
         scaleResumeInstruction: 'ส่งไปตาชั่ง → กด A/B/C + รหัสพนักงาน → D',

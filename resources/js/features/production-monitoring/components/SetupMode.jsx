@@ -48,7 +48,7 @@ const NoticeBanner = ({ notice }) =>
 const SCALE_CONFIRM_WAIT_MS = 10 * 60 * 1000;
 
 /** แถบด้านบนเมื่อมีเซสชัน awaiting_scale — ให้เห็นชัดระหว่างรอตาชั่งหลังรีเฟรช */
-const MachineScaleWaitBanner = ({ t, sessionWait }) => {
+const MachineScaleWaitBanner = ({ t, sessionWait, canCancel, onCancel, cancelling }) => {
   const [, pulse] = useState(0);
   useEffect(() => {
     if (!sessionWait?.active) return undefined;
@@ -85,6 +85,17 @@ const MachineScaleWaitBanner = ({ t, sessionWait }) => {
         </p>
         <p className="text-[11px] text-amber-400/65 mt-0.5">{t('production.scaleInstruction')}</p>
       </div>
+      {canCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={cancelling}
+          title={t('production.cancelAwaitingScaleTitle')}
+          className="flex-shrink-0 rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-2 text-xs font-semibold text-red-300 transition hover:border-red-400/60 hover:bg-red-500/25 hover:text-red-100 disabled:opacity-50"
+        >
+          {cancelling ? t('common.loading') : t('production.cancelAwaitingScale')}
+        </button>
+      )}
     </div>
   );
 };
@@ -98,6 +109,8 @@ const QueueRow = ({
   interactive = true,
   onStart,
   onRemove,
+  onCancelAwaitingScale,
+  onScaleSessionStarted,
   serverAwaitingScale = false,
   serverSessionStartedAt = null,
 }) => {
@@ -106,6 +119,7 @@ const QueueRow = ({
   const [starting, setStarting] = useState(false);
   const startLockRef = useRef(false);
   const [notice, setNotice] = useState(null);
+  const [cancelling, setCancelling] = useState(false);
   const [, setTickPulse] = useState(0); // รีเรนเดอร์เหลือเวลาเมื่อ phase = waiting
   const { language } = useLanguage();
   const { t } = useTranslation(language);
@@ -218,7 +232,7 @@ const QueueRow = ({
 
     // สร้างเซสชันใน DB ก่อน — GET scale-confirm อ่านจาก production_sessions เท่านั้น
     try {
-      await dbStartSession(machineId, {
+      const startRes = await dbStartSession(machineId, {
         queueItemId:  item.id ?? null,
         orderId:      item.orderId,
         productCode:  item.productCode || '',
@@ -238,6 +252,8 @@ const QueueRow = ({
         minWeight:    item.minWeight ?? null,
         maxWeight:    item.maxWeight ?? null,
       });
+      const sess = startRes?.session ?? startRes;
+      if (sess && typeof sess === 'object') onScaleSessionStarted?.(sess);
     } catch (err) {
       setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
     }
@@ -314,6 +330,8 @@ const QueueRow = ({
 
   // ─── ยกเลิกการรอ ──────────────────────────────────────────────────
   const handleCancel = async () => {
+    if (cancelling) return;
+    setCancelling(true);
     stopPolling();
     hydratedAwaitingRef.current = false;
     try {
@@ -323,6 +341,13 @@ const QueueRow = ({
     }
     setPhase('idle');
     setNotice(null);
+    try {
+      await onCancelAwaitingScale?.();
+    } catch {
+      /* parent refresh */
+    } finally {
+      setCancelling(false);
+    }
   };
 
   // ─── เริ่มใหม่หลัง timeout ────────────────────────────────────────
@@ -432,10 +457,11 @@ const QueueRow = ({
           <button
             type="button"
             onClick={handleCancel}
-            title={t('production.cancel')}
-            className="flex-shrink-0 text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1 rounded"
+            disabled={cancelling}
+            title={t('production.cancelAwaitingScaleTitle')}
+            className="flex-shrink-0 rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-2 text-xs font-semibold text-red-300 transition hover:border-red-400/60 hover:bg-red-500/25 hover:text-red-100 disabled:opacity-50"
           >
-            {t('production.cancel')}
+            {cancelling ? t('common.loading') : t('production.cancelAwaitingScale')}
           </button>
           )}
         </div>
@@ -738,9 +764,12 @@ const SetupMode = ({
   onResumeOrder,
   onResumeWithScaleConfirm,
   onClosePausedOrder,
+  onCancelAwaitingScale,
+  onScaleSessionStarted,
 }) => {
   const [form, setForm]     = useState({ orderId: '', productName: '', targetQty: '' });
   const [notice, setNotice] = useState(null);
+  const [bannerCancelling, setBannerCancelling] = useState(false);
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
@@ -790,7 +819,24 @@ const SetupMode = ({
         </p>
       </div>
 
-      <MachineScaleWaitBanner t={t} sessionWait={sessionWait} />
+      <MachineScaleWaitBanner
+        t={t}
+        sessionWait={sessionWait}
+        canCancel={canManageProduction}
+        cancelling={bannerCancelling}
+        onCancel={async () => {
+          if (bannerCancelling) return;
+          setBannerCancelling(true);
+          try {
+            await dbCancelSession(machineId);
+            await onCancelAwaitingScale?.();
+          } catch {
+            /* best-effort */
+          } finally {
+            setBannerCancelling(false);
+          }
+        }}
+      />
 
       {/* ── Paused Order banner ── */}
       {pausedOrder && (
@@ -910,6 +956,8 @@ const SetupMode = ({
                 serverSessionStartedAt={
                   sessionWait.active && sessionWait.orderId === item.orderId ? sessionWait.startedAt : null
                 }
+                onCancelAwaitingScale={onCancelAwaitingScale}
+                onScaleSessionStarted={onScaleSessionStarted}
                 onStart={(queueItem, confirmation = {}) => onStartProduction({
                   queueItemId:  queueItem.id ?? null,
                   orderId:     queueItem.orderId,

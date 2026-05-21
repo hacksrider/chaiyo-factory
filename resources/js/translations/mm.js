@@ -350,6 +350,8 @@ export default {
         emptyQueueHint: 'ထုတ်လုပ်မှုအစီအစဉ်မှ Order ကိုစောင့်ဆိုင်းနေသည်',
         sendToScale: 'ချိန်ခွင်သို့ပို့ရန်',
         waitingScaleConfirm: 'ချိန်ခွင်မှ အတည်ပြုချက်စောင့်နေသည်...',
+        cancelAwaitingScale: 'ချိန်ခွင်စောင့်ခြင်းဖျက်သိမ်း',
+        cancelAwaitingScaleTitle: 'ချိန်ခွင်စောင့်ခြင်းဖျက်သိမ်း — ထုတ်လုပ်မှုမစတင်',
         resumeWithSameData: 'ဆက်ထုတ်ရန် — ဒေတာဟောင်း',
         resumeWithScale: 'ချိန်ခွင်တွင် ဒေတာသစ်ထည့်ရန်',
         scaleResumeInstruction: 'ချိန်ခွင်သို့ပို့ → A/B/C + ဝန်ထမ်းကုဒ် → D',
