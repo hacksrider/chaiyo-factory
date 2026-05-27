@@ -1,8 +1,10 @@
 <?php
 
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -13,6 +15,9 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trustProxies(at: '*');
+
+        // SPA login lives at /admin/login (React Router), not route('login').
+        $middleware->redirectGuestsTo('/admin/login');
 
         $middleware->api(prepend: [
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
@@ -30,5 +35,21 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // SSE/EventSource uses Accept: text/event-stream — not expectsJson().
+        // API routes must return 401 JSON, never redirect (avoids Route [login] errors + reconnect storms).
+        $exceptions->shouldRenderJsonWhen(function (Request $request, \Throwable $e) {
+            if ($request->is('api/*')) {
+                return true;
+            }
+
+            return $request->expectsJson();
+        });
+
+        $exceptions->render(function (AuthenticationException $e, Request $request) {
+            if (! $request->is('api/*') && ! $request->expectsJson()) {
+                return null;
+            }
+
+            return response()->json(['message' => $e->getMessage() ?: 'Unauthenticated.'], 401);
+        });
     })->create();

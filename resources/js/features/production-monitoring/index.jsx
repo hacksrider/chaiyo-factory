@@ -940,8 +940,9 @@ const ProductionMonitoring = () => {
     loadDbQueuesRef.current?.().catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Attach SSE — real-time push for all events
+  // Attach SSE — real-time push for all events (skip when logged out / no token)
   useRealtimeSync({
+    enabled: !!user,
     onMachineSession:    handleSseMachineSession,
     onScaleWeight:       handleSseScaleWeight,
     onProductionUpdated: handleSseProductionUpdated,

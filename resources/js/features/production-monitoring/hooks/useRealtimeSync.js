@@ -32,6 +32,37 @@ const MAX_BACKOFF   = 60_000;  // 60 s — ceiling
 const DEAD_TIMEOUT  = 30_000;  // 30 s without any event = dead connection
 const LS_TS_KEY     = 'prodmon_lastTs'; // localStorage key: JSON { [machineId]: number }
 
+/** Clear session and stop SSE when token is missing or rejected (401). */
+const handleAuthFailure = () => {
+  try {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+  } catch { /* ignore */ }
+  if (typeof window !== 'undefined' && !window.location.pathname.includes('/admin/login')) {
+    window.location.href = '/admin/login';
+  }
+};
+
+/** Returns true when the stored token is absent or /api/me returns 401. */
+const isAuthRejected = async () => {
+  let token;
+  try {
+    token = localStorage.getItem('auth_token');
+  } catch {
+    return true;
+  }
+  if (!token) return true;
+
+  try {
+    const res = await fetch('/api/me', {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    return res.status === 401;
+  } catch {
+    return false; // network blip — allow reconnect
+  }
+};
+
 // ── Backoff helpers ───────────────────────────────────────────────────────────
 
 /** Apply ±20% jitter to a delay value. */
@@ -71,10 +102,12 @@ const writeLastTs = (machineId, ts) => {
  * @param {function} [handlers.onConnected]          ({ latestId }) => void
  * @param {function} [handlers.onReconnect]          () => void — fires after every successful re-open (not first connect)
  * @param {function} [handlers.onStatusChange]       ('connecting'|'open'|'closed'|'error') => void
+ * @param {boolean}  [handlers.enabled=true]         — false skips SSE (e.g. logged out)
  *
  * @returns {{ statusRef: React.MutableRefObject<string>, reconnect: function }}
  */
 export const useRealtimeSync = ({
+  enabled = true,
   onMachineSession,
   onLedState,
   onLedUpdated,
@@ -95,6 +128,8 @@ export const useRealtimeSync = ({
   const deadTimerRef       = useRef(null);
   const mountedRef         = useRef(true);
   const isFirstConnectRef  = useRef(true); // suppresses onReconnect on initial open
+  const authStoppedRef     = useRef(false);
+  const authCheckRef       = useRef(null);
 
   // ── Stable refs for callbacks — avoids re-subscribing on every render ────
   const cbRefs = useRef({});
@@ -161,7 +196,19 @@ export const useRealtimeSync = ({
   }, [resetDeadTimer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const connect = useCallback(() => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || !enabled || authStoppedRef.current) return;
+
+    let token;
+    try {
+      token = localStorage.getItem('auth_token');
+    } catch {
+      token = null;
+    }
+    if (!token) {
+      setStatus('closed');
+      return;
+    }
+
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
@@ -176,11 +223,7 @@ export const useRealtimeSync = ({
     const urlCore = since > 0
       ? `${SSE_URL}?lastId=${lastEventIdRef.current}&since=${since}`
       : `${SSE_URL}?lastId=${lastEventIdRef.current}`;
-    let url = urlCore;
-    try {
-      const tok = localStorage.getItem('auth_token');
-      if (tok) url = `${urlCore}&token=${encodeURIComponent(tok)}`;
-    } catch { /* ignore */ }
+    const url = `${urlCore}&token=${encodeURIComponent(token)}`;
 
     let es;
     try {
@@ -262,14 +305,34 @@ export const useRealtimeSync = ({
       setStatus('error');
       es.close();
       esRef.current = null;
-      scheduleReconnect(false);
-    };
-  }, [setStatus, resetDeadTimer, scheduleReconnect, makeHandler]);
 
-  // ── Mount / unmount ───────────────────────────────────────────────────────
+      if (authCheckRef.current) return;
+      authCheckRef.current = isAuthRejected().then((rejected) => {
+        authCheckRef.current = null;
+        if (!mountedRef.current) return;
+        if (rejected) {
+          authStoppedRef.current = true;
+          if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+          handleAuthFailure();
+          return;
+        }
+        scheduleReconnect(false);
+      });
+    };
+  }, [enabled, setStatus, resetDeadTimer, scheduleReconnect, makeHandler]);
+
+  // ── Mount / unmount — reconnect when `enabled` flips on ───────────────────
   useEffect(() => {
     mountedRef.current = true;
-    connect();
+    if (enabled) {
+      authStoppedRef.current = false;
+      connect();
+    } else {
+      esRef.current?.close();
+      esRef.current = null;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      setStatus('closed');
+    }
 
     return () => {
       mountedRef.current = false;
@@ -278,7 +341,7 @@ export const useRealtimeSync = ({
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (deadTimerRef.current)     clearTimeout(deadTimerRef.current);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [enabled, connect, setStatus]);
 
   // ── Manual reconnect (called by parent when network comes back) ───────────
   const reconnect = useCallback(() => {
