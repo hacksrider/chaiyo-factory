@@ -1,0 +1,109 @@
+<?php
+
+/**
+ * เครื่องมือ Plesk (ไม่มี SSH) — ลบ config cache + ทดสอบ Google Sheet
+ *
+ * 1. ใน .env: MAINTENANCE_DIAGNOSE_KEY=รหัสลับยาวๆ
+ * 2. ล้าง cache:  https://โดเมน/plesk-tools.php?key=รหัส&action=clear-cache
+ * 3. ทด Google:  https://โดเมน/plesk-tools.php?key=รหัส&action=diagnose
+ * 4. ลบไฟล์นี้หลังใช้เสร็จ
+ */
+
+declare(strict_types=1);
+
+header('Content-Type: text/plain; charset=utf-8');
+
+function plesk_read_diagnose_key(): string
+{
+    $envFile = dirname(__DIR__).'/.env';
+    if (! is_readable($envFile)) {
+        return '';
+    }
+    foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+        if (str_starts_with($line, 'MAINTENANCE_DIAGNOSE_KEY=')) {
+            return trim(substr($line, strlen('MAINTENANCE_DIAGNOSE_KEY=')), " \t\"'");
+        }
+    }
+
+    return '';
+}
+
+function plesk_clear_laravel_cache(): array
+{
+    $base = dirname(__DIR__);
+    $targets = [
+        $base.'/bootstrap/cache/config.php',
+        $base.'/bootstrap/cache/routes-v7.php',
+        $base.'/bootstrap/cache/events.php',
+        $base.'/bootstrap/cache/services.php',
+        $base.'/bootstrap/cache/packages.php',
+    ];
+    $done = [];
+    foreach ($targets as $path) {
+        if (is_file($path) && @unlink($path)) {
+            $done[] = basename($path);
+        }
+    }
+
+    return $done;
+}
+
+$expectedKey = plesk_read_diagnose_key();
+$provided = (string) ($_GET['key'] ?? '');
+$action = (string) ($_GET['action'] ?? 'help');
+
+if ($expectedKey === '' || $provided === '' || ! hash_equals($expectedKey, $provided)) {
+    http_response_code(403);
+    exit("Forbidden\n\nตั้ง MAINTENANCE_DIAGNOSE_KEY ใน .env ก่อน\n".
+        "ตัวอย่าง: MAINTENANCE_DIAGNOSE_KEY=mySecretKey2026\n\n".
+        "แล้วเปิด:\n  plesk-tools.php?key=mySecretKey2026&action=clear-cache\n".
+        "  plesk-tools.php?key=mySecretKey2026&action=diagnose\n");
+}
+
+if ($action === 'clear-cache') {
+    $removed = plesk_clear_laravel_cache();
+    echo "ล้าง cache แล้ว (เทียบเท่า php artisan config:clear)\n\n";
+    if ($removed === []) {
+        echo "ไม่พบไฟล์ cache — อาจล้างไปแล้ว หรือยังไม่เคย config:cache\n";
+    } else {
+        echo "ลบแล้ว:\n";
+        foreach ($removed as $f) {
+            echo "  - bootstrap/cache/{$f}\n";
+        }
+    }
+    echo "\nรีเฟรชเว็บหลักได้เลย\n";
+    exit;
+}
+
+if ($action === 'diagnose') {
+    require dirname(__DIR__).'/vendor/autoload.php';
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+    header('Content-Type: application/json; charset=utf-8');
+    try {
+        $report = $app->make(App\Services\MaintenanceRegisterSheetService::class)->runDiagnostics();
+        echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'fatal' => $e->getMessage(),
+            'hints' => [
+                'แก้ .env แล้วเรียก ?action=clear-cache ก่อน',
+                'ตรวจ vendor/ ว่ามีจาก composer install',
+            ],
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
+echo "Plesk tools — ไม่ต้องใช้ SSH\n\n";
+echo "action=clear-cache  ล้าง config cache หลังแก้ .env\n";
+echo "action=diagnose     ทดสอบ Google Sheets (JSON)\n\n";
+echo "URL ตัวอย่าง:\n";
+echo "  ".(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http')
+    .'://'.($_SERVER['HTTP_HOST'] ?? 'your-domain')
+    .'/plesk-tools.php?key=***&action=clear-cache'."\n";

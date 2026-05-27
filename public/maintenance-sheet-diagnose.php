@@ -4,7 +4,7 @@
  * วินิจฉัย Google Sheet บน Plesk (ผ่าน PHP-FPM เหมือนเว็บจริง)
  *
  * 1. ใน .env ตั้ง: MAINTENANCE_DIAGNOSE_KEY=รหัสลับยาวๆ
- * 2. เปิด: https://your-domain/maintenance-sheet-diagnose.php?key=รหัสลับยาวๆ
+ * 2. แนะนำใช้ plesk-tools.php แทน (มี clear-cache + diagnose)
  * 3. ลบไฟล์นี้ออกหลังแก้เสร็จ
  */
 
