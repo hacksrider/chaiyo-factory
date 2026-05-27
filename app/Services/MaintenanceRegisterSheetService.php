@@ -92,6 +92,14 @@ class MaintenanceRegisterSheetService
             $report['hints'][] = 'อัปโหลด google-maintenance-register.json ไปที่ storage/app/ และ chmod 640 ให้ user ของ PHP-FPM อ่านได้';
         }
 
+        if (! ($report['php']['google_client_class'] ?? false)) {
+            $report['google']['status'] = 'missing_composer_package';
+            $report['hints'][] = 'ไม่พบ Google\\Client — รัน composer install --no-dev บน server หรืออัปโหลดโฟลเดอร์ vendor จากเครื่อง dev (Plesk: เมนู PHP Composer)';
+            $report['hints'][] = 'ต้องมี vendor/google/apiclient — แค่แชร์สเปรดชีตอย่างเดียวยังไม่พอ';
+
+            return $report;
+        }
+
         if (! $this->isEnabled()) {
             $report['google']['status'] = 'disabled_or_misconfigured';
 

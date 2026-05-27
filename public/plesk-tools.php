@@ -80,7 +80,23 @@ if ($action === 'clear-cache') {
 }
 
 if ($action === 'diagnose') {
-    require dirname(__DIR__).'/vendor/autoload.php';
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    $googleClientFile = dirname(__DIR__).'/vendor/google/apiclient/src/Client.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php\n\n".
+            "สาเหตุ: ยังไม่ได้รัน composer install บน server\n".
+            "บน Plesk (ไม่มี SSH): ใช้เมนู PHP Composer → Install หรืออัปโหลดโฟลเดอร์ vendor จากเครื่อง dev\n");
+    }
+    if (! is_file($googleClientFile)) {
+        http_response_code(500);
+        exit("ไม่พบ google/apiclient ใน vendor/\n\n".
+            "แพ็กเกจ google/apiclient ยังไม่ถูกติดตั้งบน server\n".
+            "แก้: Plesk → PHP Composer → composer install --no-dev\n".
+            "หรือบนเครื่อง dev รัน composer install --no-dev แล้ว zip โฟลเดอร์ vendor อัปโหลดทับ httpdocs/vendor\n");
+    }
+
+    require $vendorAutoload;
     $app = require dirname(__DIR__).'/bootstrap/app.php';
     $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
     header('Content-Type: application/json; charset=utf-8');
