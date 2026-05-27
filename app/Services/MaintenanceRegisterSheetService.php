@@ -20,9 +20,26 @@ class MaintenanceRegisterSheetService
             return false;
         }
         $id = (string) config('maintenance_register_sheet.spreadsheet_id');
-        $path = (string) config('maintenance_register_sheet.credentials_path');
 
-        return $id !== '' && $path !== '' && is_readable($path);
+        return $id !== '' && $this->credentialsPath() !== '' && is_readable($this->credentialsPath());
+    }
+
+    public function credentialsPath(): string
+    {
+        return (string) config('maintenance_register_sheet.credentials_path');
+    }
+
+    /** ข้อความสั้นๆ สำหรับ log / API (ไม่เปิดเผย path เต็มใน production) */
+    public function healthSummary(): array
+    {
+        $path = $this->credentialsPath();
+
+        return [
+            'enabled' => config('maintenance_register_sheet.enabled'),
+            'spreadsheet_configured' => (string) config('maintenance_register_sheet.spreadsheet_id') !== '',
+            'credentials_readable' => $path !== '' && is_readable($path),
+            'sheet_title' => (string) config('maintenance_register_sheet.sheet_title'),
+        ];
     }
 
     /**
@@ -41,6 +58,40 @@ class MaintenanceRegisterSheetService
         $meNumber = 'ME'.($maxMe + 1);
 
         return ['row' => $nextRow, 'seq_a' => $seqA, 'me_number' => $meNumber];
+    }
+
+    /**
+     * สำรองเมื่อ Google Sheets API ล้ม — อ่านเลข ME ล่าสุดจากฐานข้อมูล
+     *
+     * @return array{row: int, seq_a: int, me_number: string}
+     */
+    public function allocateNextIndicesFromDatabase(): array
+    {
+        $maxMe = 0;
+        MaintenanceRequest::query()
+            ->where('notification_number', 'like', 'ME%')
+            ->select('notification_number')
+            ->orderByDesc('id')
+            ->limit(500)
+            ->pluck('notification_number')
+            ->each(function (string $num) use (&$maxMe) {
+                if (preg_match('/^ME(\d+)$/i', trim($num), $m)) {
+                    $maxMe = max($maxMe, (int) $m[1]);
+                }
+            });
+
+        $maxRow = (int) (MaintenanceRequest::query()
+            ->whereNotNull('register_sheet_row')
+            ->max('register_sheet_row') ?? 1);
+
+        $nextMe = $maxMe + 1;
+        $nextRow = max(2, $maxRow + 1);
+
+        return [
+            'row' => $nextRow,
+            'seq_a' => $nextMe,
+            'me_number' => 'ME'.$nextMe,
+        ];
     }
 
     /** เขียนแถวเต็มหลังมี model ในฐานข้อมูลแล้ว */
@@ -404,9 +455,11 @@ class MaintenanceRegisterSheetService
 
     private function sheets(): Sheets
     {
-        $path = (string) config('maintenance_register_sheet.credentials_path');
-        if (! is_readable($path)) {
-            throw new RuntimeException('อ่านไฟล์ credential Google ไม่ได้: '.$path);
+        $path = $this->credentialsPath();
+        if ($path === '' || ! is_readable($path)) {
+            throw new RuntimeException(
+                'อ่านไฟล์ credential Google ไม่ได้ — ตรวจ GOOGLE_MAINTENANCE_REGISTER_CREDENTIALS และแชร์สเปรดชีตกับ service account'
+            );
         }
 
         $client = new GoogleClient;

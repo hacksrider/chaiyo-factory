@@ -546,7 +546,9 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
             setClearAfter(false);
             setFormOpen(true);
         } catch (e) {
-            showError(e.response?.data?.message || t('maintenance.saveFailed'));
+            const msg = e.response?.data?.message || t('maintenance.saveFailed');
+            const reason = e.response?.data?.reason;
+            showError(reason ? `${msg} (${reason})` : msg);
         }
     };
 
@@ -596,8 +598,12 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
                 showSuccess(t('maintenance.saved'));
             } else {
                 referenceFiles.forEach((f) => fd.append('reference_images[]', f));
-                await maintenanceAPI.create(fd);
-                showSuccess(t('maintenance.created'));
+                const { data } = await maintenanceAPI.create(fd);
+                if (data?.sheet_sync_warning) {
+                    showSuccess(data.message || t('maintenance.createdWithSheetWarning'));
+                } else {
+                    showSuccess(t('maintenance.created'));
+                }
                 setReferenceFiles([]);
             }
             setFormOpen(false);
@@ -605,7 +611,9 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
             refreshUnread();
             if (hubOpen) void loadHistory();
         }).catch((e) => {
-            showError(e.response?.data?.message || t('maintenance.saveFailed'));
+            const msg = e.response?.data?.message || t('maintenance.saveFailed');
+            const reason = e.response?.data?.reason;
+            showError(reason ? `${msg} (${reason})` : msg);
         });
     };
 
@@ -630,7 +638,9 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
                 setDetail(data);
             }
         }).catch((e) => {
-            showError(e.response?.data?.message || t('maintenance.saveFailed'));
+            const msg = e.response?.data?.message || t('maintenance.saveFailed');
+            const reason = e.response?.data?.reason;
+            showError(reason ? `${msg} (${reason})` : msg);
         });
     };
 
@@ -646,7 +656,9 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
             refreshUnread();
             if (hubOpen) void loadHistory();
         }).catch((e) => {
-            showError(e.response?.data?.message || t('maintenance.saveFailed'));
+            const msg = e.response?.data?.message || t('maintenance.saveFailed');
+            const reason = e.response?.data?.reason;
+            showError(reason ? `${msg} (${reason})` : msg);
         });
     };
 
@@ -666,7 +678,9 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
                 setDetail(data);
             }
         }).catch((e) => {
-            showError(e.response?.data?.message || t('maintenance.saveFailed'));
+            const msg = e.response?.data?.message || t('maintenance.saveFailed');
+            const reason = e.response?.data?.reason;
+            showError(reason ? `${msg} (${reason})` : msg);
         });
     };
 

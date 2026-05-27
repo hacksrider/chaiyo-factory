@@ -10,8 +10,10 @@ use App\Models\User;
 use App\Services\LineMaintenanceNotifyService;
 use App\Services\MaintenanceRegisterSheetService;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
@@ -73,61 +75,41 @@ class MaintenanceRequestController extends Controller
             $this->validateReporterPayloadForRegisterSheet($payload);
         }
 
+        $sheetSyncWarning = null;
+
         try {
-            $record = $sheet->withAllocateLock(function () use ($request, $payload, $sheet) {
-            return DB::transaction(function () use ($request, $payload, $sheet) {
-                $before = $request->file('photo_before');
-                $after = $request->file('photo_after');
-
-                if ($sheet->isEnabled()) {
-                    $alloc = $sheet->allocateNextIndices();
-                    $row = MaintenanceRequest::create([
-                        'notification_number' => $alloc['me_number'],
-                        'register_sheet_row' => $alloc['row'],
-                        'user_id' => $request->user()->id,
-                        'status' => MaintenanceRequest::STATUS_PENDING_REVIEW,
-                        'payload' => $payload,
-                        'photo_before_path' => $before ? $before->store('maintenance-requests', 'public') : null,
-                        'photo_after_path' => $after ? $after->store('maintenance-requests', 'public') : null,
+            $alloc = null;
+            if ($sheet->isEnabled()) {
+                try {
+                    $alloc = $sheet->withAllocateLock(fn () => $sheet->allocateNextIndices());
+                } catch (\Throwable $e) {
+                    Log::warning('Maintenance register sheet: allocate from Google failed, using DB fallback', [
+                        'error' => $e->getMessage(),
                     ]);
-                    $sheet->writeRowFromRecord($row->fresh(['user:id,name,username', 'referenceMedia']), $alloc['seq_a']);
-                } else {
-                    $row = MaintenanceRequest::create([
-                        'notification_number' => $this->nextNotificationNumber(),
-                        'register_sheet_row' => null,
-                        'user_id' => $request->user()->id,
-                        'status' => MaintenanceRequest::STATUS_PENDING_REVIEW,
-                        'payload' => $payload,
-                        'photo_before_path' => $before ? $before->store('maintenance-requests', 'public') : null,
-                        'photo_after_path' => $after ? $after->store('maintenance-requests', 'public') : null,
-                    ]);
+                    $alloc = $sheet->allocateNextIndicesFromDatabase();
+                    $sheetSyncWarning = 'sheet_allocate_fallback';
                 }
+            }
 
-                $refs = $request->file('reference_images', []);
-                if (! is_array($refs)) {
-                    $refs = [];
-                }
-                foreach ($refs as $i => $file) {
-                    if ($file && $file->isValid()) {
-                        $path = $file->store('maintenance-requests/references', 'public');
-                        MaintenanceRequestReferenceMedia::create([
-                            'maintenance_request_id' => $row->id,
-                            'path' => $path,
-                            'sort_order' => (int) $i,
-                        ]);
-                    }
-                }
-
-                return $row->fresh(['user:id,name,username', 'referenceMedia']);
+            $record = DB::transaction(function () use ($request, $payload, $sheet, $alloc) {
+                return $this->createMaintenanceRequestRow($request, $payload, $sheet, $alloc);
             });
-        });
+
+            if ($sheet->isEnabled() && $alloc !== null) {
+                try {
+                    $sheet->writeRowFromRecord(
+                        $record->fresh(['user:id,name,username', 'referenceMedia']),
+                        $alloc['seq_a']
+                    );
+                } catch (\Throwable $e) {
+                    report($e);
+                    $sheetSyncWarning = $sheetSyncWarning ?? 'sheet_write_failed';
+                }
+            }
         } catch (\Throwable $e) {
             report($e);
 
-            return response()->json([
-                'message' => 'บันทึกใบแจ้งซ่อมไม่สำเร็จ — กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ',
-                'error' => config('app.debug') ? $e->getMessage() : null,
-            ], 503);
+            return $this->maintenanceStoreFailureResponse($e, $sheet);
         }
 
         $this->notifyAdmins(
@@ -139,7 +121,13 @@ class MaintenanceRequestController extends Controller
 
         app(LineMaintenanceNotifyService::class)->notifyMaintenanceCreated($record, $request->user());
 
-        return response()->json($this->transformRequest($record), 201);
+        $body = $this->transformRequest($record);
+        if ($sheetSyncWarning !== null) {
+            $body['sheet_sync_warning'] = $sheetSyncWarning;
+            $body['message'] = 'บันทึกใบแจ้งซ่อมแล้ว แต่ sync ทะเบียน Google Sheet ไม่สำเร็จ — ผู้ดูแลจะอัปเดตภายหลัง';
+        }
+
+        return response()->json($body, 201);
     }
 
     public function update(Request $request, int $id)
@@ -710,6 +698,87 @@ class MaintenanceRequestController extends Controller
         $out['inspection'] = array_merge($out['inspection'] ?? [], $inc, $prevPlanning);
 
         return $out;
+    }
+
+    /**
+     * @param  array{row: int, seq_a: int, me_number: string}|null  $alloc
+     */
+    private function createMaintenanceRequestRow(
+        Request $request,
+        array $payload,
+        MaintenanceRegisterSheetService $sheet,
+        ?array $alloc,
+    ): MaintenanceRequest {
+        $before = $request->file('photo_before');
+        $after = $request->file('photo_after');
+
+        if ($sheet->isEnabled() && $alloc !== null) {
+            $row = MaintenanceRequest::create([
+                'notification_number' => $alloc['me_number'],
+                'register_sheet_row' => $alloc['row'],
+                'user_id' => $request->user()->id,
+                'status' => MaintenanceRequest::STATUS_PENDING_REVIEW,
+                'payload' => $payload,
+                'photo_before_path' => $before ? $before->store('maintenance-requests', 'public') : null,
+                'photo_after_path' => $after ? $after->store('maintenance-requests', 'public') : null,
+            ]);
+        } else {
+            $row = MaintenanceRequest::create([
+                'notification_number' => $this->nextNotificationNumber(),
+                'register_sheet_row' => null,
+                'user_id' => $request->user()->id,
+                'status' => MaintenanceRequest::STATUS_PENDING_REVIEW,
+                'payload' => $payload,
+                'photo_before_path' => $before ? $before->store('maintenance-requests', 'public') : null,
+                'photo_after_path' => $after ? $after->store('maintenance-requests', 'public') : null,
+            ]);
+        }
+
+        $refs = $request->file('reference_images', []);
+        if (! is_array($refs)) {
+            $refs = [];
+        }
+        foreach ($refs as $i => $file) {
+            if ($file && $file->isValid()) {
+                $path = $file->store('maintenance-requests/references', 'public');
+                MaintenanceRequestReferenceMedia::create([
+                    'maintenance_request_id' => $row->id,
+                    'path' => $path,
+                    'sort_order' => (int) $i,
+                ]);
+            }
+        }
+
+        return $row->fresh(['user:id,name,username', 'referenceMedia']);
+    }
+
+    private function maintenanceStoreFailureResponse(\Throwable $e, MaintenanceRegisterSheetService $sheet): \Illuminate\Http\JsonResponse
+    {
+        $reason = 'server_error';
+        $message = 'บันทึกใบแจ้งซ่อมไม่สำเร็จ — กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ';
+
+        if ($e instanceof LockTimeoutException) {
+            $reason = 'sheet_lock_timeout';
+            $message = 'ระบบทะเบียนซ่อมกำลังใช้งานอยู่ — รอสักครู่แล้วลองส่งใหม่';
+        } elseif ($e instanceof ValidationException) {
+            throw $e;
+        } elseif (str_contains($e->getMessage(), 'credential Google')) {
+            $reason = 'google_credentials';
+            $message = 'ตั้งค่า Google Sheets ไม่ครบ — ตรวจไฟล์ service account และแชร์สเปรดชีตกับอีเมลใน JSON';
+        } elseif ($e instanceof \Google\Service\Exception || str_contains($e->getMessage(), 'Google')) {
+            $reason = 'google_api';
+            $message = 'เชื่อมต่อ Google Sheets ไม่สำเร็จ — ตรวจชื่อแท็บสเปรดชีตและสิทธิ์แชร์ไฟล์';
+        } elseif ($e instanceof \Illuminate\Database\QueryException) {
+            $reason = 'database';
+            $message = 'บันทึกฐานข้อมูลไม่สำเร็จ — ติดต่อผู้ดูแลระบบ';
+        }
+
+        return response()->json([
+            'message' => $message,
+            'reason' => $reason,
+            'sheet' => $sheet->healthSummary(),
+            'error' => config('app.debug') ? $e->getMessage() : null,
+        ], 503);
     }
 
     private function validateReporterPayloadForRegisterSheet(array $payload): void
