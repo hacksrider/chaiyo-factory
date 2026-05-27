@@ -94,7 +94,7 @@ const ProblemsList = () => {
 
     return (
         <PublicLayout>
-            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50">
+            <div className="w-full min-w-0 bg-gray-50 pb-[max(1rem,env(safe-area-inset-bottom))]">
                 <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>

@@ -31,6 +31,7 @@ export default {
         previous: 'ယခင်',
         next: 'နောက်ထပ်',
         showingResults: ({ start, end, total }) => `${total} ခုအနက် ${start}-${end} ပြနေသည်`,
+        pageOf: ({ page, lastPage }) => `စာမျက်နှာ ${page}/${lastPage}`,
         noSearchResults: 'ရှာတွေ့မှုမရှိပါ',
     },
     

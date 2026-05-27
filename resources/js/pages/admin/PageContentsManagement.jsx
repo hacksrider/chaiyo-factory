@@ -146,7 +146,7 @@ const PageContentsManagement = () => {
     if (loading) {
         return (
             <AppPageLayout>
-                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
+                <div className="flex min-h-[50vh] w-full items-center justify-center bg-gray-50 px-4 py-12">
                     <div className="text-lg text-gray-600 sm:text-xl">กำลังโหลด...</div>
                 </div>
             </AppPageLayout>
@@ -155,7 +155,7 @@ const PageContentsManagement = () => {
 
     return (
         <AppPageLayout>
-            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+            <div className="w-full min-w-0 bg-gray-50 px-3 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">จัดการเนื้อหา</h1>
                     <button

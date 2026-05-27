@@ -11,7 +11,7 @@ export const AdminMobileCardList = ({ children }) => (
 );
 
 export const AdminDesktopTable = ({ children }) => (
-    <div className="hidden overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md lg:block">
+    <div className="hidden rounded-lg border border-gray-100 bg-white shadow-md lg:block">
         <div className="overflow-x-auto">{children}</div>
     </div>
 );

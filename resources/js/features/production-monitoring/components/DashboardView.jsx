@@ -3,6 +3,9 @@ import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import { DEFAULT_MACHINE_STATE } from '../hooks/useProductionStates';
 import { getLedStatus, getLedHeartbeat } from '../api/productionApi';
+import { scaleEventDedupKey } from '../utils/scaleEventDedup';
+import { formatProductionDateBangkok, formatProductionTimeBangkok, parseProductionInstant } from '../utils/formatProductionBangkok';
+import { isGoodWeightOutsideMinMax, hasWeightToleranceRange } from '../utils/weightRangeCheck';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -362,15 +365,8 @@ function useFluidStatusMetrics(containerRef, zoneGroups) {
 
 // ─── Shared row builder ───────────────────────────────────────────────────────
 
-function buildDashboardRows(machines, allStates, getMachineState, ledData, t) {
-  return [...machines].sort((a, b) => {
-    const sa = resolveMachineStatus(a, getMachineState(a.id), ledData[a.id]?.text, t);
-    const sb = resolveMachineStatus(b, getMachineState(b.id), ledData[b.id]?.text, t);
-    const rank = { on: 0, fix: 1, off: 2 };
-    const diff = (rank[sa.key] ?? 9) - (rank[sb.key] ?? 9);
-    if (diff !== 0) return diff;
-    return String(a.label).localeCompare(String(b.label), 'th');
-  });
+function buildDashboardRows(machines) {
+  return machines;
 }
 
 function getDashboardRowData(machine, allStates, getMachineState, ledData, t) {
@@ -439,6 +435,189 @@ const LedDot = ({ led, t, size = 6 }) => (
   />
 );
 
+// ─── DashboardWeightModal ─────────────────────────────────────────────────────
+
+const DashboardWeightModal = ({ machineName, events, totalWeight, minWeight, maxWeight, onClose }) => {
+  const { language } = useLanguage();
+  const { t } = useTranslation(language);
+  const [sortMode, setSortMode] = useState('asc');
+
+  const liveEvInstant = (ev) => ev?.occurredAt ?? ev?.pressedAt ?? ev?.receivedAt ?? null;
+
+  const uniqueEvents = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const raw of events ?? []) {
+      const k = scaleEventDedupKey({ ...raw, type: 'good' });
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(raw);
+    }
+    return out;
+  }, [events]);
+
+  const list = useMemo(() => {
+    const base = [...uniqueEvents];
+    base.sort((a, b) => {
+      const ta = parseProductionInstant(liveEvInstant(a))?.getTime() ?? NaN;
+      const tb = parseProductionInstant(liveEvInstant(b))?.getTime() ?? NaN;
+      if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+      return sortMode === 'asc' ? ta - tb : tb - ta;
+    });
+    return base;
+  }, [uniqueEvents, sortMode]);
+
+  const hasRange = hasWeightToleranceRange(minWeight, maxWeight);
+  const outOfRangeCount = hasRange
+    ? uniqueEvents.filter((ev) => isGoodWeightOutsideMinMax(ev.weight, minWeight, maxWeight)).length
+    : 0;
+
+  const minVal = hasRange ? Math.min(...uniqueEvents.map((ev) => Number(ev.weight)).filter(Number.isFinite)) : null;
+  const maxVal = hasRange ? Math.max(...uniqueEvents.map((ev) => Number(ev.weight)).filter(Number.isFinite)) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-green-500/25 bg-gray-900 shadow-2xl">
+
+        {/* Header */}
+        <div className="flex flex-shrink-0 items-center justify-between border-b border-green-500/20 bg-green-500/10 px-5 py-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-green-400" />
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-bold text-green-300">{t('production.goodListTitle')}</h3>
+              <p className="truncate text-xs text-gray-400">{machineName}</p>
+            </div>
+            <span className="flex-shrink-0 rounded-full border border-green-500/30 bg-green-500/15 px-2 py-0.5 text-[11px] font-bold text-green-400">
+              {uniqueEvents.length} {t('production.items')}
+            </span>
+            {outOfRangeCount > 0 && (
+              <span className="flex-shrink-0 rounded-full border border-red-500/40 bg-red-500/15 px-2 py-0.5 text-[11px] font-bold text-red-400">
+                ⚠ {outOfRangeCount}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <div className="flex items-center rounded-lg border border-gray-800 bg-gray-900/40 p-0.5">
+              <button
+                type="button"
+                onClick={() => setSortMode('desc')}
+                className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition ${sortMode === 'desc' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-200'}`}
+              >
+                {t('production.latest')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSortMode('asc')}
+                className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition ${sortMode === 'asc' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-200'}`}
+              >
+                {t('production.byTime')}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1 text-gray-500 transition hover:bg-gray-800 hover:text-gray-200"
+              aria-label={t('common.close')}
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Summary */}
+        <div className="flex flex-shrink-0 flex-col gap-1 border-b border-gray-800 px-5 py-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-500">{t('production.totalWeight')}</span>
+            <span className="font-mono text-lg font-bold text-green-200">
+              {(totalWeight ?? 0).toFixed(2)} <span className="text-sm font-normal text-gray-500">kg</span>
+            </span>
+          </div>
+          {hasRange && (
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">เกณฑ์น้ำหนัก</span>
+              <span className="font-mono text-gray-300">
+                Min <span className="text-amber-300">{Number(minWeight).toFixed(3)}</span>
+                {' – '}
+                Max <span className="text-amber-300">{Number(maxWeight).toFixed(3)}</span> kg
+              </span>
+            </div>
+          )}
+          {uniqueEvents.length > 0 && (
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">น้ำหนัก Min / Max จริง</span>
+              <span className="font-mono text-gray-300">
+                {minVal != null ? (
+                  <>
+                    <span className={isGoodWeightOutsideMinMax(minVal, minWeight, maxWeight) ? 'text-red-400' : 'text-green-300'}>
+                      {minVal.toFixed(3)}
+                    </span>
+                    {' / '}
+                    <span className={isGoodWeightOutsideMinMax(maxVal, minWeight, maxWeight) ? 'text-red-400' : 'text-green-300'}>
+                      {maxVal.toFixed(3)}
+                    </span>
+                    {' kg'}
+                  </>
+                ) : '—'}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* List */}
+        <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+          {list.length === 0 ? (
+            <div className="flex items-center justify-center py-12 text-sm text-gray-600">
+              {t('production.noItems')}
+            </div>
+          ) : list.map((ev, idx) => {
+            const when = liveEvInstant(ev);
+            const datePart = formatProductionDateBangkok(when);
+            const outOfRange = isGoodWeightOutsideMinMax(ev.weight, minWeight, maxWeight);
+            const weightClass = outOfRange ? 'text-red-400' : 'text-green-200';
+
+            return (
+              <div
+                key={scaleEventDedupKey({ ...ev, type: 'good' }) || `row-${idx}`}
+                className="flex items-center gap-3 rounded-xl border border-green-500/15 bg-green-500/5 px-4 py-2.5"
+              >
+                <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gray-800 text-[11px] font-bold text-gray-400">
+                  {sortMode === 'asc' ? idx + 1 : list.length - idx}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className={`font-mono text-sm font-semibold ${weightClass}`} title={outOfRange ? t('production.goodWeightOutOfRangeHint') : undefined}>
+                    {parseFloat(ev.weight).toFixed(3)} kg
+                    {outOfRange && <span className="ml-1.5 text-[10px]">⚠</span>}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-gray-500">
+                    {datePart && <span className="mr-1.5">{datePart}</span>}
+                    {formatProductionTimeBangkok(when)}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 border-t border-gray-800 px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full rounded-xl border border-gray-700 bg-gray-800/60 py-2.5 text-sm font-semibold text-gray-400 transition hover:bg-gray-700/60 hover:text-white"
+          >
+            {t('common.close')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const statusShortLabel = (status) => {
   if (status.key === 'on') return 'ON';
   if (status.key === 'fix') return 'FX';
@@ -446,10 +625,7 @@ const statusShortLabel = (status) => {
 };
 
 const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t }) => {
-  const rows = useMemo(
-    () => buildDashboardRows(machines, allStates, getMachineState, ledData, t),
-    [machines, allStates, getMachineState, ledData, t],
-  );
+  const rows = useMemo(() => buildDashboardRows(machines), [machines]);
   const rowH = 30;
   const fontSize = 11;
   const headerFont = 9;
@@ -470,7 +646,7 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t 
             <th className="w-[8%] text-center" style={cellPad}>{t('production.dashboardColStatus')}</th>
             <th className="w-[14%] text-right" style={cellPad}>{t('production.dashboardColGoodQty')}</th>
             <th className="min-w-0 text-left" style={cellPad}>{t('production.dashboardColProduct')}</th>
-            <th className="w-[5%]" style={cellPad} aria-hidden />
+            <th className="w-[5%] bg-black" style={cellPad} aria-hidden />
           </tr>
         </thead>
         <tbody>
@@ -491,7 +667,7 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t 
                 <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
                   {state.productCode || state.productName || '—'}
                 </td>
-                <td className="text-center align-middle" style={cellPad}>
+                <td className="bg-black text-center align-middle" style={cellPad}>
                   <LedDot led={led} t={t} size={6} />
                 </td>
               </tr>
@@ -503,7 +679,7 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t 
   );
 };
 
-const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData, t }) => {
+const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData, t, onChipClick }) => {
   const containerRef = useRef(null);
   const cols = useStatusGridCols(containerRef);
   const flatMachines = useMemo(
@@ -535,20 +711,33 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
             const status = resolveMachineStatus(m, state, ledData[m.id]?.text, t);
             const isLive = state?.mode === 'live';
             const value = isLive ? (state.pipeCounter ?? 0) : 0;
+            const goodEvents = state?.goodEvents ?? [];
+            const hasAlert = goodEvents.some((ev) =>
+              isGoodWeightOutsideMinMax(ev.weight, state?.minWeight, state?.maxWeight)
+            );
+            const canClick = isLive && goodEvents.length > 0;
 
             return (
-              <div
+              <button
                 key={m.id}
-                className={`flex min-h-[44px] flex-col items-center justify-center rounded border border-black/10 px-1 py-1.5 ${status.cardClass}`}
-                title={`${zone} · ${m.label}: ${fmtNum(value)}`}
+                type="button"
+                onClick={canClick ? () => onChipClick(m, state) : undefined}
+                disabled={!canClick}
+                className={`relative flex min-h-[44px] w-full flex-col items-center justify-center rounded border border-black/10 px-1 py-1.5 ${status.cardClass} ${canClick ? 'cursor-pointer hover:brightness-110 active:brightness-90 transition-[filter]' : 'cursor-default'}`}
+                title={`${zone} · ${m.label}: ${fmtNum(value)}${canClick ? ' (แตะเพื่อดูรายการ)' : ''}`}
               >
+                {hasAlert && (
+                  <span className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-black text-white shadow">
+                    !
+                  </span>
+                )}
                 <span className="max-w-full truncate text-[9px] font-bold leading-tight">
                   {m.label}
                 </span>
                 <span className="mt-0.5 font-mono text-xs font-black tabular-nums leading-none">
                   {fmtNum(value)}
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -562,10 +751,7 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
 const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
   const containerRef = useRef(null);
 
-  const rows = useMemo(
-    () => buildDashboardRows(machines, allStates, getMachineState, ledData, t),
-    [machines, allStates, getMachineState, ledData, t],
-  );
+  const rows = useMemo(() => buildDashboardRows(machines), [machines]);
 
   const m = useFluidTableMetrics(containerRef, rows.length);
   const cellPad = { padding: `${m.padY}px ${m.padX}px` };
@@ -612,7 +798,7 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColGoodWeight')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColNgWeight')}</th>
               <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColTarget')}</th>
-              <th className="font-semibold truncate" style={cellPad}>{t('production.dashboardColLed')}</th>
+              <th className="bg-black font-semibold truncate" style={cellPad}>{t('production.dashboardColLed')}</th>
             </tr>
           </thead>
           <tbody>
@@ -681,13 +867,13 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
                       </div>
                     )}
                   </td>
-                  <td className="align-middle min-w-0" style={cellPad}>
+                  <td className="align-middle min-w-0 bg-black" style={cellPad}>
                     <div className="flex items-center min-w-0 h-full" style={{ gap: Math.max(4, m.padX * 0.5) }}>
                       <LedDot led={led} t={t} size={m.dot} />
                       <LedMarqueeText
                         text={led.noIp ? t('production.ledStatusNoIp') : ledLabel}
                         fontSize={m.fontSize}
-                        color={led.color ?? (status.key === 'fix' ? '#000' : undefined)}
+                        color={led.color ?? '#e5e7eb'}
                         rowKey={machine.id}
                       />
                     </div>
@@ -704,18 +890,35 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
 
 // ─── StatusMachineCard ────────────────────────────────────────────────────────
 
-const StatusMachineCard = ({ machine, state, ledText, t, metrics }) => {
+const StatusMachineCard = ({ machine, state, ledText, t, metrics, onCardClick }) => {
   const status = resolveMachineStatus(machine, state, ledText, t);
   const isLive = state?.mode === 'live';
   const value = isLive ? (state.pipeCounter ?? 0) : 0;
+  const goodEvents = state?.goodEvents ?? [];
+  const hasAlert = goodEvents.some((ev) =>
+    isGoodWeightOutsideMinMax(ev.weight, state?.minWeight, state?.maxWeight)
+  );
+  const canClick = isLive && goodEvents.length > 0;
 
   return (
-    <div
-      className={`flex flex-col items-center justify-center h-full min-h-0 rounded-lg border border-black/10 overflow-hidden ${status.cardClass}`}
+    <button
+      type="button"
+      onClick={canClick ? () => onCardClick(machine, state) : undefined}
+      disabled={!canClick}
+      className={`relative flex h-full min-h-0 w-full flex-col items-center justify-center overflow-hidden rounded-lg border border-black/10 ${status.cardClass} ${canClick ? 'cursor-pointer hover:brightness-110 active:brightness-90 transition-[filter]' : 'cursor-default'}`}
       style={{ padding: metrics.pad }}
+      title={canClick ? `${machine.label}: ${fmtNum(value)} (คลิกเพื่อดูรายการน้ำหนัก)` : machine.label}
     >
+      {hasAlert && (
+        <span
+          className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 font-black text-white shadow"
+          style={{ fontSize: 9 }}
+        >
+          !
+        </span>
+      )}
       <span
-        className="font-black leading-tight truncate max-w-full text-center"
+        className="max-w-full truncate text-center font-black leading-tight"
         style={{ fontSize: metrics.labelFont }}
         title={machine.label}
       >
@@ -727,13 +930,13 @@ const StatusMachineCard = ({ machine, state, ledText, t, metrics }) => {
       >
         {fmtNum(value)}
       </span>
-    </div>
+    </button>
   );
 };
 
 // ─── StatusZonePanel ──────────────────────────────────────────────────────────
 
-const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, metrics }) => {
+const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, metrics, onCardClick }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
@@ -767,6 +970,7 @@ const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, 
               ledText={ledData[m.id]?.text}
               t={t}
               metrics={metrics}
+              onCardClick={onCardClick}
             />
           );
         })}
@@ -777,7 +981,7 @@ const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, 
 
 // ─── StatusMachinePanel ───────────────────────────────────────────────────────
 
-const StatusMachinePanel = ({ zoneGroups, allStates, getMachineState, ledData, t }) => {
+const StatusMachinePanel = ({ zoneGroups, allStates, getMachineState, ledData, t, onCardClick }) => {
   const containerRef = useRef(null);
   const metrics = useFluidStatusMetrics(containerRef, zoneGroups);
   const gridRows = Math.ceil(zoneGroups.length / metrics.gridCols);
@@ -817,6 +1021,7 @@ const StatusMachinePanel = ({ zoneGroups, allStates, getMachineState, ledData, t
               getMachineState={getMachineState}
               ledData={ledData}
               metrics={metrics}
+              onCardClick={onCardClick}
             />
           ))}
         </div>
@@ -838,6 +1043,14 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
 
   const liveCount = Object.values(allStates).filter((s) => s?.mode === 'live').length;
   const activeCount = machines.filter((m) => m.status?.toLowerCase() !== 'unactive').length;
+
+  // ── Weight modal ─────────────────────────────────────────────────────────────
+  const [weightModal, setWeightModal] = useState(null); // { machine, state }
+
+  const handleOpenWeightModal = (machine, state) => {
+    setWeightModal({ machine, state });
+  };
+  const handleCloseWeightModal = () => setWeightModal(null);
 
   return (
     <div className="flex h-[100dvh] min-h-0 w-full max-w-[100vw] flex-col bg-gray-950 text-white select-none">
@@ -896,12 +1109,13 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
             getMachineState={getMachineState}
             ledData={ledData}
             t={t}
+            onChipClick={handleOpenWeightModal}
           />
         </div>
 
-        {/* Tablet/desktop: คู่กันแนวนอน */}
+        {/* Tablet/desktop: ตารางกว้าง + สถานะเครื่องจักรแคบ (ชื่อ + จำนวน) */}
         <div className="hidden h-full min-h-0 flex-row gap-1 overflow-hidden md:flex">
-          <div className="min-h-0 min-w-0 flex-[3] lg:max-w-[58%]">
+          <div className="min-h-0 min-w-0 flex-1">
             <MachineTable
               machines={machines}
               allStates={allStates}
@@ -911,17 +1125,30 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
             />
           </div>
 
-          <div className="min-h-0 min-w-0 flex-[2]">
+          <div className="min-h-0 w-[240px] shrink-0 lg:w-[272px] xl:w-[300px]">
             <StatusMachinePanel
               zoneGroups={zoneGroups}
               allStates={allStates}
               getMachineState={getMachineState}
               ledData={ledData}
               t={t}
+              onCardClick={handleOpenWeightModal}
             />
           </div>
         </div>
       </div>
+
+      {/* ── Weight event modal ──────────────────────────────────────────────── */}
+      {weightModal && (
+        <DashboardWeightModal
+          machineName={weightModal.machine.label}
+          events={weightModal.state?.goodEvents ?? []}
+          totalWeight={weightModal.state?.totalGoodWeight ?? 0}
+          minWeight={weightModal.state?.minWeight}
+          maxWeight={weightModal.state?.maxWeight}
+          onClose={handleCloseWeightModal}
+        />
+      )}
     </div>
   );
 };

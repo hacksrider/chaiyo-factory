@@ -407,7 +407,7 @@ const ProblemsManagement = () => {
     if (loading) {
         return (
             <AppPageLayout>
-                <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
+                <div className="flex min-h-[50vh] w-full items-center justify-center bg-gray-50 px-4 py-12">
                     <div className="text-lg text-gray-600 sm:text-xl">{t('common.loading')}</div>
                 </div>
             </AppPageLayout>
@@ -416,7 +416,7 @@ const ProblemsManagement = () => {
 
     return (
         <AppPageLayout>
-            <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
+            <div className="w-full min-w-0 bg-gray-50 px-3 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageProblems')}</h1>
                     <button
@@ -512,7 +512,7 @@ const ProblemsManagement = () => {
                         </div>
 
                         {/* Desktop table */}
-                        <div className="hidden overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md lg:block">
+                        <div className="hidden rounded-lg border border-gray-100 bg-white shadow-md lg:block">
                             <div className="overflow-x-auto">
                                 <table className="min-w-[900px] w-full divide-y divide-gray-200">
                                     <thead className="bg-gray-50">

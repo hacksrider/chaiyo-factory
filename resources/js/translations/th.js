@@ -31,6 +31,7 @@ export default {
         previous: 'ก่อนหน้า',
         next: 'ถัดไป',
         showingResults: ({ start, end, total }) => `แสดง ${start}-${end} จาก ${total} รายการ`,
+        pageOf: ({ page, lastPage }) => `หน้า ${page}/${lastPage}`,
         noSearchResults: 'ไม่พบรายการที่ค้นหา',
     },
     
