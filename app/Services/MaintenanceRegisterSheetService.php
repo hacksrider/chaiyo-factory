@@ -43,6 +43,118 @@ class MaintenanceRegisterSheetService
     }
 
     /**
+     * วินิจฉัยทีละขั้น — รันบน Plesk: php artisan maintenance:sheet-diagnose
+     *
+     * @return array<string, mixed>
+     */
+    public function runDiagnostics(): array
+    {
+        $path = $this->credentialsPath();
+        $report = [
+            'php' => [
+                'version' => PHP_VERSION,
+                'sapi' => PHP_SAPI,
+                'curl' => extension_loaded('curl'),
+                'openssl' => extension_loaded('openssl'),
+                'json' => extension_loaded('json'),
+                'google_client_class' => class_exists(GoogleClient::class),
+            ],
+            'config' => [
+                'enabled' => (bool) config('maintenance_register_sheet.enabled'),
+                'spreadsheet_id' => (string) config('maintenance_register_sheet.spreadsheet_id'),
+                'sheet_title' => (string) config('maintenance_register_sheet.sheet_title'),
+                'credentials_path' => $path,
+                'http_verify' => config('maintenance_register_sheet.http_verify'),
+            ],
+            'credentials' => [
+                'file_exists' => $path !== '' && is_file($path),
+                'readable' => $path !== '' && is_readable($path),
+                'client_email' => null,
+                'json_valid' => false,
+            ],
+            'google' => [],
+            'hints' => [],
+        ];
+
+        if ($report['credentials']['readable']) {
+            $raw = @file_get_contents($path);
+            $json = is_string($raw) ? json_decode($raw, true) : null;
+            $report['credentials']['json_valid'] = is_array($json)
+                && ! empty($json['client_email'])
+                && ! empty($json['private_key']);
+            $report['credentials']['client_email'] = is_array($json) ? ($json['client_email'] ?? null) : null;
+            if ($report['credentials']['json_valid']) {
+                $report['hints'][] = 'แชร์สเปรดชีตให้ '.$report['credentials']['client_email'].' (สิทธิ์ Editor)';
+            } else {
+                $report['hints'][] = 'ไฟล์ JSON ไม่ครบ client_email / private_key';
+            }
+        } else {
+            $report['hints'][] = 'อัปโหลด google-maintenance-register.json ไปที่ storage/app/ และ chmod 640 ให้ user ของ PHP-FPM อ่านได้';
+        }
+
+        if (! $this->isEnabled()) {
+            $report['google']['status'] = 'disabled_or_misconfigured';
+
+            return $report;
+        }
+
+        try {
+            $client = $this->makeGoogleClient();
+            $token = $client->fetchAccessTokenWithAssertion();
+            if (isset($token['error'])) {
+                $report['google']['token'] = 'error';
+                $report['google']['token_error'] = (string) ($token['error_description'] ?? $token['error']);
+                $report['hints'][] = 'ได้ token ไม่สำเร็จ — ตรวจ private_key ใน JSON และเวลาเซิร์ฟเวอร์ (NTP)';
+            } else {
+                $report['google']['token'] = 'ok';
+            }
+        } catch (Throwable $e) {
+            $report['google']['token'] = 'exception';
+            $report['google']['token_message'] = $e->getMessage();
+            if (str_contains($e->getMessage(), 'SSL') || str_contains($e->getMessage(), 'certificate')) {
+                $report['hints'][] = 'ปัญหา SSL — ใน .env ลอง GOOGLE_MAINTENANCE_HTTP_VERIFY=/etc/ssl/certs/ca-certificates.crt';
+            }
+            if (str_contains($e->getMessage(), 'Connection refused') || str_contains($e->getMessage(), 'Could not resolve')) {
+                $report['hints'][] = 'เซิร์ฟเวอร์ออกเน็ตไป Google ไม่ได้ — ตรวจ firewall Plesk / ModSecurity';
+            }
+        }
+
+        try {
+            $sheets = new Sheets($this->makeGoogleClient());
+            $spreadsheetId = (string) config('maintenance_register_sheet.spreadsheet_id');
+            $meta = $sheets->spreadsheets->get($spreadsheetId, ['fields' => 'properties.title,sheets.properties.title']);
+            $report['google']['spreadsheet_title'] = $meta->getProperties()->getTitle();
+            $tabTitles = [];
+            foreach ($meta->getSheets() as $sheet) {
+                $tabTitles[] = $sheet->getProperties()->getTitle();
+            }
+            $report['google']['tab_titles'] = $tabTitles;
+            $wanted = (string) config('maintenance_register_sheet.sheet_title');
+            $report['google']['sheet_title_match'] = in_array($wanted, $tabTitles, true);
+            if (! $report['google']['sheet_title_match']) {
+                $report['hints'][] = 'ชื่อแท็บใน .env ไม่ตรงกับในไฟล์ — ตั้ง GOOGLE_MAINTENANCE_REGISTER_SHEET_TITLE ให้ตรงกับหนึ่งใน tab_titles (ไม่ใส่เครื่องหมายคำพูด)';
+            }
+        } catch (Throwable $e) {
+            $report['google']['spreadsheet'] = 'error';
+            $report['google']['spreadsheet_message'] = $e->getMessage();
+            if (str_contains($e->getMessage(), '403') || str_contains($e->getMessage(), 'permission')) {
+                $report['hints'][] = '403 — แชร์สเปรดชีตกับ service account (Editor) และเปิด Google Sheets API ใน Google Cloud';
+            }
+        }
+
+        try {
+            $alloc = $this->allocateNextIndices();
+            $report['google']['read_range'] = 'ok';
+            $report['google']['sample_next_me'] = $alloc['me_number'];
+        } catch (Throwable $e) {
+            $report['google']['read_range'] = 'error';
+            $report['google']['read_range_message'] = $e->getMessage();
+        }
+
+        return $report;
+    }
+
+    /**
      * อ่าน max จากคอลัมน์ A/C แล้วจองลำดับถัดไป (ยังไม่เขียน Sheet)
      *
      * @return array{row: int, seq_a: int, me_number: string}
@@ -462,12 +574,54 @@ class MaintenanceRegisterSheetService
             );
         }
 
+        return new Sheets($this->makeGoogleClient());
+    }
+
+    private function makeGoogleClient(): GoogleClient
+    {
+        $path = $this->credentialsPath();
         $client = new GoogleClient;
         $client->setApplicationName(config('app.name').' Maintenance Register');
         $client->setScopes([Sheets::SPREADSHEETS]);
         $client->setAuthConfig($path);
         $client->setAccessType('offline');
+        $this->configureHttpClient($client);
 
-        return new Sheets($client);
+        return $client;
+    }
+
+    /** Plesk/shared hosting: บางเครื่องไม่มี CA bundle ทำให้ SSL ล้ม */
+    private function configureHttpClient(GoogleClient $client): void
+    {
+        if (! class_exists(\GuzzleHttp\Client::class)) {
+            return;
+        }
+
+        $verify = config('maintenance_register_sheet.http_verify');
+        if ($verify === false || $verify === 'false' || $verify === '0') {
+            $client->setHttpClient(new \GuzzleHttp\Client(['verify' => false, 'timeout' => 30]));
+
+            return;
+        }
+        if (is_string($verify) && $verify !== '' && $verify !== 'auto' && $verify !== 'true') {
+            $client->setHttpClient(new \GuzzleHttp\Client(['verify' => $verify, 'timeout' => 30]));
+
+            return;
+        }
+
+        foreach ([
+            '/etc/ssl/certs/ca-certificates.crt',
+            '/etc/pki/tls/certs/ca-bundle.crt',
+            '/etc/ssl/ca-bundle.pem',
+            '/usr/local/share/certs/ca-root-nss.crt',
+        ] as $bundle) {
+            if (is_readable($bundle)) {
+                $client->setHttpClient(new \GuzzleHttp\Client(['verify' => $bundle, 'timeout' => 30]));
+
+                return;
+            }
+        }
+
+        $client->setHttpClient(new \GuzzleHttp\Client(['timeout' => 30]));
     }
 }

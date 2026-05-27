@@ -40,4 +40,10 @@ return [
 
     'lock_seconds' => (int) env('MAINTENANCE_REGISTER_SHEET_LOCK_SECONDS', 25),
 
+    /**
+     * SSL verify สำหรับ Guzzle → Google API (Plesk บางเครื่องไม่มี CA bundle)
+     * true | false | path เช่น /etc/ssl/certs/ca-certificates.crt
+     */
+    'http_verify' => env('GOOGLE_MAINTENANCE_HTTP_VERIFY', 'auto'),
+
 ];
