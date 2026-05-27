@@ -28,6 +28,10 @@ export default {
         warning: 'သတိပေးချက်',
         info: 'အချက်အလက်',
         confirm: 'အတည်ပြုသည်',
+        previous: 'ယခင်',
+        next: 'နောက်ထပ်',
+        showingResults: ({ start, end, total }) => `${total} ခုအနက် ${start}-${end} ပြနေသည်`,
+        noSearchResults: 'ရှာတွေ့မှုမရှိပါ',
     },
     
     // Navigation
@@ -176,6 +180,9 @@ export default {
         noZoneProblems: 'ပြဿနာမရှိသေးပါ',
         addProblem: 'ပြဿနာထည့်ရန်',
         zoneLayoutImage: 'ဇုန်ပုံစံပုံ',
+        layoutTapHint: 'ပုံကို နှိပ်ပြီး အပြည့်အဝကြည့်ရှုနိုင်သည်',
+        layoutPinchHint: 'ချုံ/ချဲ့ သို့မဟုတ် ရွှေ့၍ အသေးစိတ်ကြည့်ပါ',
+        layoutViewFull: 'အပြည့်အဝကြည့်ရန်',
     },
     
     // Admin
@@ -220,6 +227,10 @@ export default {
         currentVideo: 'လက်ရှိဗီဒီယို',
         confirmDelete: 'ဖျက်ရန်သေချာပါသလား?',
         searchProblems: 'ပြဿနာရှာဖွေရန်...',
+        searchUsers: 'အမည် သို့ username ရှာရန်...',
+        searchCategories: 'အမျိုးအစားရှာရန်...',
+        searchMachines: 'စက်ယန္တရား (ကုဒ်/အမည်) ရှာရန်...',
+        searchPageContents: 'page key သို့ ခေါင်းစဉ် ရှာရန်...',
         lastUpdatedBy: 'နောက်ဆုံးပြင်ဆင်သူ',
         machine: 'စက်ယန္တရား',
         zone: 'ဇုန်',
@@ -240,6 +251,9 @@ export default {
         confirmDeleteMachine: 'ဤစက်ယန္တရားကို ဖျက်ရန် သေချာပါသလား?',
         confirmDeleteZone: 'ဤဇုန်ကို ဖျက်ရန် သေချာပါသလား?',
         noZones: 'ဇုန်မရှိသေးပါ',
+        noUsers: 'အသုံးပြုသူမရှိသေးပါ',
+        noCategories: 'အမျိုးအစားမရှိသေးပါ',
+        noPageContents: 'အကြောင်းအရာမရှိသေးပါ',
         manageZonesFor: 'ဇုန်စီမံရန် -',
         nameThai: 'အမည် (ไทย)',
         nameMyanmar: 'အမည် (မြန်မာ)',
@@ -433,6 +447,8 @@ export default {
         // Dashboard
         dashboardTitle: 'Production Dashboard',
         dashboardTitleShort: 'Dashboard',
+        dashboardTabMachines: 'စက်များ',
+        dashboardTabStatus: 'ဇုန်အခြေအနေ',
         dashboardStatusOff: 'ပိတ်',
         dashboardStatusOpen: 'ဖွင့်',
         dashboardStatusFixing: 'ပြုပြင်',

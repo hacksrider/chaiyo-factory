@@ -1,7 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { adminAPI } from '../../api';
-import AdminLayout from '../../components/AdminLayout';
+import AppPageLayout from '../../components/AppPageLayout';
+import {
+    AdminCardButton,
+    AdminCardRow,
+    AdminCardRows,
+    AdminDesktopTable,
+    AdminListEmpty,
+    AdminMobileCard,
+    AdminMobileCardList,
+    AdminStatusBadge,
+    AdminTruncatedCell,
+} from '../../components/AdminListCards';
+import AdminSearchBar from '../../components/AdminSearchBar';
+import Pagination from '../../components/Pagination';
+import useClientList, { LIST_PAGE_SIZE } from '../../hooks/useClientList';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { useAlert } from '../../contexts/AlertContext';
@@ -16,6 +30,8 @@ const CategoriesManagement = () => {
     const navigate = useNavigate();
     const [categories, setCategories] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [page, setPage] = useState(1);
     const [showModal, setShowModal] = useState(false);
     const [editingCategory, setEditingCategory] = useState(null);
     const [formData, setFormData] = useState({
@@ -25,6 +41,23 @@ const CategoriesManagement = () => {
         description_mm: '',
         is_active: true,
     });
+
+    const { paginated, lastPage, safePage, total, perPage } = useClientList(categories, {
+        search: searchTerm,
+        searchKeys: ['name', 'name_mm', 'description', 'description_mm'],
+        page,
+        perPage: LIST_PAGE_SIZE,
+    });
+
+    useEffect(() => {
+        setPage(1);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        if (safePage !== page) {
+            setPage(safePage);
+        }
+    }, [safePage, page]);
 
     useEffect(() => {
         fetchCategories();
@@ -120,16 +153,16 @@ const CategoriesManagement = () => {
 
     if (loading) {
         return (
-            <AdminLayout>
+            <AppPageLayout>
                 <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
                     <div className="text-lg text-gray-600 sm:text-xl">{t('common.loading')}</div>
                 </div>
-            </AdminLayout>
+            </AppPageLayout>
         );
     }
 
     return (
-        <AdminLayout>
+        <AppPageLayout>
             <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageCategories')}</h1>
@@ -141,63 +174,120 @@ const CategoriesManagement = () => {
                         + {t('admin.addCategory')}
                     </button>
                 </div>
-                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
-                    <div className="overflow-x-auto">
-                    <table className="min-w-[640px] w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.categoryName')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.categoryDescription')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
-                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                            {categories.map((category) => (
-                                <tr key={category.id}>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <div className="text-sm font-medium text-gray-900">{category.name}</div>
-                                    </td>
-                                    <td className="px-6 py-4">
-                                        <div className="text-sm text-gray-500">{category.description || '-'}</div>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`px-2 py-1 text-xs rounded-full ${
-                                            category.is_active
-                                                ? 'bg-green-100 text-green-800'
-                                                : 'bg-red-100 text-red-800'
-                                        }`}>
-                                            {category.is_active ? t('common.active') : t('common.inactive')}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <button
-                                            onClick={() => handleOpenModal(category)}
-                                            className="text-blue-600 hover:text-blue-900 mr-4"
-                                        >
-                                            {t('common.edit')}
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(category.id)}
-                                            className="text-red-600 hover:text-red-900"
-                                        >
-                                            {t('common.delete')}
-                                        </button>
-                                    </td>
-                                </tr>
+                <AdminSearchBar
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder={t('admin.searchCategories')}
+                />
+                {categories.length === 0 ? (
+                    <AdminListEmpty message={t('admin.noCategories')} />
+                ) : paginated.length === 0 ? (
+                    <AdminListEmpty message={t('common.noSearchResults')} />
+                ) : (
+                    <>
+                        <AdminMobileCardList>
+                            {paginated.map((category) => (
+                                <AdminMobileCard
+                                    key={category.id}
+                                    title={category.name}
+                                    badge={
+                                        <AdminStatusBadge
+                                            active={category.is_active}
+                                            activeLabel={t('common.active')}
+                                            inactiveLabel={t('common.inactive')}
+                                        />
+                                    }
+                                    actions={
+                                        <>
+                                            <AdminCardButton onClick={() => handleOpenModal(category)}>
+                                                {t('common.edit')}
+                                            </AdminCardButton>
+                                            <AdminCardButton variant="danger" onClick={() => handleDelete(category.id)}>
+                                                {t('common.delete')}
+                                            </AdminCardButton>
+                                        </>
+                                    }
+                                >
+                                    <AdminCardRows>
+                                        <AdminCardRow
+                                            label={t('admin.categoryDescription')}
+                                            value={category.description || '-'}
+                                            multiline
+                                        />
+                                    </AdminCardRows>
+                                </AdminMobileCard>
                             ))}
-                        </tbody>
-                    </table>
-                    </div>
-                </div>
+                        </AdminMobileCardList>
+
+                        <AdminDesktopTable>
+                            <table className="min-w-[640px] w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.categoryName')}</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.categoryDescription')}</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200 bg-white">
+                                    {paginated.map((category) => (
+                                        <tr key={category.id}>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell>{category.name}</AdminTruncatedCell>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell tone="muted" clamp={2} className="max-w-md">
+                                                    {category.description || '-'}
+                                                </AdminTruncatedCell>
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4">
+                                                <AdminStatusBadge
+                                                    active={category.is_active}
+                                                    activeLabel={t('common.active')}
+                                                    inactiveLabel={t('common.inactive')}
+                                                />
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleOpenModal(category)}
+                                                    className="mr-4 text-blue-600 hover:text-blue-900"
+                                                >
+                                                    {t('common.edit')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDelete(category.id)}
+                                                    className="text-red-600 hover:text-red-900"
+                                                >
+                                                    {t('common.delete')}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </AdminDesktopTable>
+
+                        <Pagination
+                            className="mt-6"
+                            currentPage={safePage}
+                            lastPage={lastPage}
+                            total={total}
+                            perPage={perPage}
+                            onPageChange={setPage}
+                            t={t}
+                        />
+                    </>
+                )}
             </div>
 
             {/* Modal */}
             {showModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg max-w-md w-full">
-                        <div className="p-6">
-                            <h2 className="text-2xl font-bold mb-4">
+                <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                    <div className="max-h-[min(90dvh,720px)] w-full max-w-md overflow-y-auto rounded-lg bg-white shadow-xl">
+                        <div className="p-4 sm:p-6">
+                            <h2 className="mb-4 text-xl font-bold sm:text-2xl">
                                 {editingCategory ? t('admin.editCategory') : t('admin.addCategory')}
                             </h2>
                             <form onSubmit={handleSubmit} className="space-y-4">
@@ -289,7 +379,7 @@ const CategoriesManagement = () => {
                     </div>
                 </div>
             )}
-        </AdminLayout>
+        </AppPageLayout>
     );
 };
 

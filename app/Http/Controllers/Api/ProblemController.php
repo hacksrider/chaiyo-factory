@@ -76,17 +76,18 @@ class ProblemController extends Controller
             });
 
             // Paginate manually
-            $page = $request->get('page', 1);
-            $perPage = 12;
+            $page = max(1, (int) $request->get('page', 1));
+            $perPage = min((int) $request->input('perPage', 12), 50);
             $total = $transformedProblems->count();
+            $lastPage = max(1, (int) ceil($total / max(1, $perPage)));
             $items = $transformedProblems->slice(($page - 1) * $perPage, $perPage)->values();
 
             return response()->json([
                 'data' => $items,
-                'current_page' => (int) $page,
+                'current_page' => $page,
                 'per_page' => $perPage,
                 'total' => $total,
-                'last_page' => ceil($total / $perPage),
+                'last_page' => $lastPage,
             ]);
         }
 
@@ -178,17 +179,18 @@ class ProblemController extends Controller
         })->values();
 
         // Paginate manually
-        $page = $request->get('page', 1);
-        $perPage = 12;
+        $page = max(1, (int) $request->get('page', 1));
+        $perPage = min((int) $request->input('perPage', 12), 50);
         $total = $allProblems->count();
+        $lastPage = max(1, (int) ceil($total / max(1, $perPage)));
         $items = $allProblems->slice(($page - 1) * $perPage, $perPage)->values();
 
         return response()->json([
             'data' => $items,
-            'current_page' => (int) $page,
+            'current_page' => $page,
             'per_page' => $perPage,
             'total' => $total,
-            'last_page' => ceil($total / $perPage),
+            'last_page' => $lastPage,
         ]);
     }
 
@@ -444,17 +446,18 @@ class ProblemController extends Controller
         })->values();
 
         // Paginate manually
-        $page = $request->get('page', 1);
-        $perPage = 12;
+        $page = max(1, (int) $request->get('page', 1));
+        $perPage = min((int) $request->input('perPage', 20), 100);
         $total = $allProblems->count();
+        $lastPage = max(1, (int) ceil($total / $perPage));
         $items = $allProblems->slice(($page - 1) * $perPage, $perPage)->values();
 
         return response()->json([
             'data' => $items,
-            'current_page' => (int) $page,
+            'current_page' => $page,
             'per_page' => $perPage,
             'total' => $total,
-            'last_page' => ceil($total / $perPage),
+            'last_page' => $lastPage,
         ]);
     }
 }

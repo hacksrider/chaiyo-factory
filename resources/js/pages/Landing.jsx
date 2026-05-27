@@ -66,8 +66,7 @@ const Landing = () => {
                             <div className="text-center space-y-6 animate-fade-in-up">
                                 <div className="space-y-3">
                                     <h2
-                                        className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text pb-2 text-3xl font-extrabold text-transparent drop-shadow-lg sm:text-4xl md:text-3xl xl:text-5xl"
-                                        style={{ paddingTop: '0.5em', paddingBottom: '0.5em', lineHeight: 1.1 }}
+                                        className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text pb-2 pt-2 text-3xl font-extrabold leading-tight text-transparent drop-shadow-lg sm:text-4xl lg:text-3xl xl:text-4xl 2xl:text-5xl"
                                     >
                                         {t('landing.title')}
                                     </h2>
@@ -80,7 +79,7 @@ const Landing = () => {
                                         className="group relative min-h-0 w-full min-w-0 transform overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 px-3 py-2 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-blue-700 hover:to-indigo-700 hover:shadow-blue-500/50 sm:px-5 sm:py-3 sm:text-lg"
                                         style={{ minWidth: 0 }}
                                     >
-                                        <span className="relative z-10 flex items-center justify-center gap-2 text-lg sm:text-xl md:text-2xl xl:text-lg">
+                                        <span className="relative z-10 flex items-center justify-center gap-2 text-base sm:text-lg md:text-xl lg:text-lg xl:text-xl">
                                             {t('nav.problems')}
                                             <svg className="h-5 w-5 transform transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
@@ -94,7 +93,7 @@ const Landing = () => {
                                         className="group relative min-h-0 w-full min-w-0 transform overflow-hidden rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 px-3 py-2 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-green-700 hover:to-emerald-700 hover:shadow-green-500/50 sm:px-5 sm:py-3 sm:text-lg"
                                         style={{ minWidth: 0 }}
                                     >
-                                        <span className="relative z-10 flex items-center justify-center gap-2 text-lg sm:text-xl md:text-2xl xl:text-lg">
+                                        <span className="relative z-10 flex items-center justify-center gap-2 text-base sm:text-lg md:text-xl lg:text-lg xl:text-xl">
                                             {t('landing.machineMode')}
                                             <svg className="h-5 w-5 transform transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
@@ -109,7 +108,7 @@ const Landing = () => {
                                             className="group relative w-full max-w-md transform overflow-hidden rounded-2xl bg-gradient-to-r from-cyan-600 to-teal-600 px-3 py-2 text-base font-bold text-white shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:from-cyan-700 hover:to-teal-700 hover:shadow-cyan-500/50 sm:px-5 sm:py-3 sm:text-lg md:max-w-lg"
                                             style={{ minWidth: 0 }}
                                         >
-                                            <span className="relative z-10 flex items-center justify-center gap-2 text-lg sm:text-xl md:text-2xl xl:text-lg">
+                                            <span className="relative z-10 flex items-center justify-center gap-2 text-base sm:text-lg md:text-xl lg:text-lg xl:text-xl">
                                                 {t('nav.production')}
                                                 <svg className="h-5 w-5 transform transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
@@ -137,16 +136,16 @@ const Landing = () => {
                             </div>
                         </div>
 
-                        {/* Mobile Images */}
-                        <div className="lg:hidden flex justify-center items-center gap-8 mt-8">
-                            <div className="flex-1 max-w-[148px] animate-fade-in-left">
+                        {/* Mobile Images — ขนาดเล็กลงบนจอแคบเพื่อไม่ดันปุ่มลงเกินไป */}
+                        <div className="mt-6 flex items-center justify-center gap-4 sm:mt-8 sm:gap-8 lg:hidden">
+                            <div className="max-w-[120px] flex-1 animate-fade-in-left sm:max-w-[148px]">
                                 <img
                                     src="/images/redhand.png"
                                     alt="Red Hand"
                                     className="w-full h-auto drop-shadow-xl"
                                 />
                             </div>
-                            <div className="flex-1 max-w-[148px] animate-fade-in-right">
+                            <div className="max-w-[120px] flex-1 animate-fade-in-right sm:max-w-[148px]">
                                 <img
                                     src="/images/chaiyo-right.png"
                                     alt="Chaiyo"

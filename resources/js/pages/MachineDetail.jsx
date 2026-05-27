@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { publicAPI } from '../api';
 import PublicLayout from '../components/PublicLayout';
 import BackButton from '../components/BackButton';
+import LayoutImageViewer from '../components/LayoutImageViewer';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTranslation } from '../utils/translations';
 import { getLocalized } from '../utils/languageHelper';
@@ -66,13 +67,10 @@ const MachineDetail = () => {
                             {machine.layout_image && (
                                 <div className="mb-6 rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6 lg:mb-0">
                                     <h2 className="mb-4 text-xl font-semibold sm:text-2xl">{t('machines.machineLayout')}</h2>
-                                    <div className="w-full overflow-x-auto rounded-lg bg-gray-100">
-                                        <img
-                                            src={`/storage/${machine.layout_image}`}
-                                            alt={t('machines.machineLayout')}
-                                            className="mx-auto block h-auto w-full min-w-[400px] max-w-none sm:min-w-0 sm:max-w-full"
-                                        />
-                                    </div>
+                                    <LayoutImageViewer
+                                        src={`/storage/${machine.layout_image}`}
+                                        alt={t('machines.machineLayout')}
+                                    />
                                 </div>
                             )}
                         </div>

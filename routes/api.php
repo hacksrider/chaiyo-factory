@@ -40,7 +40,7 @@ Route::prefix('production-monitor')->group(function () {
 /*
 |--------------------------------------------------------------------------
 | Production Monitor — ต้อง login (Bearer หรือ ?token= สำหรับ SSE)
-| admin / user เข้าได้ทุก route ในกลุ่มนี้ ยกเว้นย่อยที่สำเร็จด้วย middleware admin
+| ผู้ใช้ที่ login แล้วทุก role เข้าได้ — debug ยังจำกัด admin
 |--------------------------------------------------------------------------
 */
 Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'])->group(function () {
@@ -70,36 +70,36 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
     Route::get('/history-db', [ProductionMonitorController::class, 'getHistoryDb']);
     Route::get('/order-detail-db', [ProductionMonitorController::class, 'orderDetailDb']);
 
-    // ป้ายไฟ — user ธรรมดาใช้ได้
+    // ป้ายไฟ
     Route::post('/led', [ProductionMonitorController::class, 'sendLedCommand']);
     Route::post('/led-command/{machineId}', [ProductionMonitorController::class, 'storeLedCommand']);
 
-    // จัดการการผลิต — เฉพาะ admin
+    // จัดการการผลิต — ผู้ใช้ที่ login แล้วทุก role
+    Route::post('/create-order', [ProductionMonitorController::class, 'createOrder']);
+    Route::post('/update-weight', [ProductionMonitorController::class, 'updateWeight']);
+    Route::post('/close-order', [ProductionMonitorController::class, 'closeOrder']);
+    Route::post('/log-weight-event', [ProductionMonitorController::class, 'logWeightEvent']);
+
+    Route::post('/update-daily-produced', [ProductionMonitorController::class, 'updateDailyProduced']);
+    Route::post('/update-plan-produced', [ProductionMonitorController::class, 'updatePlanProduced']);
+
+    Route::post('/push-to-scale/{machineId}', [ProductionMonitorController::class, 'pushToScale']);
+
+    Route::post('/machine-session/{machineId}', [ProductionMonitorController::class, 'storeMachineSession']);
+
+    Route::post('/queue/{machineId}', [ProductionMonitorController::class, 'enqueueItem']);
+    Route::delete('/queue/{machineId}/{itemId}', [ProductionMonitorController::class, 'deleteQueueItem'])
+        ->whereNumber('itemId');
+
+    Route::post('/start/{machineId}', [ProductionMonitorController::class, 'startSession']);
+    Route::post('/pause/{machineId}', [ProductionMonitorController::class, 'pauseSession']);
+    Route::post('/finish/{machineId}', [ProductionMonitorController::class, 'finishSession']);
+    Route::post('/cancel/{machineId}', [ProductionMonitorController::class, 'cancelSession']);
+
+    Route::delete('/history-order/{id}', [ProductionMonitorController::class, 'deleteFinishedHistoryOrder'])
+        ->whereNumber('id');
+
     Route::middleware('admin')->group(function () {
         Route::get('/debug', [ProductionMonitorController::class, 'debug']);
-
-        Route::post('/create-order', [ProductionMonitorController::class, 'createOrder']);
-        Route::post('/update-weight', [ProductionMonitorController::class, 'updateWeight']);
-        Route::post('/close-order', [ProductionMonitorController::class, 'closeOrder']);
-        Route::post('/log-weight-event', [ProductionMonitorController::class, 'logWeightEvent']);
-
-        Route::post('/update-daily-produced', [ProductionMonitorController::class, 'updateDailyProduced']);
-        Route::post('/update-plan-produced', [ProductionMonitorController::class, 'updatePlanProduced']);
-
-        Route::post('/push-to-scale/{machineId}', [ProductionMonitorController::class, 'pushToScale']);
-
-        Route::post('/machine-session/{machineId}', [ProductionMonitorController::class, 'storeMachineSession']);
-
-        Route::post('/queue/{machineId}', [ProductionMonitorController::class, 'enqueueItem']);
-        Route::delete('/queue/{machineId}/{itemId}', [ProductionMonitorController::class, 'deleteQueueItem'])
-            ->whereNumber('itemId');
-
-        Route::post('/start/{machineId}', [ProductionMonitorController::class, 'startSession']);
-        Route::post('/pause/{machineId}', [ProductionMonitorController::class, 'pauseSession']);
-        Route::post('/finish/{machineId}', [ProductionMonitorController::class, 'finishSession']);
-        Route::post('/cancel/{machineId}', [ProductionMonitorController::class, 'cancelSession']);
-
-        Route::delete('/history-order/{id}', [ProductionMonitorController::class, 'deleteFinishedHistoryOrder'])
-            ->whereNumber('id');
     });
 });

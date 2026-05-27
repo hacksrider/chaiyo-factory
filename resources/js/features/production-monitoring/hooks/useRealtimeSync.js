@@ -49,7 +49,11 @@ const handleAuthFailure = () => {
   }
 };
 
-/** Returns true when token ใช้ไม่ได้ (401 จาก /api/me หรือ stream probe). */
+/**
+ * Returns true เมื่อ token ถูก reject จริงๆ (401/403 จาก /api/me เท่านั้น)
+ * ใช้ /api/me เป็น source of truth — ถ้า /api/me ผ่าน token ยังดีอยู่
+ * ไม่ probe SSE stream เพิ่มเติม เพราะ encoding mismatch อาจทำให้ false-positive
+ */
 const isAuthRejected = async (token) => {
   if (!token) return true;
 
@@ -58,27 +62,9 @@ const isAuthRejected = async (token) => {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
     if (meRes.status === 401 || meRes.status === 403) return true;
-  } catch {
-    return false;
-  }
-
-  try {
-    const probeUrl = `${SSE_URL}?lastId=0&${sseAuthQuery(token)}`;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8_000);
-    const res = await fetch(probeUrl, {
-      headers: { Accept: 'text/event-stream' },
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (res.status === 401 || res.status === 403) return true;
-    if (res.ok) {
-      try {
-        await res.body?.cancel?.();
-      } catch { /* ignore */ }
-    }
     return false;
   } catch {
+    // network error — ไม่ใช่ auth failure ให้ retry ปกติ
     return false;
   }
 };

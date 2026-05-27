@@ -275,7 +275,7 @@ function useFluidTableMetrics(containerRef, rowCount) {
       const rows = Math.max(rowCount, 1);
       const rowH = bodyH / rows;
 
-      const fontSize = Math.max(9, Math.min(20, rowH * 0.42));
+      const fontSize = Math.max(w < 640 ? 11 : 9, Math.min(20, rowH * 0.42));
       const padY = Math.max(1, Math.min(12, rowH * 0.1));
       const padX = Math.max(2, Math.min(14, w * 0.007));
       const headerFont = Math.max(8, Math.min(13, fontSize * 0.82));
@@ -326,7 +326,7 @@ function useFluidStatusMetrics(containerRef, zoneGroups) {
       const bodyH = Math.max(60, h - titleH);
       const bodyW = w;
 
-      const gridCols = zoneCount <= 2 ? 1 : zoneCount <= 6 ? 2 : 2;
+      const gridCols = w < 480 ? 1 : w < 960 ? 1 : zoneCount <= 2 ? 1 : 2;
       const gridRows = Math.ceil(zoneCount / gridCols);
       const zoneH = bodyH / gridRows;
       const zoneW = bodyW / gridCols;
@@ -360,21 +360,210 @@ function useFluidStatusMetrics(containerRef, zoneGroups) {
   return metrics;
 }
 
-// ─── MachineTable ─────────────────────────────────────────────────────────────
+// ─── Shared row builder ───────────────────────────────────────────────────────
+
+function buildDashboardRows(machines, allStates, getMachineState, ledData, t) {
+  return [...machines].sort((a, b) => {
+    const sa = resolveMachineStatus(a, getMachineState(a.id), ledData[a.id]?.text, t);
+    const sb = resolveMachineStatus(b, getMachineState(b.id), ledData[b.id]?.text, t);
+    const rank = { on: 0, fix: 1, off: 2 };
+    const diff = (rank[sa.key] ?? 9) - (rank[sb.key] ?? 9);
+    if (diff !== 0) return diff;
+    return String(a.label).localeCompare(String(b.label), 'th');
+  });
+}
+
+function getDashboardRowData(machine, allStates, getMachineState, ledData, t) {
+  const state = allStates[machine.id] ?? getMachineState(machine.id) ?? DEFAULT_MACHINE_STATE;
+  const led = ledData[machine.id] ?? {};
+  const status = resolveMachineStatus(machine, state, led.text, t);
+  const produced = state.pipeCounter ?? 0;
+  const goodWeight = state.totalGoodWeight ?? 0;
+  const ngWeight = state.totalNgWeight ?? 0;
+  const target = (state.remainingQty > 0 ? state.remainingQty : state.targetQty) ?? 0;
+  const progress = pct(produced, target);
+  const ledLabel = led.noIp
+    ? t('production.ledStatusNoIp')
+    : led.text || t('production.dashboardLedNoText');
+
+  return { machine, state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel };
+}
+
+// ─── Mobile table + status (scrollable, fixed readable sizes) ─────────────────
+
+function getStatusGridCols(containerWidth) {
+  for (const c of [6, 5, 4]) {
+    if (containerWidth / c >= 52) return c;
+  }
+  return 4;
+}
+
+function useStatusGridCols(containerRef) {
+  const [cols, setCols] = useState(4);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return undefined;
+
+    const update = () => setCols(getStatusGridCols(el.clientWidth || 360));
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    update();
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, []);
+
+  return cols;
+}
+
+const LedDot = ({ led, t, size = 6 }) => (
+  <span
+    className={`inline-block shrink-0 rounded-full ${
+      led.noIp
+        ? 'bg-gray-500'
+        : led.online
+          ? 'bg-green-300 shadow-[0_0_4px_rgba(134,239,172,0.8)]'
+          : 'bg-red-400 animate-pulse'
+    }`}
+    style={{ width: size, height: size }}
+    title={
+      led.noIp
+        ? t('production.ledStatusNoIp')
+        : led.online
+          ? t('production.ledStatusOnline')
+          : t('production.ledStatusOffline')
+    }
+  />
+);
+
+const statusShortLabel = (status) => {
+  if (status.key === 'on') return 'ON';
+  if (status.key === 'fix') return 'FX';
+  return '—';
+};
+
+const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t }) => {
+  const rows = useMemo(
+    () => buildDashboardRows(machines, allStates, getMachineState, ledData, t),
+    [machines, allStates, getMachineState, ledData, t],
+  );
+  const rowH = 30;
+  const fontSize = 11;
+  const headerFont = 9;
+  const cellPad = { padding: '4px 6px' };
+
+  return (
+    <div className="rounded-xl border border-gray-800/60 bg-[#0a0a0a]">
+      <div className="border-b border-gray-800/80 bg-gray-900/80 px-2 py-1">
+        <h2 className="text-[10px] font-bold text-white">
+          {t('production.dashboardTableTitle')}
+          <span className="ml-1.5 font-normal text-gray-500">({rows.length})</span>
+        </h2>
+      </div>
+      <table className="w-full border-collapse table-fixed" style={{ fontSize }}>
+        <thead className="bg-gray-900/95 text-gray-500" style={{ fontSize: headerFont }}>
+          <tr className="uppercase tracking-wide">
+            <th className="w-[18%] text-left" style={cellPad}>{t('production.dashboardColMachine')}</th>
+            <th className="w-[8%] text-center" style={cellPad}>{t('production.dashboardColStatus')}</th>
+            <th className="w-[14%] text-right" style={cellPad}>{t('production.dashboardColGoodQty')}</th>
+            <th className="min-w-0 text-left" style={cellPad}>{t('production.dashboardColProduct')}</th>
+            <th className="w-[5%]" style={cellPad} aria-hidden />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((machine) => {
+            const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t);
+            const { state, led, status, produced, ledLabel } = row;
+
+            return (
+              <tr
+                key={machine.id}
+                className={`border-b border-black/10 ${status.rowClass}`}
+                style={{ height: rowH }}
+                title={`${machine.label} · ${status.label} · ${ledLabel}`}
+              >
+                <td className="truncate font-bold align-middle" style={cellPad}>{machine.label}</td>
+                <td className="text-center align-middle font-bold" style={cellPad}>{statusShortLabel(status)}</td>
+                <td className="truncate text-right align-middle font-mono tabular-nums" style={cellPad}>{fmtNum(produced)}</td>
+                <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
+                  {state.productCode || state.productName || '—'}
+                </td>
+                <td className="text-center align-middle" style={cellPad}>
+                  <LedDot led={led} t={t} size={6} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData, t }) => {
+  const containerRef = useRef(null);
+  const cols = useStatusGridCols(containerRef);
+  const flatMachines = useMemo(
+    () => zoneGroups.flatMap(({ zone, machines: zm }) => zm.map((m) => ({ machine: m, zone }))),
+    [zoneGroups],
+  );
+
+  return (
+    <div
+      ref={containerRef}
+      className="rounded-xl border border-gray-800/60 bg-[#0a0a0a]"
+    >
+      <div className="border-b border-gray-800/80 bg-gray-900/80 px-2 py-1">
+        <h2 className="text-[10px] font-bold text-white">
+          {t('production.dashboardStatusMachine')}
+          <span className="ml-1.5 font-normal text-gray-500">({flatMachines.length})</span>
+        </h2>
+      </div>
+      <div className="p-1">
+        <div
+          className="grid w-full"
+          style={{
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+            gap: '6px',
+          }}
+        >
+          {flatMachines.map(({ machine: m, zone }) => {
+            const state = allStates[m.id] ?? getMachineState(m.id);
+            const status = resolveMachineStatus(m, state, ledData[m.id]?.text, t);
+            const isLive = state?.mode === 'live';
+            const value = isLive ? (state.pipeCounter ?? 0) : 0;
+
+            return (
+              <div
+                key={m.id}
+                className={`flex min-h-[44px] flex-col items-center justify-center rounded border border-black/10 px-1 py-1.5 ${status.cardClass}`}
+                title={`${zone} · ${m.label}: ${fmtNum(value)}`}
+              >
+                <span className="max-w-full truncate text-[9px] font-bold leading-tight">
+                  {m.label}
+                </span>
+                <span className="mt-0.5 font-mono text-xs font-black tabular-nums leading-none">
+                  {fmtNum(value)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── MachineTable (desktop / tablet) ──────────────────────────────────────────
 
 const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
   const containerRef = useRef(null);
 
   const rows = useMemo(
-    () =>
-      [...machines].sort((a, b) => {
-        const sa = resolveMachineStatus(a, getMachineState(a.id), ledData[a.id]?.text, t);
-        const sb = resolveMachineStatus(b, getMachineState(b.id), ledData[b.id]?.text, t);
-        const rank = { on: 0, fix: 1, off: 2 };
-        const diff = (rank[sa.key] ?? 9) - (rank[sb.key] ?? 9);
-        if (diff !== 0) return diff;
-        return String(a.label).localeCompare(String(b.label), 'th');
-      }),
+    () => buildDashboardRows(machines, allStates, getMachineState, ledData, t),
     [machines, allStates, getMachineState, ledData, t],
   );
 
@@ -394,9 +583,9 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
           {t('production.dashboardTableTitle')}
         </h2>
       </div>
-      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+      <div className="flex-1 min-h-0 min-w-0 overflow-x-auto overflow-y-auto">
         <table
-          className="w-full h-full text-left border-collapse table-fixed"
+          className="h-full w-full min-w-[880px] border-collapse text-left table-fixed"
           style={{ fontSize: m.fontSize }}
         >
           <colgroup>
@@ -428,17 +617,8 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
           </thead>
           <tbody>
             {rows.map((machine) => {
-              const state = allStates[machine.id] ?? getMachineState(machine.id) ?? DEFAULT_MACHINE_STATE;
-              const led = ledData[machine.id] ?? {};
-              const status = resolveMachineStatus(machine, state, led.text, t);
-              const produced = state.pipeCounter ?? 0;
-              const goodWeight = state.totalGoodWeight ?? 0;
-              const ngWeight = state.totalNgWeight ?? 0;
-              const target = (state.remainingQty > 0 ? state.remainingQty : state.targetQty) ?? 0;
-              const progress = pct(produced, target);
-              const ledLabel = led.noIp
-                ? t('production.ledStatusNoIp')
-                : led.text || t('production.dashboardLedNoText');
+              const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t);
+              const { state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel } = row;
 
               return (
                 <tr
@@ -503,23 +683,7 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
                   </td>
                   <td className="align-middle min-w-0" style={cellPad}>
                     <div className="flex items-center min-w-0 h-full" style={{ gap: Math.max(4, m.padX * 0.5) }}>
-                      <span
-                        className={`rounded-full flex-shrink-0 ${
-                          led.noIp
-                            ? 'bg-gray-500'
-                            : led.online
-                              ? 'bg-green-300 shadow-[0_0_6px_rgba(134,239,172,0.8)]'
-                              : 'bg-red-400 animate-pulse'
-                        }`}
-                        style={{ width: m.dot, height: m.dot }}
-                        title={
-                          led.noIp
-                            ? t('production.ledStatusNoIp')
-                            : led.online
-                              ? t('production.ledStatusOnline')
-                              : t('production.ledStatusOffline')
-                        }
-                      />
+                      <LedDot led={led} t={t} size={m.dot} />
                       <LedMarqueeText
                         text={led.noIp ? t('production.ledStatusNoIp') : ledLabel}
                         fontSize={m.fontSize}
@@ -587,7 +751,7 @@ const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, 
         {zone}
       </h3>
       <div
-        className="flex-1 min-h-0 grid grid-cols-2"
+        className="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2"
         style={{
           gap: metrics.gap,
           gridTemplateRows: `repeat(${cardRows}, minmax(0, 1fr))`,
@@ -632,7 +796,7 @@ const StatusMachinePanel = ({ zoneGroups, allStates, getMachineState, ledData, t
         </h2>
       </div>
       <div
-        className="flex-1 min-h-0 min-w-0 overflow-hidden"
+        className="flex-1 min-h-0 min-w-0 overflow-y-auto overscroll-y-contain"
         style={{ padding: metrics.pad }}
       >
         <div
@@ -676,86 +840,86 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
   const activeCount = machines.filter((m) => m.status?.toLowerCase() !== 'unactive').length;
 
   return (
-    <div className="h-[100dvh] w-screen max-w-[100vw] bg-gray-950 text-white flex flex-col select-none" style={{ boxSizing: 'border-box' }}>
+    <div className="flex h-[100dvh] min-h-0 w-full max-w-[100vw] flex-col bg-gray-950 text-white select-none">
 
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <header className="flex-shrink-0 h-11 bg-gray-900/80 border-b border-gray-700/40
-                         px-3 sm:px-5 flex items-center justify-between gap-2 backdrop-blur-sm">
-        <div className="flex items-center gap-2 sm:gap-5 min-w-0">
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
-            </svg>
-            <span className="text-sm font-bold tracking-tight text-white hidden sm:block">{t('production.dashboardTitle')}</span>
-            <span className="text-sm font-bold tracking-tight text-white sm:hidden">{t('production.dashboardTitleShort')}</span>
-          </div>
-
-          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
-            <span className="flex-shrink-0 flex items-center gap-1.5 text-xs bg-green-500/10 border border-green-500/20
-                             text-green-300 font-semibold px-2 py-0.5 rounded-full">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-              {liveCount}
-              <span className="hidden sm:inline">{t('production.dashboardProducing')}</span>
-            </span>
-            <span className="flex-shrink-0 text-xs text-gray-500 bg-gray-800/60 border border-gray-700/40
-                             px-2 py-0.5 rounded-full">
-              {activeCount}/{machines.length}
-              <span className="hidden sm:inline">{t('production.dashboardMachinesSuffix')}</span>
-            </span>
-          </div>
+      {/* ── Header (compact) ─────────────────────────────────────────────────── */}
+      <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-gray-700/40 bg-gray-900/80 px-2 backdrop-blur-sm sm:h-11 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2">
+          <svg className="h-4 w-4 shrink-0 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+          </svg>
+          <span className="truncate text-xs font-bold text-white sm:text-sm">{t('production.dashboardTitleShort')}</span>
+          <span className="flex shrink-0 items-center gap-1 rounded-full border border-green-500/20 bg-green-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-green-300">
+            <span className="h-1 w-1 animate-pulse rounded-full bg-green-400" />
+            {liveCount}/{machines.length}
+          </span>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
           {lastSyncAt && (
-            <span className="text-[11px] text-gray-600 hidden lg:block">
+            <span className="hidden text-[10px] text-gray-600 lg:block">
               {t('production.dashboardSyncPrefix')}{lastSyncAt.toLocaleTimeString('th-TH')}
             </span>
           )}
-          <div className="flex items-center gap-1.5 bg-gray-800/60 border border-gray-700/40
-                          rounded-lg px-2 sm:px-3 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
-            <span className="font-mono text-xs sm:text-sm font-bold text-cyan-300 tabular-nums">
-              {now.toLocaleTimeString('th-TH')}
-            </span>
-          </div>
+          <span className="font-mono text-[11px] font-bold tabular-nums text-cyan-300 sm:text-sm">
+            {now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
           <button
+            type="button"
             onClick={onClose}
-            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-200
-                       border border-gray-700/50 hover:border-gray-500 px-2.5 sm:px-3 py-1.5 rounded-lg
-                       transition-all"
+            className="rounded-lg border border-gray-700/50 p-1.5 text-gray-500 transition-all hover:border-gray-500 hover:text-gray-200"
+            aria-label={t('production.dashboardExit')}
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
-            {t('production.dashboardExit')}
           </button>
         </div>
       </header>
 
-      {/* ── Main: table (left) + status cards (right) ─────────────────────── */}
-      <div className="flex-1 min-h-0 p-1 sm:p-1.5 flex flex-col lg:flex-row gap-1 sm:gap-1.5 overflow-hidden">
+      {/* ── Main ───────────────────────────────────────────────────────────── */}
+      <div className="min-h-0 flex-1 overflow-hidden p-0.5 sm:p-1">
 
-        {/* Left — machine table (~58%) */}
-        <div className="flex-[3] min-h-0 min-w-0 h-[52%] lg:h-auto lg:max-w-[58%]">
-          <MachineTable
+        {/* Mobile: scroll ทั้งตาราง + สถานะ — แสดงครบทุกเครื่อง */}
+        <div className="flex h-full flex-col gap-2 overflow-y-auto overscroll-y-contain pb-[env(safe-area-inset-bottom)] md:hidden">
+          <MachineCompactTable
             machines={machines}
             allStates={allStates}
             getMachineState={getMachineState}
             ledData={ledData}
             t={t}
           />
-        </div>
-
-        {/* Right — status machine grid (~42%) */}
-        <div className="flex-[2] min-h-0 min-w-0 h-[48%] lg:h-auto">
-          <StatusMachinePanel
+          <StatusMobileOverview
             zoneGroups={zoneGroups}
             allStates={allStates}
             getMachineState={getMachineState}
             ledData={ledData}
             t={t}
           />
+        </div>
+
+        {/* Tablet/desktop: คู่กันแนวนอน */}
+        <div className="hidden h-full min-h-0 flex-row gap-1 overflow-hidden md:flex">
+          <div className="min-h-0 min-w-0 flex-[3] lg:max-w-[58%]">
+            <MachineTable
+              machines={machines}
+              allStates={allStates}
+              getMachineState={getMachineState}
+              ledData={ledData}
+              t={t}
+            />
+          </div>
+
+          <div className="min-h-0 min-w-0 flex-[2]">
+            <StatusMachinePanel
+              zoneGroups={zoneGroups}
+              allStates={allStates}
+              getMachineState={getMachineState}
+              ledData={ledData}
+              t={t}
+            />
+          </div>
         </div>
       </div>
     </div>

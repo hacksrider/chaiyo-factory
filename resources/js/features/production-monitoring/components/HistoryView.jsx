@@ -646,7 +646,42 @@ const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
               <p className="text-sm">{t('production.historyEmptyFiltered')}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile: แถวกระชับ — แตะเพื่อดูรายละเอียด */}
+              <div className="md:hidden">
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-gray-800/80 bg-gray-900/95 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-gray-500">
+                  <span className="w-10 shrink-0">{t('production.historyColMachine')}</span>
+                  <span className="min-w-0 flex-1">{t('production.historyColProductName')}</span>
+                  <span className="w-10 shrink-0 text-right">{t('production.historyColGood')}</span>
+                </div>
+                <div className="divide-y divide-gray-800/50">
+                  {filtered.map((row, i) => (
+                    <div key={row.id != null ? `hist-m-${row.id}` : `hist-m-i-${i}`}>
+                      <button
+                        type="button"
+                        onClick={() => openDetail(row)}
+                        className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-gray-800/30"
+                      >
+                        <span className="w-10 shrink-0 truncate font-mono text-xs font-bold text-white">{row.machine ?? '—'}</span>
+                        <span className="min-w-0 flex-1 truncate text-gray-400">{row.productName ?? row.productCode ?? '—'}</span>
+                        <span className="w-10 shrink-0 text-right font-mono text-green-300">{row.goodCount ?? '—'}</span>
+                      </button>
+                      {allowDeleteHistory && (
+                        <button
+                          type="button"
+                          disabled={deletingId === row.id}
+                          onClick={() => { void handleDeleteRow(row); }}
+                          className="px-2 pb-1 text-[10px] text-red-400 disabled:opacity-40"
+                        >
+                          {deletingId === row.id ? t('common.loading') : t('production.historyColDelete')}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="hidden overflow-x-auto md:block">
               <table className="w-full table-auto text-sm border-collapse min-w-[760px]">
                 <thead className="bg-gray-900/60 sticky top-0 z-10">
                   <tr>
@@ -749,7 +784,8 @@ const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )
         )}
       </div>
@@ -757,48 +793,45 @@ const HistoryView = ({ machines, allowDeleteHistory = false, onExit }) => {
       {/* ── Detail Modal ── */}
       {detailOpen && (
         <div
-          className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 p-2 sm:items-center sm:p-4"
           onClick={() => setDetailOpen(false)}
         >
           <div
-            className="w-full max-w-4xl bg-gray-900 border border-gray-700/60 rounded-2xl shadow-2xl"
+            className="flex max-h-[min(92dvh,720px)] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl border border-gray-700/60 bg-gray-900 shadow-2xl sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="px-4 sm:px-5 py-3.5 border-b border-gray-700/50 flex items-center justify-between gap-3">
-              <div>
+            <div className="flex flex-col gap-3 border-b border-gray-700/50 px-4 py-3.5 sm:flex-row sm:items-start sm:justify-between sm:px-5">
+              <div className="min-w-0">
                 <p className="text-sm font-bold text-white">{t('production.historyDetailTitle')}</p>
-                <p className="text-xs text-gray-500 mt-0.5">
+                <p className="mt-0.5 truncate text-xs text-gray-500">
                   {detailRow?.orderId ? `Order: ${detailRow.orderId}` : ''}{' '}
                   {(detailData?.productCode || detailRow?.productCode) ? `· Code: ${(detailData?.productCode ?? detailRow?.productCode)}` : ''}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => setDetailSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
-                  className="text-xs font-semibold text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500
-                    bg-gray-800/60 px-3 py-1.5 rounded-lg transition-all"
+                  className="rounded-lg border border-gray-700 bg-gray-800/60 px-2.5 py-1.5 text-[11px] font-semibold text-gray-300 transition-all hover:border-gray-500 hover:text-white sm:px-3 sm:text-xs"
                 >
                   {detailSortDir === 'desc' ? t('production.historySortNewest') : t('production.historySortOldest')}
                 </button>
                 <button
                   onClick={exportDetailExcel}
                   disabled={detailLoading || sortedDetailEvents.length === 0}
-                  className="text-xs font-semibold text-green-300 hover:text-green-200 border border-green-500/30 hover:border-green-400/50
-                    bg-green-500/10 hover:bg-green-500/15 px-3 py-1.5 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded-lg border border-green-500/30 bg-green-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-green-300 transition-all hover:border-green-400/50 hover:bg-green-500/15 hover:text-green-200 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:text-xs"
                 >
                   {t('production.historyExportExcel')}
                 </button>
                 <button
                   onClick={() => setDetailOpen(false)}
-                  className="text-xs font-semibold text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500
-                    bg-gray-800/60 px-3 py-1.5 rounded-lg transition-all"
+                  className="rounded-lg border border-gray-700 bg-gray-800/60 px-2.5 py-1.5 text-[11px] font-semibold text-gray-300 transition-all hover:border-gray-500 hover:text-white sm:px-3 sm:text-xs"
                 >
                   {t('common.close')}
                 </button>
               </div>
             </div>
 
-            <div className="px-4 sm:px-5 py-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
               {detailLoading && (
                 <div className="text-sm text-gray-400">{t('common.loading')}</div>
               )}

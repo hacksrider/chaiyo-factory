@@ -121,7 +121,7 @@ function App() {
                     <Route
                         path="/admin/problems"
                         element={
-                            <ProtectedRoute requireAdmin={true}>
+                            <ProtectedRoute>
                                 <ProblemsManagement />
                             </ProtectedRoute>
                         }
@@ -129,7 +129,7 @@ function App() {
                     <Route
                         path="/admin/categories"
                         element={
-                            <ProtectedRoute requireAdmin={true}>
+                            <ProtectedRoute>
                                 <CategoriesManagement />
                             </ProtectedRoute>
                         }
@@ -145,7 +145,7 @@ function App() {
                     <Route
                         path="/admin/page-contents"
                         element={
-                            <ProtectedRoute requireAdmin={true}>
+                            <ProtectedRoute>
                                 <PageContentsManagement />
                             </ProtectedRoute>
                         }
@@ -153,7 +153,7 @@ function App() {
                     <Route
                         path="/admin/machines"
                         element={
-                            <ProtectedRoute requireAdmin={true}>
+                            <ProtectedRoute>
                                 <MachinesManagement />
                             </ProtectedRoute>
                         }

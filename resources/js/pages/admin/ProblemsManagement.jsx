@@ -1,16 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { adminAPI } from '../../api';
-import AdminLayout from '../../components/AdminLayout';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { adminAPI, publicAPI } from '../../api';
+import AppPageLayout from '../../components/AppPageLayout';
+import AdminSearchBar from '../../components/AdminSearchBar';
+import Pagination from '../../components/Pagination';
+import { AdminTruncatedCell } from '../../components/AdminListCards';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { useAlert } from '../../contexts/AlertContext';
 import { formatValidationErrors } from '../../utils/errorTranslator';
 import { useSubmitGuard } from '../../hooks/useSubmitGuard';
+import useDebouncedValue from '../../hooks/useDebouncedValue';
+import { parsePaginatedResponse } from '../../utils/pagination';
+import { LIST_PAGE_SIZE } from '../../hooks/useClientList';
 import MediaPreview from '../../components/MediaPreview';
 
 const ProblemsManagement = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const { showSuccess, showError, showConfirm } = useAlert();
@@ -22,6 +29,9 @@ const ProblemsManagement = () => {
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const debouncedSearch = useDebouncedValue(searchTerm, 300);
+    const [page, setPage] = useState(1);
+    const [pagination, setPagination] = useState({ currentPage: 1, lastPage: 1, total: 0, perPage: LIST_PAGE_SIZE });
     const [editingProblem, setEditingProblem] = useState(null);
     const [formData, setFormData] = useState({
         title: '',
@@ -43,8 +53,12 @@ const ProblemsManagement = () => {
     const solutionVideoFileInputRef = React.useRef(null);
 
     useEffect(() => {
+        setPage(1);
+    }, [debouncedSearch]);
+
+    useEffect(() => {
         fetchData();
-    }, [searchTerm]);
+    }, [debouncedSearch, page]);
 
     // Check if category is machine category
     const isMachineCategory = (categoryId) => {
@@ -74,7 +88,7 @@ const ProblemsManagement = () => {
         const fetchMachines = async () => {
             if (categories.length > 0 && isMachineCategory(formData.category_id)) {
                 try {
-                    const response = await adminAPI.getAllMachines();
+                    const response = await publicAPI.getMachines();
                     setMachines(response.data || []);
                 } catch (error) {
                     console.error('Error fetching machines:', error);
@@ -92,7 +106,7 @@ const ProblemsManagement = () => {
         const fetchZones = async () => {
             if (selectedMachineId && isMachineCategory(formData.category_id)) {
                 try {
-                    const response = await adminAPI.getAllMachineZones(selectedMachineId);
+                    const response = await publicAPI.getMachineZones(selectedMachineId);
                     setZones(response.data || []);
                 } catch (error) {
                     console.error('Error fetching zones:', error);
@@ -107,13 +121,27 @@ const ProblemsManagement = () => {
 
     const fetchData = async () => {
         try {
-            setLoading(true);
-            const params = searchTerm ? { search: searchTerm } : {};
+            if (problems.length === 0) {
+                setLoading(true);
+            }
+            const params = { page, perPage: LIST_PAGE_SIZE };
+            if (debouncedSearch) params.search = debouncedSearch;
             const [problemsRes, categoriesRes] = await Promise.all([
                 adminAPI.getAllProblems(params),
-                adminAPI.getAllCategories(),
+                publicAPI.getCategories(),
             ]);
-            setProblems(problemsRes.data.data || problemsRes.data);
+            const parsed = parsePaginatedResponse(problemsRes);
+            if (parsed.items.length === 0 && parsed.currentPage > 1) {
+                setPage(parsed.lastPage);
+                return;
+            }
+            setProblems(parsed.items);
+            setPagination({
+                currentPage: parsed.currentPage,
+                lastPage: parsed.lastPage,
+                total: parsed.total,
+                perPage: parsed.perPage,
+            });
             setCategories(categoriesRes.data);
         } catch (error) {
             console.error('Error fetching data:', error);
@@ -125,21 +153,25 @@ const ProblemsManagement = () => {
     const handleOpenModal = (problem = null) => {
         if (problem) {
             setEditingProblem(problem);
+            const machineCategory = getMachineCategory();
+            const machineFromZone = problem.machine || problem.zone?.machine;
             const newFormData = {
                 title: problem.title || '',
                 title_mm: problem.title_mm || '',
                 description: problem.description || '',
                 description_mm: problem.description_mm || '',
-                category_id: problem.category_id,
+                category_id: problem.category_id
+                    || (problem.is_machine_zone_problem ? machineCategory?.id : '')
+                    || '',
                 solution_text: problem.solution_text || '',
                 solution_text_mm: problem.solution_text_mm || '',
                 is_active: problem.is_active,
             };
             setFormData(newFormData);
             // For machine zone problems, set machine and zone
-            if (problem.is_machine_zone_problem && problem.machine && problem.zone) {
-                setSelectedMachineId(problem.machine.id);
-                setSelectedZoneId(problem.zone.id);
+            if (problem.is_machine_zone_problem && machineFromZone && problem.zone) {
+                setSelectedMachineId(String(machineFromZone.id));
+                setSelectedZoneId(String(problem.zone.id));
             } else {
                 setSelectedMachineId('');
                 setSelectedZoneId('');
@@ -179,6 +211,17 @@ const ProblemsManagement = () => {
         setShowModal(false);
         setEditingProblem(null);
     };
+
+    useEffect(() => {
+        if (loading) return;
+        if (location.state?.editProblem) {
+            handleOpenModal(location.state.editProblem);
+            navigate(location.pathname, { replace: true, state: {} });
+        } else if (location.state?.openCreate) {
+            handleOpenModal();
+            navigate(location.pathname, { replace: true, state: {} });
+        }
+    }, [loading]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -363,16 +406,16 @@ const ProblemsManagement = () => {
 
     if (loading) {
         return (
-            <AdminLayout>
+            <AppPageLayout>
                 <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
                     <div className="text-lg text-gray-600 sm:text-xl">{t('common.loading')}</div>
                 </div>
-            </AdminLayout>
+            </AppPageLayout>
         );
     }
 
     return (
-        <AdminLayout>
+        <AppPageLayout>
             <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageProblems')}</h1>
@@ -386,97 +429,189 @@ const ProblemsManagement = () => {
                 </div>
                 
                 {/* Search */}
-                <div className="mb-6">
-                    <input
-                        type="text"
-                        placeholder={t('admin.searchProblems')}
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full max-w-md rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                </div>
-                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
-                    <div className="overflow-x-auto">
-                    <table className="min-w-[900px] w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.problemTitle')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('problems.category')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">เครื่องจักร/โซน</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.views')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.lastUpdatedBy')}</th>
-                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
+                <AdminSearchBar
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder={t('admin.searchProblems')}
+                />
+                {problems.length === 0 ? (
+                    <div className="rounded-lg border border-gray-100 bg-white px-4 py-12 text-center text-sm text-gray-500 shadow-md">
+                        {debouncedSearch ? t('common.noSearchResults') : t('problems.noProblems')}
+                    </div>
+                ) : (
+                    <>
+                        {/* Mobile / tablet card list */}
+                        <div className="space-y-3 lg:hidden">
                             {problems.map((problem) => {
                                 const isMachineZoneProblem = problem.is_machine_zone_problem === true;
+                                const problemKey = isMachineZoneProblem ? `machine-zone-${problem.id}` : `problem-${problem.id}`;
+                                const categoryLabel = problem.category?.name || (isMachineZoneProblem ? 'เครื่องจักร' : '-');
+                                const updatedBy = problem.updated_by_user?.name || problem.updated_by_user?.username || '-';
+
                                 return (
-                                    <tr key={isMachineZoneProblem ? `machine-zone-${problem.id}` : `problem-${problem.id}`}>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="text-sm font-medium text-gray-900">{problem.title}</div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="text-sm text-gray-500">
-                                                {problem.category?.name || (isMachineZoneProblem ? 'เครื่องจักร' : '-')}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            {isMachineZoneProblem && problem.machine && problem.zone ? (
-                                                <div className="text-sm text-gray-500">
-                                                    <div className="font-medium">{problem.machine.code || problem.machine.name}</div>
-                                                    <div className="text-xs text-gray-400">→ {problem.zone.code || problem.zone.name}</div>
-                                                </div>
-                                            ) : (
-                                                <div className="text-sm text-gray-400">-</div>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="text-sm text-gray-500">{problem.views || 0}</div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <span className={`px-2 py-1 text-xs rounded-full ${
+                                    <article
+                                        key={problemKey}
+                                        className="rounded-lg border border-gray-100 bg-white p-4 shadow-md"
+                                    >
+                                        <div className="mb-3 flex items-start justify-between gap-3">
+                                            <h2 className="line-clamp-2 min-w-0 flex-1 text-base font-semibold leading-snug text-gray-900">
+                                                {problem.title}
+                                            </h2>
+                                            <span className={`shrink-0 rounded-full px-2 py-1 text-xs ${
                                                 problem.is_active
                                                     ? 'bg-green-100 text-green-800'
                                                     : 'bg-red-100 text-red-800'
                                             }`}>
                                                 {problem.is_active ? t('common.active') : t('common.inactive')}
                                             </span>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="text-sm text-gray-500">
-                                                {problem.updated_by_user?.name || problem.updated_by_user?.username || '-'}
+                                        </div>
+
+                                        <dl className="space-y-2 text-sm">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <dt className="shrink-0 text-gray-500">{t('problems.category')}</dt>
+                                                <dd className="text-right text-gray-900">{categoryLabel}</dd>
                                             </div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                            {isMachineZoneProblem && problem.machine && problem.zone && (
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <dt className="shrink-0 text-gray-500">เครื่องจักร/โซน</dt>
+                                                    <dd className="text-right text-gray-900">
+                                                        <div className="font-medium">{problem.machine.code || problem.machine.name}</div>
+                                                        <div className="text-xs text-gray-500">→ {problem.zone.code || problem.zone.name}</div>
+                                                    </dd>
+                                                </div>
+                                            )}
+                                            <div className="flex items-center justify-between gap-3">
+                                                <dt className="text-gray-500">{t('common.views')}</dt>
+                                                <dd className="text-gray-900">{problem.views || 0}</dd>
+                                            </div>
+                                            <div className="flex items-start justify-between gap-3">
+                                                <dt className="shrink-0 text-gray-500">{t('admin.lastUpdatedBy')}</dt>
+                                                <dd className="min-w-0 break-words text-right text-gray-900">{updatedBy}</dd>
+                                            </div>
+                                        </dl>
+
+                                        <div className="mt-4 flex gap-2 border-t border-gray-100 pt-3">
                                             <button
+                                                type="button"
                                                 onClick={() => handleOpenModal(problem)}
-                                                className="text-blue-600 hover:text-blue-900 mr-4"
+                                                className="flex-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
                                             >
                                                 {t('common.edit')}
                                             </button>
                                             <button
+                                                type="button"
                                                 onClick={() => handleDelete(problem)}
-                                                className="text-red-600 hover:text-red-900"
+                                                className="flex-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-100"
                                             >
                                                 {t('common.delete')}
                                             </button>
-                                        </td>
-                                    </tr>
+                                        </div>
+                                    </article>
                                 );
                             })}
-                        </tbody>
-                    </table>
-                    </div>
-                </div>
+                        </div>
+
+                        {/* Desktop table */}
+                        <div className="hidden overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md lg:block">
+                            <div className="overflow-x-auto">
+                                <table className="min-w-[900px] w-full divide-y divide-gray-200">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.problemTitle')}</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('problems.category')}</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">เครื่องจักร/โซน</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.views')}</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.lastUpdatedBy')}</th>
+                                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-200 bg-white">
+                                        {problems.map((problem) => {
+                                            const isMachineZoneProblem = problem.is_machine_zone_problem === true;
+                                            return (
+                                                <tr key={isMachineZoneProblem ? `machine-zone-${problem.id}` : `problem-${problem.id}`}>
+                                                    <td className="px-6 py-4">
+                                                        <AdminTruncatedCell className="max-w-sm">{problem.title}</AdminTruncatedCell>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <AdminTruncatedCell tone="muted">
+                                                            {problem.category?.name || (isMachineZoneProblem ? 'เครื่องจักร' : '-')}
+                                                        </AdminTruncatedCell>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        {isMachineZoneProblem && problem.machine && problem.zone ? (
+                                                            <div className="min-w-0 max-w-xs">
+                                                                <AdminTruncatedCell>
+                                                                    {problem.machine.code || problem.machine.name}
+                                                                </AdminTruncatedCell>
+                                                                <AdminTruncatedCell tone="muted" className="max-w-xs text-xs">
+                                                                    → {problem.zone.code || problem.zone.name}
+                                                                </AdminTruncatedCell>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-sm text-gray-400">-</div>
+                                                        )}
+                                                    </td>
+                                                    <td className="whitespace-nowrap px-6 py-4">
+                                                        <div className="text-sm text-gray-500">{problem.views || 0}</div>
+                                                    </td>
+                                                    <td className="whitespace-nowrap px-6 py-4">
+                                                        <span className={`rounded-full px-2 py-1 text-xs ${
+                                                            problem.is_active
+                                                                ? 'bg-green-100 text-green-800'
+                                                                : 'bg-red-100 text-red-800'
+                                                        }`}>
+                                                            {problem.is_active ? t('common.active') : t('common.inactive')}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <AdminTruncatedCell tone="muted">
+                                                            {problem.updated_by_user?.name || problem.updated_by_user?.username || '-'}
+                                                        </AdminTruncatedCell>
+                                                    </td>
+                                                    <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleOpenModal(problem)}
+                                                            className="mr-4 text-blue-600 hover:text-blue-900"
+                                                        >
+                                                            {t('common.edit')}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDelete(problem)}
+                                                            className="text-red-600 hover:text-red-900"
+                                                        >
+                                                            {t('common.delete')}
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <Pagination
+                            className="mt-6"
+                            currentPage={pagination.currentPage}
+                            lastPage={pagination.lastPage}
+                            total={pagination.total}
+                            perPage={pagination.perPage}
+                            onPageChange={setPage}
+                            t={t}
+                        />
+                    </>
+                )}
             </div>
 
             {/* Modal */}
             {showModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                        <div className="p-6">
+                <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                    <div className="max-h-[min(90dvh,720px)] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
+                        <div className="p-4 sm:p-6">
                             <h2 className="text-2xl font-bold mb-4">
                                 {editingProblem ? t('admin.editProblem') : t('admin.addProblem')}
                             </h2>
@@ -721,7 +856,7 @@ const ProblemsManagement = () => {
                     </div>
                 </div>
             )}
-        </AdminLayout>
+        </AppPageLayout>
     );
 };
 

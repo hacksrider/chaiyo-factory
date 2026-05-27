@@ -59,27 +59,33 @@ const Alert = ({ type = 'info', title, message, onClose, show = false }) => {
     const styles = typeStyles[type] || typeStyles.info;
 
     return (
-        <div className="fixed top-4 right-4 z-50 max-w-md w-full animate-slide-in">
+        <div
+            className="fixed top-4 left-4 right-4 z-50 mx-auto max-w-md animate-slide-in sm:left-auto sm:right-4 sm:mx-0"
+            role="alert"
+            aria-live="polite"
+        >
             <div className={`${styles.bg} ${styles.border} border rounded-lg shadow-lg p-4`}>
-                <div className="flex items-start">
+                <div className="flex items-start gap-3">
                     <div className={`flex-shrink-0 ${styles.icon}`}>
                         <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                             {styles.iconPath}
                         </svg>
                     </div>
-                    <div className="ml-3 flex-1">
+                    <div className="min-w-0 flex-1">
                         {title && (
-                            <h3 className={`text-sm font-medium ${styles.title} mb-1`}>
+                            <h3 className={`text-sm font-medium ${styles.title} mb-1 break-words`}>
                                 {title}
                             </h3>
                         )}
-                        <p className={`text-sm ${styles.message}`}>
+                        <p className={`text-sm ${styles.message} break-words`}>
                             {message}
                         </p>
                     </div>
                     <button
+                        type="button"
                         onClick={onClose}
-                        className={`ml-4 flex-shrink-0 ${styles.message} hover:opacity-75 transition-opacity`}
+                        aria-label="Close"
+                        className={`flex-shrink-0 ${styles.message} hover:opacity-75 transition-opacity`}
                     >
                         <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />

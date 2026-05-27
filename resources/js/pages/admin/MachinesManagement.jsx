@@ -1,7 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { adminAPI } from '../../api';
-import AdminLayout from '../../components/AdminLayout';
+import AppPageLayout from '../../components/AppPageLayout';
 import MediaPreview from '../../components/MediaPreview';
+import {
+    AdminCardButton,
+    AdminCardRow,
+    AdminCardRows,
+    AdminDesktopTable,
+    AdminListEmpty,
+    AdminMobileCard,
+    AdminMobileCardList,
+    AdminStatusBadge,
+    AdminTruncatedCell,
+} from '../../components/AdminListCards';
+import AdminSearchBar from '../../components/AdminSearchBar';
+import Pagination from '../../components/Pagination';
+import useClientList, { LIST_PAGE_SIZE } from '../../hooks/useClientList';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { useAlert } from '../../contexts/AlertContext';
@@ -15,6 +29,8 @@ const MachinesManagement = () => {
     const { isSubmitting, run } = useSubmitGuard();
     const [machines, setMachines] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [page, setPage] = useState(1);
     const [showModal, setShowModal] = useState(false);
     const [editingMachine, setEditingMachine] = useState(null);
     const [formData, setFormData] = useState({
@@ -44,6 +60,23 @@ const MachinesManagement = () => {
     const [zoneImageFile, setZoneImageFile] = useState(null);
     const [removeZoneImage, setRemoveZoneImage] = useState(false);
     const zoneImageFileInputRef = useRef(null);
+
+    const { paginated, lastPage, safePage, total, perPage } = useClientList(machines, {
+        search: searchTerm,
+        searchKeys: ['code', 'name', 'name_mm', 'description', 'description_mm'],
+        page,
+        perPage: LIST_PAGE_SIZE,
+    });
+
+    useEffect(() => {
+        setPage(1);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        if (safePage !== page) {
+            setPage(safePage);
+        }
+    }, [safePage, page]);
 
     useEffect(() => {
         fetchMachines();
@@ -284,16 +317,16 @@ const MachinesManagement = () => {
 
     if (loading) {
         return (
-            <AdminLayout>
+            <AppPageLayout>
                 <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
                     <div className="text-lg text-gray-600 sm:text-xl">{t('common.loading')}</div>
                 </div>
-            </AdminLayout>
+            </AppPageLayout>
         );
     }
 
     return (
-        <AdminLayout>
+        <AppPageLayout>
             <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">{t('admin.manageMachines')}</h1>
@@ -306,67 +339,123 @@ const MachinesManagement = () => {
                     </button>
                 </div>
 
-                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
-                    <div className="overflow-x-auto">
-                    <table className="min-w-[640px] w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.code')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
-                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                            {machines.map((machine) => (
-                                <tr key={machine.id}>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                        {machine.code}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {machine.name}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`px-2 py-1 text-xs rounded-full ${
-                                            machine.is_active
-                                                ? 'bg-green-100 text-green-800'
-                                                : 'bg-red-100 text-red-800'
-                                        }`}>
-                                            {machine.is_active ? t('common.active') : t('common.inactive')}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <button
-                                            onClick={() => handleManageZones(machine)}
-                                            className="text-green-600 hover:text-green-900 mr-4"
-                                        >
-                                            {t('admin.manageZones')}
-                                        </button>
-                                        <button
-                                            onClick={() => handleOpenModal(machine)}
-                                            className="text-blue-600 hover:text-blue-900 mr-4"
-                                        >
-                                            {t('common.edit')}
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(machine.id)}
-                                            className="text-red-600 hover:text-red-900"
-                                        >
-                                            {t('common.delete')}
-                                        </button>
-                                    </td>
-                                </tr>
+                <AdminSearchBar
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder={t('admin.searchMachines')}
+                />
+
+                {machines.length === 0 ? (
+                    <AdminListEmpty message={t('machines.noMachines')} />
+                ) : paginated.length === 0 ? (
+                    <AdminListEmpty message={t('common.noSearchResults')} />
+                ) : (
+                    <>
+                        <AdminMobileCardList>
+                            {paginated.map((machine) => (
+                                <AdminMobileCard
+                                    key={machine.id}
+                                    title={`${machine.code} — ${machine.name}`}
+                                    badge={
+                                        <AdminStatusBadge
+                                            active={machine.is_active}
+                                            activeLabel={t('common.active')}
+                                            inactiveLabel={t('common.inactive')}
+                                        />
+                                    }
+                                    actions={
+                                        <>
+                                            <AdminCardButton variant="success" onClick={() => handleManageZones(machine)}>
+                                                {t('admin.manageZones')}
+                                            </AdminCardButton>
+                                            <AdminCardButton onClick={() => handleOpenModal(machine)}>
+                                                {t('common.edit')}
+                                            </AdminCardButton>
+                                            <AdminCardButton variant="danger" onClick={() => handleDelete(machine.id)}>
+                                                {t('common.delete')}
+                                            </AdminCardButton>
+                                        </>
+                                    }
+                                >
+                                    <AdminCardRows>
+                                        <AdminCardRow label={t('common.name')} value={machine.name} />
+                                    </AdminCardRows>
+                                </AdminMobileCard>
                             ))}
-                        </tbody>
-                    </table>
-                    </div>
-                </div>
+                        </AdminMobileCardList>
+
+                        <AdminDesktopTable>
+                            <table className="min-w-[640px] w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.code')}</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200 bg-white">
+                                    {paginated.map((machine) => (
+                                        <tr key={machine.id}>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell>{machine.code}</AdminTruncatedCell>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell tone="muted">{machine.name}</AdminTruncatedCell>
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4">
+                                                <AdminStatusBadge
+                                                    active={machine.is_active}
+                                                    activeLabel={t('common.active')}
+                                                    inactiveLabel={t('common.inactive')}
+                                                />
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleManageZones(machine)}
+                                                    className="mr-4 text-green-600 hover:text-green-900"
+                                                >
+                                                    {t('admin.manageZones')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleOpenModal(machine)}
+                                                    className="mr-4 text-blue-600 hover:text-blue-900"
+                                                >
+                                                    {t('common.edit')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDelete(machine.id)}
+                                                    className="text-red-600 hover:text-red-900"
+                                                >
+                                                    {t('common.delete')}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </AdminDesktopTable>
+
+                        <Pagination
+                            className="mt-6"
+                            currentPage={safePage}
+                            lastPage={lastPage}
+                            total={total}
+                            perPage={perPage}
+                            onPageChange={setPage}
+                            t={t}
+                        />
+                    </>
+                )}
 
                 {/* Modal */}
                 {showModal && (
-                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                        <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                            <div className="p-6">
+                    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                        <div className="max-h-[min(90dvh,720px)] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
+                            <div className="p-4 sm:p-6">
                                 <h2 className="text-2xl font-bold mb-4">
                                     {editingMachine ? t('admin.editMachine') : t('admin.addMachine')}
                                 </h2>
@@ -500,9 +589,9 @@ const MachinesManagement = () => {
 
                 {/* Zone Management Modal */}
                 {selectedMachine && (
-                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                        <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-                            <div className="p-6">
+                    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                        <div className="max-h-[min(90dvh,720px)] w-full max-w-4xl overflow-y-auto rounded-lg bg-white shadow-xl">
+                            <div className="p-4 sm:p-6">
                                 <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                     <h2 className="break-words pr-2 text-lg font-bold sm:text-2xl">
                                         {t('admin.manageZonesFor')} {selectedMachine.code} ({selectedMachine.name})
@@ -523,58 +612,82 @@ const MachinesManagement = () => {
                                     </div>
                                 </div>
 
-                                <div className="mb-4 overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
-                                    <div className="overflow-x-auto">
-                                    <table className="min-w-[560px] w-full divide-y divide-gray-200">
-                                        <thead className="bg-gray-50">
-                                            <tr>
-                                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
-                                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
-                                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="bg-white divide-y divide-gray-200">
-                                            {zones.length === 0 ? (
-                                                <tr>
-                                                    <td colSpan="4" className="px-6 py-4 text-center text-gray-500">
-                                                        {t('admin.noZones')}
-                                                    </td>
-                                                </tr>
-                                            ) : (
-                                                zones.map((zone) => (
-                                                    <tr key={zone.id}>
-                                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                                            {zone.name}
-                                                        </td>
-                                                        <td className="px-6 py-4 whitespace-nowrap">
-                                                            <span className={`px-2 py-1 text-xs rounded-full ${
-                                                                zone.is_active
-                                                                    ? 'bg-green-100 text-green-800'
-                                                                    : 'bg-red-100 text-red-800'
-                                                            }`}>
-                                                                {zone.is_active ? t('common.active') : t('common.inactive')}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                            <button
-                                                                onClick={() => handleOpenZoneModal(zone)}
-                                                                className="text-blue-600 hover:text-blue-900 mr-4"
-                                                            >
-                                                                {t('common.edit')}
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleDeleteZone(zone.id)}
-                                                                className="text-red-600 hover:text-red-900"
-                                                            >
-                                                                {t('common.delete')}
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))
-                                            )}
-                                        </tbody>
-                                    </table>
-                                    </div>
+                                <div className="mb-4">
+                                    {zones.length === 0 ? (
+                                        <AdminListEmpty message={t('admin.noZones')} />
+                                    ) : (
+                                        <>
+                                            <AdminMobileCardList>
+                                                {zones.map((zone) => (
+                                                    <AdminMobileCard
+                                                        key={zone.id}
+                                                        title={zone.name}
+                                                        badge={
+                                                            <AdminStatusBadge
+                                                                active={zone.is_active}
+                                                                activeLabel={t('common.active')}
+                                                                inactiveLabel={t('common.inactive')}
+                                                            />
+                                                        }
+                                                        actions={
+                                                            <>
+                                                                <AdminCardButton onClick={() => handleOpenZoneModal(zone)}>
+                                                                    {t('common.edit')}
+                                                                </AdminCardButton>
+                                                                <AdminCardButton variant="danger" onClick={() => handleDeleteZone(zone.id)}>
+                                                                    {t('common.delete')}
+                                                                </AdminCardButton>
+                                                            </>
+                                                        }
+                                                    />
+                                                ))}
+                                            </AdminMobileCardList>
+
+                                            <AdminDesktopTable>
+                                                <table className="min-w-[560px] w-full divide-y divide-gray-200">
+                                                    <thead className="bg-gray-50">
+                                                        <tr>
+                                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
+                                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.status')}</th>
+                                                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-gray-200 bg-white">
+                                                        {zones.map((zone) => (
+                                                            <tr key={zone.id}>
+                                                                <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900">
+                                                                    {zone.name}
+                                                                </td>
+                                                                <td className="whitespace-nowrap px-6 py-4">
+                                                                    <AdminStatusBadge
+                                                                        active={zone.is_active}
+                                                                        activeLabel={t('common.active')}
+                                                                        inactiveLabel={t('common.inactive')}
+                                                                    />
+                                                                </td>
+                                                                <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleOpenZoneModal(zone)}
+                                                                        className="mr-4 text-blue-600 hover:text-blue-900"
+                                                                    >
+                                                                        {t('common.edit')}
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleDeleteZone(zone.id)}
+                                                                        className="text-red-600 hover:text-red-900"
+                                                                    >
+                                                                        {t('common.delete')}
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </AdminDesktopTable>
+                                        </>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -583,9 +696,9 @@ const MachinesManagement = () => {
 
                 {/* Zone Form Modal */}
                 {showZoneModal && (
-                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
-                        <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                            <div className="p-6">
+                    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                        <div className="max-h-[min(90dvh,720px)] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
+                            <div className="p-4 sm:p-6">
                                 <h2 className="text-2xl font-bold mb-4">
                                     {editingZone ? t('admin.editZone') : t('admin.addZone')}
                                 </h2>
@@ -704,7 +817,7 @@ const MachinesManagement = () => {
                     </div>
                 )}
             </div>
-        </AdminLayout>
+        </AppPageLayout>
     );
 };
 

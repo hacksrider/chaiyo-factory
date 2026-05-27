@@ -1,7 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { adminAPI } from '../../api';
-import AdminLayout from '../../components/AdminLayout';
+import AppPageLayout from '../../components/AppPageLayout';
+import {
+    AdminCardButton,
+    AdminCardRow,
+    AdminCardRows,
+    AdminDesktopTable,
+    AdminListEmpty,
+    AdminMobileCard,
+    AdminMobileCardList,
+    AdminTruncatedCell,
+} from '../../components/AdminListCards';
+import AdminSearchBar from '../../components/AdminSearchBar';
+import Pagination from '../../components/Pagination';
+import useClientList, { LIST_PAGE_SIZE } from '../../hooks/useClientList';
 import { useAlert } from '../../contexts/AlertContext';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
@@ -16,6 +29,8 @@ const PageContentsManagement = () => {
     const { isSubmitting, run } = useSubmitGuard();
     const [contents, setContents] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [page, setPage] = useState(1);
     const [showModal, setShowModal] = useState(false);
     const [editingContent, setEditingContent] = useState(null);
     const [formData, setFormData] = useState({
@@ -23,6 +38,23 @@ const PageContentsManagement = () => {
         title: '',
         content: '',
     });
+
+    const { paginated, lastPage, safePage, total, perPage } = useClientList(contents, {
+        search: searchTerm,
+        searchKeys: ['page_key', 'title', 'content'],
+        page,
+        perPage: LIST_PAGE_SIZE,
+    });
+
+    useEffect(() => {
+        setPage(1);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        if (safePage !== page) {
+            setPage(safePage);
+        }
+    }, [safePage, page]);
 
     useEffect(() => {
         fetchContents();
@@ -113,16 +145,16 @@ const PageContentsManagement = () => {
 
     if (loading) {
         return (
-            <AdminLayout>
+            <AppPageLayout>
                 <div className="flex min-h-0 w-full min-w-0 flex-1 items-center justify-center bg-gray-50 px-4 py-12">
                     <div className="text-lg text-gray-600 sm:text-xl">กำลังโหลด...</div>
                 </div>
-            </AdminLayout>
+            </AppPageLayout>
         );
     }
 
     return (
-        <AdminLayout>
+        <AppPageLayout>
             <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50 px-3 py-6 sm:px-4 lg:px-6 sm:py-8">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <h1 className="text-xl font-bold sm:text-2xl">จัดการเนื้อหา</h1>
@@ -134,59 +166,114 @@ const PageContentsManagement = () => {
                         + เพิ่มเนื้อหา
                     </button>
                 </div>
-                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
-                    <div className="overflow-x-auto">
-                    <table className="min-w-[720px] w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Page Key</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">หัวข้อ</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">เนื้อหา</th>
-                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">จัดการ</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                            {contents.map((content) => (
-                                <tr key={content.id}>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <div className="text-sm font-medium text-gray-900">{content.page_key}</div>
-                                    </td>
-                                    <td className="px-6 py-4">
-                                        <div className="text-sm font-medium text-gray-900">{content.title}</div>
-                                    </td>
-                                    <td className="px-6 py-4">
-                                        <div className="text-sm text-gray-500 line-clamp-2">
-                                            {content.content.substring(0, 100)}...
-                                        </div>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <button
-                                            onClick={() => handleOpenModal(content)}
-                                            className="text-blue-600 hover:text-blue-900 mr-4"
-                                        >
-                                            แก้ไข
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(content.id)}
-                                            className="text-red-600 hover:text-red-900"
-                                        >
-                                            ลบ
-                                        </button>
-                                    </td>
-                                </tr>
+                <AdminSearchBar
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder={t('admin.searchPageContents')}
+                />
+                {contents.length === 0 ? (
+                    <AdminListEmpty message={t('admin.noPageContents')} />
+                ) : paginated.length === 0 ? (
+                    <AdminListEmpty message={t('common.noSearchResults')} />
+                ) : (
+                    <>
+                        <AdminMobileCardList>
+                            {paginated.map((content) => (
+                                <AdminMobileCard
+                                    key={content.id}
+                                    title={content.title}
+                                    actions={
+                                        <>
+                                            <AdminCardButton onClick={() => handleOpenModal(content)}>
+                                                แก้ไข
+                                            </AdminCardButton>
+                                            <AdminCardButton variant="danger" onClick={() => handleDelete(content.id)}>
+                                                ลบ
+                                            </AdminCardButton>
+                                        </>
+                                    }
+                                >
+                                    <AdminCardRows>
+                                        <AdminCardRow label="Page Key" value={content.page_key} />
+                                        <AdminCardRow
+                                            label="เนื้อหา"
+                                            value={
+                                                <span className="line-clamp-3 break-words">
+                                                    {content.content.substring(0, 100)}...
+                                                </span>
+                                            }
+                                            multiline
+                                        />
+                                    </AdminCardRows>
+                                </AdminMobileCard>
                             ))}
-                        </tbody>
-                    </table>
-                    </div>
-                </div>
+                        </AdminMobileCardList>
+
+                        <AdminDesktopTable>
+                            <table className="min-w-[720px] w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Page Key</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">หัวข้อ</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">เนื้อหา</th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">จัดการ</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200 bg-white">
+                                    {paginated.map((content) => (
+                                        <tr key={content.id}>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell>{content.page_key}</AdminTruncatedCell>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell>{content.title}</AdminTruncatedCell>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell tone="muted" clamp={2} className="max-w-md">
+                                                    {content.content.substring(0, 100)}...
+                                                </AdminTruncatedCell>
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleOpenModal(content)}
+                                                    className="mr-4 text-blue-600 hover:text-blue-900"
+                                                >
+                                                    แก้ไข
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDelete(content.id)}
+                                                    className="text-red-600 hover:text-red-900"
+                                                >
+                                                    ลบ
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </AdminDesktopTable>
+
+                        <Pagination
+                            className="mt-6"
+                            currentPage={safePage}
+                            lastPage={lastPage}
+                            total={total}
+                            perPage={perPage}
+                            onPageChange={setPage}
+                            t={t}
+                        />
+                    </>
+                )}
             </div>
 
             {/* Modal */}
             {showModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                        <div className="p-6">
-                            <h2 className="text-2xl font-bold mb-4">
+                <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                    <div className="max-h-[min(90dvh,720px)] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
+                        <div className="p-4 sm:p-6">
+                            <h2 className="mb-4 text-xl font-bold sm:text-2xl">
                                 {editingContent ? 'แก้ไขเนื้อหา' : 'เพิ่มเนื้อหาใหม่'}
                             </h2>
                             <form onSubmit={handleSubmit} className="space-y-4">
@@ -252,7 +339,7 @@ const PageContentsManagement = () => {
                     </div>
                 </div>
             )}
-        </AdminLayout>
+        </AppPageLayout>
     );
 };
 

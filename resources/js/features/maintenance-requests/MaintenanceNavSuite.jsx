@@ -865,36 +865,44 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
                         )}
                     </button>
                     {bellOpen && (
-                        <div className={`absolute right-0 top-full z-[80] mt-1 w-[min(calc(100vw-2rem),22rem)] rounded-lg ${panelCls}`}>
-                            <div className="flex items-center justify-between gap-2 border-b border-gray-200 px-3 py-2">
-                                <span className="text-sm font-semibold text-gray-900">{t('maintenance.notifications')}</span>
-                                <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs">
-                                    <button
-                                        type="button"
-                                        className="text-red-600 hover:underline"
-                                        onClick={() => void deleteAllNotificationsAction()}
-                                    >
-                                        {t('maintenance.clearNotificationHistory')}
-                                    </button>
-                                    <span className="text-gray-300">|</span>
-                                    <button
-                                        type="button"
-                                        className="text-blue-600 hover:underline"
-                                        onClick={async () => {
-                                            try {
-                                                await maintenanceAPI.markAllNotificationsRead();
-                                                refreshUnread();
-                                                loadNotifications();
-                                            } catch {
-                                                /* */
-                                            }
-                                        }}
-                                    >
-                                        {t('maintenance.markAllRead')}
-                                    </button>
+                        <>
+                            <button
+                                type="button"
+                                className="fixed inset-0 z-[75] bg-black/20 lg:hidden"
+                                aria-label={t('common.close')}
+                                onClick={() => setBellOpen(false)}
+                            />
+                            <div
+                                className={`z-[80] flex max-h-[min(70dvh,28rem)] w-auto flex-col overflow-hidden rounded-xl lg:absolute lg:right-0 lg:top-full lg:mt-1 lg:max-h-none lg:w-[min(calc(100vw-2rem),22rem)] lg:rounded-lg max-lg:fixed max-lg:inset-x-3 max-lg:top-[3.75rem] ${panelCls}`}
+                            >
+                                <div className="flex flex-col gap-2 border-b border-gray-200 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                                    <span className="shrink-0 text-sm font-semibold text-gray-900">{t('maintenance.notifications')}</span>
+                                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                                        <button
+                                            type="button"
+                                            className="text-left text-red-600 hover:underline"
+                                            onClick={() => void deleteAllNotificationsAction()}
+                                        >
+                                            {t('maintenance.clearNotificationHistory')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="text-left text-blue-600 hover:underline"
+                                            onClick={async () => {
+                                                try {
+                                                    await maintenanceAPI.markAllNotificationsRead();
+                                                    refreshUnread();
+                                                    loadNotifications();
+                                                } catch {
+                                                    /* */
+                                                }
+                                            }}
+                                        >
+                                            {t('maintenance.markAllRead')}
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                            <div className="max-h-[min(60vh,22rem)] overflow-y-auto">
+                                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                                 {notifLoading ? (
                                     <div className="p-4 text-center text-sm text-gray-500">{t('common.loading')}</div>
                                 ) : notifList.length === 0 ? (
@@ -940,6 +948,7 @@ export default function MaintenanceNavSuite({ variant = 'light' }) {
                                 )}
                             </div>
                         </div>
+                        </>
                     )}
                 </div>
             </div>

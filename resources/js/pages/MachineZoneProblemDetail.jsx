@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { publicAPI } from '../api';
+import { publicAPI, adminAPI } from '../api';
+import { useAuth } from '../contexts/AuthContext';
+import { useAlert } from '../contexts/AlertContext';
 import PublicLayout from '../components/PublicLayout';
 import BackButton from '../components/BackButton';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -10,6 +12,10 @@ import { getLocalized } from '../utils/languageHelper';
 
 const MachineZoneProblemDetail = () => {
     const { id } = useParams();
+    const navigate = useNavigate();
+    const { user } = useAuth();
+    const canManageProblems = Boolean(user);
+    const { showConfirm, showSuccess, showError } = useAlert();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const [problem, setProblem] = useState(null);
@@ -50,6 +56,35 @@ const MachineZoneProblemDetail = () => {
         return window.location.href;
     };
 
+    const handleEdit = () => {
+        navigate('/admin/problems', {
+            state: {
+                editProblem: {
+                    ...problem,
+                    is_machine_zone_problem: true,
+                    machine: problem.zone?.machine,
+                    zone: problem.zone,
+                },
+            },
+        });
+    };
+
+    const handleDelete = () => {
+        showConfirm(
+            t('admin.confirmDeleteProblem'),
+            async () => {
+                try {
+                    await adminAPI.deleteMachineZoneProblem(id);
+                    showSuccess(t('admin.problemDeleted'));
+                    navigate(`/machine-zones/${problem.machine_zone_id}`);
+                } catch (error) {
+                    console.error('Error deleting problem:', error);
+                    showError(error.response?.data?.message || t('errors.cannotDelete'));
+                }
+            }
+        );
+    };
+
     if (loading) {
         return (
             <PublicLayout>
@@ -76,13 +111,33 @@ const MachineZoneProblemDetail = () => {
                 <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
                     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <BackButton to={`/machine-zones/${problem.machine_zone_id}`} />
-                        <button
-                            type="button"
-                            onClick={() => setShowQR(!showQR)}
-                            className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-center text-sm text-white shadow-md transition-colors duration-200 hover:bg-blue-700 hover:shadow-lg sm:w-auto sm:py-2"
-                        >
-                            {showQR ? t('common.hide') : t('common.show')} {t('qrCode.title')}
-                        </button>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+                            {canManageProblems && (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={handleEdit}
+                                        className="w-full shrink-0 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 sm:w-auto sm:py-2"
+                                    >
+                                        {t('common.edit')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleDelete}
+                                        className="w-full shrink-0 rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-sm text-red-700 hover:bg-red-100 sm:w-auto sm:py-2"
+                                    >
+                                        {t('common.delete')}
+                                    </button>
+                                </>
+                            )}
+                            <button
+                                type="button"
+                                onClick={() => setShowQR(!showQR)}
+                                className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-center text-sm text-white shadow-md transition-colors duration-200 hover:bg-blue-700 hover:shadow-lg sm:w-auto sm:py-2"
+                            >
+                                {showQR ? t('common.hide') : t('common.show')} {t('qrCode.title')}
+                            </button>
+                        </div>
                     </div>
                     {showQR && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

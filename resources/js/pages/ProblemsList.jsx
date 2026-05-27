@@ -1,14 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { publicAPI } from '../api';
+import { useAuth } from '../contexts/AuthContext';
 import PublicLayout from '../components/PublicLayout';
 import BackButton from '../components/BackButton';
+import Pagination from '../components/Pagination';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTranslation } from '../utils/translations';
 import { getLocalized } from '../utils/languageHelper';
+import { parsePaginatedResponse } from '../utils/pagination';
+import useDebouncedValue from '../hooks/useDebouncedValue';
+
+const PUBLIC_PAGE_SIZE = 12;
 
 const ProblemsList = () => {
     const navigate = useNavigate();
+    const { user } = useAuth();
+    const canManageProblems = Boolean(user);
     const { language } = useLanguage();
     const { t } = useTranslation(language);
     const [searchParams, setSearchParams] = useSearchParams();
@@ -17,14 +25,21 @@ const ProblemsList = () => {
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState(searchParams.get('search') || '');
     const [selectedCategory, setSelectedCategory] = useState(searchParams.get('category') || '');
+    const [page, setPage] = useState(Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1));
+    const [pagination, setPagination] = useState({ currentPage: 1, lastPage: 1, total: 0, perPage: PUBLIC_PAGE_SIZE });
+    const debouncedSearch = useDebouncedValue(search, 300);
 
     useEffect(() => {
         fetchCategories();
     }, []);
 
     useEffect(() => {
+        setPage(1);
+    }, [debouncedSearch, selectedCategory]);
+
+    useEffect(() => {
         fetchProblems();
-    }, [search, selectedCategory]);
+    }, [debouncedSearch, selectedCategory, page]);
 
     const fetchCategories = async () => {
         try {
@@ -36,38 +51,33 @@ const ProblemsList = () => {
     };
 
     const fetchProblems = async () => {
-        setLoading(true);
+        if (problems.length === 0) {
+            setLoading(true);
+        }
         try {
-            const params = {};
-            if (search) params.search = search;
+            const params = { page, perPage: PUBLIC_PAGE_SIZE };
+            if (debouncedSearch) params.search = debouncedSearch;
             if (selectedCategory) params.category_id = selectedCategory;
 
             const response = await publicAPI.getProblems(params);
-            
-            // Handle both paginated and non-paginated responses
-            let problemsData = [];
-            if (response.data) {
-                if (Array.isArray(response.data)) {
-                    // Non-paginated response
-                    problemsData = response.data;
-                } else if (response.data.data && Array.isArray(response.data.data)) {
-                    // Paginated response
-                    problemsData = response.data.data;
-                } else if (Array.isArray(response.data)) {
-                    problemsData = response.data;
-                }
-            }
-            
-            setProblems(problemsData);
-            
-            // Update URL
+            const parsed = parsePaginatedResponse(response);
+            setProblems(parsed.items);
+            setPagination({
+                currentPage: parsed.currentPage,
+                lastPage: parsed.lastPage,
+                total: parsed.total,
+                perPage: parsed.perPage,
+            });
+
             const newParams = new URLSearchParams();
-            if (search) newParams.set('search', search);
+            if (debouncedSearch) newParams.set('search', debouncedSearch);
             if (selectedCategory) newParams.set('category', selectedCategory);
-            setSearchParams(newParams);
+            if (parsed.currentPage > 1) newParams.set('page', String(parsed.currentPage));
+            setSearchParams(newParams, { replace: true });
         } catch (error) {
             console.error('Error fetching problems:', error);
             setProblems([]);
+            setPagination({ currentPage: 1, lastPage: 1, total: 0, perPage: PUBLIC_PAGE_SIZE });
         } finally {
             setLoading(false);
         }
@@ -75,16 +85,40 @@ const ProblemsList = () => {
 
     const handleSearch = (e) => {
         e.preventDefault();
-        fetchProblems();
+    };
+
+    const handlePageChange = (nextPage) => {
+        setPage(nextPage);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     return (
         <PublicLayout>
             <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-gray-50">
                 <div className="w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
-                    <div className="mb-4">
-                        <BackButton to="/" label="Back" className="mb-4" />
-                        <h1 className="mb-2 text-xl font-bold text-gray-800 sm:text-2xl">{t('problems.title')}</h1>
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <BackButton to="/" label="Back" className="mb-4" />
+                            <h1 className="mb-2 text-xl font-bold text-gray-800 sm:text-2xl">{t('problems.title')}</h1>
+                        </div>
+                        {canManageProblems && (
+                            <div className="flex flex-col gap-2 sm:flex-row">
+                                <button
+                                    type="button"
+                                    onClick={() => navigate('/admin/problems', { state: { openCreate: true } })}
+                                    className="w-full shrink-0 rounded-lg bg-blue-600 px-4 py-2.5 text-sm text-white hover:bg-blue-700 sm:w-auto"
+                                >
+                                    + {t('admin.addProblem')}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => navigate('/admin/problems')}
+                                    className="w-full shrink-0 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 sm:w-auto"
+                                >
+                                    {t('admin.manageProblems')}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 {/* Search and Filter */}
                 <div className="mb-4 rounded-xl border border-gray-100 bg-white p-4 shadow-lg sm:p-6">
@@ -111,6 +145,7 @@ const ProblemsList = () => {
                             onClick={() => {
                                 setSelectedCategory('');
                                 setSearch('');
+                                setPage(1);
                             }}
                             className={`shrink-0 px-4 py-2 rounded-lg ${
                                 !selectedCategory
@@ -123,7 +158,10 @@ const ProblemsList = () => {
                         {categories.map((category) => (
                             <button
                                 key={category.id}
-                                onClick={() => setSelectedCategory(category.id.toString())}
+                                onClick={() => {
+                                    setSelectedCategory(category.id.toString());
+                                    setPage(1);
+                                }}
                                 className={`shrink-0 px-4 py-2 rounded-lg ${
                                     selectedCategory === category.id.toString()
                                         ? 'bg-blue-600 text-white'
@@ -248,6 +286,18 @@ const ProblemsList = () => {
                             );
                         })}
                     </div>
+                )}
+
+                {!loading && problems.length > 0 && (
+                    <Pagination
+                        className="mt-6"
+                        currentPage={pagination.currentPage}
+                        lastPage={pagination.lastPage}
+                        total={pagination.total}
+                        perPage={pagination.perPage}
+                        onPageChange={handlePageChange}
+                        t={t}
+                    />
                 )}
                 </div>
             </div>

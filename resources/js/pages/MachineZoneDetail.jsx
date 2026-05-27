@@ -16,7 +16,8 @@ const MachineZoneDetail = () => {
     const { id } = useParams();
     const { language } = useLanguage();
     const { t } = useTranslation(language);
-    const { isAdmin } = useAuth();
+    const { user } = useAuth();
+    const canManageProblems = Boolean(user);
     const { isSubmitting, run } = useSubmitGuard();
     const [zone, setZone] = useState(null);
     const [problems, setProblems] = useState([]);
@@ -175,7 +176,7 @@ const MachineZoneDetail = () => {
                             <div className="bg-white rounded-xl shadow-xl p-6 h-full border border-gray-100 flex flex-col">
                                 <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                     <h2 className="text-lg font-semibold sm:text-xl">{t('machines.zoneProblems')}</h2>
-                                    {isAdmin && (
+                                    {canManageProblems && (
                                         <button
                                             type="button"
                                             onClick={handleOpenModal}
@@ -245,9 +246,9 @@ const MachineZoneDetail = () => {
 
             {/* Add Problem Modal */}
             {showModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                        <div className="p-6">
+                <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                    <div className="max-h-[min(90dvh,720px)] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
+                        <div className="p-4 sm:p-6">
                             <h2 className="text-2xl font-bold mb-4">{t('admin.addProblem')}</h2>
                             <form onSubmit={handleSubmit} className="space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

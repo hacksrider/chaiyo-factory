@@ -28,6 +28,10 @@ export default {
         warning: 'คำเตือน',
         info: 'ข้อมูล',
         confirm: 'ยืนยัน',
+        previous: 'ก่อนหน้า',
+        next: 'ถัดไป',
+        showingResults: ({ start, end, total }) => `แสดง ${start}-${end} จาก ${total} รายการ`,
+        noSearchResults: 'ไม่พบรายการที่ค้นหา',
     },
     
     // Navigation
@@ -176,6 +180,9 @@ export default {
         noZoneProblems: 'ยังไม่มีปัญหา',
         addProblem: 'เพิ่มปัญหา',
         zoneLayoutImage: 'แผนผังโซน',
+        layoutTapHint: 'แตะรูปเพื่อดูขนาดเต็มและเลื่อนดูรายละเอียด',
+        layoutPinchHint: 'ใช้นิ้วหยิก/ขยาย หรือเลื่อนดูรายละเอียด',
+        layoutViewFull: 'ดูขนาดเต็ม',
     },
     
     // Admin
@@ -220,6 +227,10 @@ export default {
         currentVideo: 'วิดีโอปัจจุบัน',
         confirmDelete: 'คุณแน่ใจหรือไม่ว่าต้องการลบ?',
         searchProblems: 'ค้นหาปัญหา...',
+        searchUsers: 'ค้นหาชื่อหรือ username...',
+        searchCategories: 'ค้นหาหมวดหมู่...',
+        searchMachines: 'ค้นหาเครื่องจักร (รหัส/ชื่อ)...',
+        searchPageContents: 'ค้นหา page key หรือหัวข้อ...',
         lastUpdatedBy: 'แก้ไขล่าสุดโดย',
         machine: 'เครื่องจักร',
         zone: 'โซน',
@@ -240,6 +251,9 @@ export default {
         confirmDeleteMachine: 'คุณแน่ใจหรือไม่ว่าต้องการลบเครื่องจักรนี้?',
         confirmDeleteZone: 'คุณแน่ใจหรือไม่ว่าต้องการลบโซนนี้?',
         noZones: 'ยังไม่มีโซน',
+        noUsers: 'ยังไม่มีผู้ใช้',
+        noCategories: 'ยังไม่มีหมวดหมู่',
+        noPageContents: 'ยังไม่มีเนื้อหา',
         manageZonesFor: 'จัดการโซน -',
         machineCreated: 'เพิ่มเครื่องจักรสำเร็จ',
         machineUpdated: 'แก้ไขเครื่องจักรสำเร็จ',
@@ -433,6 +447,8 @@ export default {
         // Dashboard
         dashboardTitle: 'Production Dashboard',
         dashboardTitleShort: 'Dashboard',
+        dashboardTabMachines: 'เครื่องจักร',
+        dashboardTabStatus: 'สถานะโซน',
         dashboardStatusOff: 'ปิด',
         dashboardStatusOpen: 'เปิด',
         dashboardStatusFixing: 'แก้งาน',

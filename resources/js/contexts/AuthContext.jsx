@@ -20,7 +20,18 @@ export const AuthProvider = ({ children }) => {
         const savedUser = localStorage.getItem('auth_user');
         
         if (token && savedUser) {
-            // อย่า set user จาก cache ก่อนยืนยัน token — ป้องกัน SSE/API ยิงด้วย token หมดอายุ
+            // Restore user จาก cache ทันที (provisional) เพื่อไม่ให้หน้าค้างหรือ redirect กะทันหัน
+            // แล้วยืนยัน token กับ server ใน background
+            try {
+                setUser(JSON.parse(savedUser));
+            } catch {
+                // JSON parse error — clear cache
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('auth_user');
+                setLoading(false);
+                return;
+            }
+            // Verify token กับ server — ถ้า 401 = token หมดอายุจริง ค่อย redirect
             authAPI.me()
                 .then((response) => {
                     setUser(response.data);

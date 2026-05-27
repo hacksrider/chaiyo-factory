@@ -3,6 +3,21 @@ import { useNavigate } from 'react-router-dom';
 import { adminAPI } from '../../api';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminLayout from '../../components/AdminLayout';
+import {
+    AdminCardButton,
+    AdminCardRow,
+    AdminCardRows,
+    AdminDesktopTable,
+    AdminListEmpty,
+    AdminMobileCard,
+    AdminMobileCardList,
+    AdminTruncatedCell,
+} from '../../components/AdminListCards';
+import AdminSearchBar from '../../components/AdminSearchBar';
+import Pagination from '../../components/Pagination';
+import useDebouncedValue from '../../hooks/useDebouncedValue';
+import { LIST_PAGE_SIZE } from '../../hooks/useClientList';
+import { parsePaginatedResponse } from '../../utils/pagination';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useTranslation } from '../../utils/translations';
 import { useAlert } from '../../contexts/AlertContext';
@@ -32,6 +47,10 @@ const UsersManagement = () => {
     const { isSubmitting, run } = useSubmitGuard();
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const debouncedSearch = useDebouncedValue(searchTerm, 300);
+    const [page, setPage] = useState(1);
+    const [pagination, setPagination] = useState({ currentPage: 1, lastPage: 1, total: 0, perPage: LIST_PAGE_SIZE });
     const [showModal, setShowModal] = useState(false);
     const [editingUser, setEditingUser] = useState(null);
     const [formData, setFormData] = useState({
@@ -42,13 +61,33 @@ const UsersManagement = () => {
     });
 
     useEffect(() => {
+        setPage(1);
+    }, [debouncedSearch]);
+
+    useEffect(() => {
         fetchUsers();
-    }, []);
+    }, [debouncedSearch, page]);
 
     const fetchUsers = async () => {
         try {
-            const response = await adminAPI.getUsers();
-            setUsers(response.data);
+            if (users.length === 0) {
+                setLoading(true);
+            }
+            const params = { page, perPage: LIST_PAGE_SIZE };
+            if (debouncedSearch) params.search = debouncedSearch;
+            const response = await adminAPI.getUsers(params);
+            const parsed = parsePaginatedResponse(response);
+            if (parsed.items.length === 0 && parsed.currentPage > 1) {
+                setPage(parsed.lastPage);
+                return;
+            }
+            setUsers(parsed.items);
+            setPagination({
+                currentPage: parsed.currentPage,
+                lastPage: parsed.lastPage,
+                total: parsed.total,
+                perPage: parsed.perPage,
+            });
         } catch (error) {
             console.error('Error fetching users:', error);
         } finally {
@@ -167,66 +206,126 @@ const UsersManagement = () => {
                         + {t('admin.addUser')}
                     </button>
                 </div>
-                <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-md">
-                    <div className="overflow-x-auto">
-                    <table className="min-w-[520px] w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.username')}</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.role')}</th>
-                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
+                <AdminSearchBar
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder={t('admin.searchUsers')}
+                />
+                {users.length === 0 ? (
+                    <AdminListEmpty message={debouncedSearch ? t('common.noSearchResults') : t('admin.noUsers')} />
+                ) : (
+                    <>
+                        <AdminMobileCardList>
                             {users.map((user) => (
-                                <tr key={user.id}>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <div className="text-sm font-medium text-gray-900">
+                                <AdminMobileCard
+                                    key={user.id}
+                                    title={
+                                        <>
                                             {user.name}
                                             {user.id === currentUser?.id && (
-                                                <span className="ml-2 text-xs text-blue-600">({t('admin.you')})</span>
+                                                <span className="ml-2 text-xs font-normal text-blue-600">({t('admin.you')})</span>
                                             )}
-                                        </div>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <div className="text-sm text-gray-500">{user.username}</div>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`text-xs font-semibold px-2 py-1 rounded-full border ${roleBadgeClasses(user.role)}`}>
+                                        </>
+                                    }
+                                    badge={
+                                        <span className={`shrink-0 rounded-full border px-2 py-1 text-xs font-semibold ${roleBadgeClasses(user.role)}`}>
                                             {roleLabel(user.role, t)}
                                         </span>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <button
-                                            onClick={() => handleOpenModal(user)}
-                                            className="text-blue-600 hover:text-blue-900 mr-4"
-                                        >
-                                            {t('common.edit')}
-                                        </button>
-                                        {user.id !== currentUser?.id && (
-                                            <button
-                                                onClick={() => handleDelete(user.id)}
-                                                className="text-red-600 hover:text-red-900"
-                                            >
-                                                {t('common.delete')}
-                                            </button>
-                                        )}
-                                    </td>
-                                </tr>
+                                    }
+                                    actions={
+                                        <>
+                                            <AdminCardButton onClick={() => handleOpenModal(user)}>
+                                                {t('common.edit')}
+                                            </AdminCardButton>
+                                            {user.id !== currentUser?.id && (
+                                                <AdminCardButton variant="danger" onClick={() => handleDelete(user.id)}>
+                                                    {t('common.delete')}
+                                                </AdminCardButton>
+                                            )}
+                                        </>
+                                    }
+                                >
+                                    <AdminCardRows>
+                                        <AdminCardRow label={t('admin.username')} value={user.username} />
+                                    </AdminCardRows>
+                                </AdminMobileCard>
                             ))}
-                        </tbody>
-                    </table>
-                    </div>
-                </div>
+                        </AdminMobileCardList>
+
+                        <AdminDesktopTable>
+                            <table className="min-w-[520px] w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('common.name')}</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.username')}</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{t('admin.role')}</th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">{t('common.edit')}</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200 bg-white">
+                                    {users.map((user) => (
+                                        <tr key={user.id}>
+                                            <td className="px-6 py-4">
+                                                <div className="min-w-0 max-w-xs">
+                                                    <div className="truncate text-sm text-gray-900" title={user.name}>
+                                                        {user.name}
+                                                        {user.id === currentUser?.id && (
+                                                            <span className="ml-2 text-xs text-blue-600">({t('admin.you')})</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <AdminTruncatedCell tone="muted">{user.username}</AdminTruncatedCell>
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4">
+                                                <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${roleBadgeClasses(user.role)}`}>
+                                                    {roleLabel(user.role, t)}
+                                                </span>
+                                            </td>
+                                            <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleOpenModal(user)}
+                                                    className="mr-4 text-blue-600 hover:text-blue-900"
+                                                >
+                                                    {t('common.edit')}
+                                                </button>
+                                                {user.id !== currentUser?.id && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDelete(user.id)}
+                                                        className="text-red-600 hover:text-red-900"
+                                                    >
+                                                        {t('common.delete')}
+                                                    </button>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </AdminDesktopTable>
+
+                        <Pagination
+                            className="mt-6"
+                            currentPage={pagination.currentPage}
+                            lastPage={pagination.lastPage}
+                            total={pagination.total}
+                            perPage={pagination.perPage}
+                            onPageChange={setPage}
+                            t={t}
+                        />
+                    </>
+                )}
             </div>
 
             {/* Modal */}
             {showModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg max-w-md w-full">
-                        <div className="p-6">
-                            <h2 className="text-2xl font-bold mb-4">
+                <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+                    <div className="max-h-[min(90dvh,720px)] w-full max-w-md overflow-y-auto rounded-lg bg-white shadow-xl">
+                        <div className="p-4 sm:p-6">
+                            <h2 className="mb-4 text-xl font-bold sm:text-2xl">
                                 {editingUser ? t('admin.editUser') : t('admin.addUser')}
                             </h2>
                             <form onSubmit={handleSubmit} className="space-y-4">

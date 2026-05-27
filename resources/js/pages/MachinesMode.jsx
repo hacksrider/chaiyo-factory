@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { publicAPI } from '../api';
 import PublicLayout from '../components/PublicLayout';
 import BackButton from '../components/BackButton';
+import LayoutImageViewer from '../components/LayoutImageViewer';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTranslation } from '../utils/translations';
 import { getLocalized } from '../utils/languageHelper';
@@ -50,20 +51,11 @@ const MachinesMode = () => {
                         <div className="w-full lg:w-9/12">
                             <div className="h-full rounded-xl border border-gray-100 bg-white p-4 shadow-xl sm:p-6">
                                 <h2 className="mb-4 text-xl font-semibold sm:text-2xl">{t('machines.factoryLayout')}</h2>
-                                <div className="w-full overflow-x-auto rounded-lg bg-gray-100">
-                                    <img
-                                        src="/images/Factory-layout.png"
-                                        alt={t('machines.factoryLayout')}
-                                        className="mx-auto block h-auto w-auto min-w-[560px] max-w-none sm:min-w-0 sm:w-full sm:max-w-full"
-                                        onError={(e) => {
-                                            e.target.style.display = 'none';
-                                            e.target.nextSibling.style.display = 'block';
-                                        }}
-                                    />
-                                    <div className="hidden text-center py-12 text-gray-500">
-                                        {t('errors.notFound')}
-                                    </div>
-                                </div>
+                                <LayoutImageViewer
+                                    src="/images/Factory-layout.png"
+                                    alt={t('machines.factoryLayout')}
+                                    notFoundLabel={t('errors.notFound')}
+                                />
                             </div>
                         </div>
 

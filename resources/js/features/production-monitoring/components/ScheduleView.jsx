@@ -397,9 +397,52 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
         )}
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs text-gray-400 border-collapse min-w-[900px]">
+      {/* Mobile: แถวกระชับ */}
+      <div className="md:hidden">
+        <div className="flex items-center gap-2 border-b border-gray-800/60 px-2 py-1 text-[9px] font-semibold uppercase text-gray-500">
+          <span className="w-12 shrink-0">{t('production.scheduleColMachine')}</span>
+          <span className="min-w-0 flex-1">{t('production.scheduleColProduct')}</span>
+          <span className="w-14 shrink-0 text-right">{t('production.scheduleColRemaining')}</span>
+        </div>
+        <div className="divide-y divide-gray-800/40">
+          {rows.map((row, i) => {
+            const pct = Number(row.achievementPct) || 0;
+            const code = row.productCode || '';
+            const looked = code && productDetails ? (productDetails[code]?.name || '') : '';
+            const display = looked || row.productName || code || '—';
+            const queueKey = `${row._machineId}::${row.jobNo}::${row.date ?? ''}`;
+            const queued = queuedMap?.get(queueKey);
+
+            return (
+              <div key={`sched-m-${dateKey}-${i}`} className="px-2 py-1">
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="w-12 shrink-0 truncate font-mono text-[10px] font-bold text-white">
+                    {row._machineLabel || row._machineId || '—'}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-gray-300">{display}</p>
+                    <p className="truncate font-mono text-[9px] text-gray-600">{row.jobNo || '—'} · {fmtPct(pct)}</p>
+                  </div>
+                  <span className="w-14 shrink-0 text-right font-mono text-amber-400">{fmtN(row.remaining)}</span>
+                </div>
+                {onAddToQueue && !queued && (
+                  <button
+                    type="button"
+                    onClick={() => onAddToQueue(row._machineId, buildScheduleQueuePayload(row, productDetails))}
+                    className="mt-0.5 text-[10px] font-semibold text-cyan-400"
+                  >
+                    + {t('production.scheduleEnqueue')}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Table — tablet/desktop */}
+      <div className="hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[900px] border-collapse text-xs text-gray-400">
           {TABLE_HEADER}
           <tbody>
             {rows.map((row, i) => {
@@ -810,7 +853,20 @@ const ScheduleView = ({ machines, onAddToQueue, onRemoveFromQueue, queuedMap, on
             </span>
           )}
 
-          {/* Legend */}
+          {/* Legend — compact on mobile */}
+          <div className="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 sm:hidden">
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-blue-400" />A
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-purple-400" />B
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-orange-400" />C
+            </span>
+          </div>
+
+          {/* Legend — desktop */}
           <div className="hidden sm:flex items-center gap-3 text-[10px] text-gray-600">
             <span className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-blue-400" />{t('production.scheduleColShiftA')}

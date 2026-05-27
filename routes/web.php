@@ -86,61 +86,55 @@ Route::prefix('api')->group(function () {
                 ->whereNumber('id');
         });
 
-        // Admin only routes
+        // ปัญหา / วิดีโอ — ผู้ใช้ที่ login แล้วทุก role
+        Route::get('/admin/problems', [ProblemController::class, 'all']);
+        Route::post('/admin/problems', [ProblemController::class, 'store']);
+        Route::post('/admin/problems/{id}', [ProblemController::class, 'update']); // For method spoofing
+        Route::put('/admin/problems/{id}', [ProblemController::class, 'update']);
+        Route::delete('/admin/problems/{id}', [ProblemController::class, 'destroy']);
+
+        Route::get('/admin/machine-zones/{zoneId}/problems', [MachineZoneProblemController::class, 'all']);
+        Route::post('/admin/machine-zone-problems', [MachineZoneProblemController::class, 'store']);
+        Route::post('/admin/machine-zone-problems/{id}', [MachineZoneProblemController::class, 'update']); // For method spoofing
+        Route::put('/admin/machine-zone-problems/{id}', [MachineZoneProblemController::class, 'update']);
+        Route::delete('/admin/machine-zone-problems/{id}', [MachineZoneProblemController::class, 'destroy']);
+
+        // หมวดหมู่ / เครื่องจักร / เนื้อหา / AI Gems — ผู้ใช้ที่ login แล้วทุก role
+        Route::get('/admin/categories', [CategoryController::class, 'all']);
+        Route::post('/admin/categories', [CategoryController::class, 'store']);
+        Route::put('/admin/categories/{id}', [CategoryController::class, 'update']);
+        Route::delete('/admin/categories/{id}', [CategoryController::class, 'destroy']);
+
+        Route::get('/admin/page-contents', [PageContentController::class, 'index']);
+        Route::get('/admin/page-contents/{id}', [PageContentController::class, 'show']);
+        Route::post('/admin/page-contents', [PageContentController::class, 'store']);
+        Route::put('/admin/page-contents/{id}', [PageContentController::class, 'update']);
+        Route::put('/admin/page-contents/key/{key}', [PageContentController::class, 'updateByKey']);
+        Route::delete('/admin/page-contents/{id}', [PageContentController::class, 'destroy']);
+
+        Route::get('/admin/machines', [MachineController::class, 'all']);
+        Route::post('/admin/machines', [MachineController::class, 'store']);
+        Route::post('/admin/machines/{id}', [MachineController::class, 'update']); // For method spoofing
+        Route::put('/admin/machines/{id}', [MachineController::class, 'update']);
+        Route::delete('/admin/machines/{id}', [MachineController::class, 'destroy']);
+
+        Route::get('/admin/machines/{machineId}/zones', [MachineZoneController::class, 'all']);
+        Route::post('/admin/machine-zones', [MachineZoneController::class, 'store']);
+        Route::post('/admin/machine-zones/{id}', [MachineZoneController::class, 'update']); // For method spoofing
+        Route::put('/admin/machine-zones/{id}', [MachineZoneController::class, 'update']);
+        Route::delete('/admin/machine-zones/{id}', [MachineZoneController::class, 'destroy']);
+
+        Route::get('/admin/ai-gems', [AiGemController::class, 'all']);
+        Route::post('/admin/ai-gems', [AiGemController::class, 'store']);
+        Route::put('/admin/ai-gems/{id}', [AiGemController::class, 'update']);
+        Route::delete('/admin/ai-gems/{id}', [AiGemController::class, 'destroy']);
+
+        // จัดการผู้ใช้ — admin เท่านั้น
         Route::middleware([EnsureUserIsAdmin::class])->group(function () {
-            // Problems management
-            Route::get('/admin/problems', [ProblemController::class, 'all']);
-            Route::post('/admin/problems', [ProblemController::class, 'store']);
-            Route::post('/admin/problems/{id}', [ProblemController::class, 'update']); // For method spoofing
-            Route::put('/admin/problems/{id}', [ProblemController::class, 'update']);
-            Route::delete('/admin/problems/{id}', [ProblemController::class, 'destroy']);
-
-            // Categories management
-            Route::get('/admin/categories', [CategoryController::class, 'all']);
-            Route::post('/admin/categories', [CategoryController::class, 'store']);
-            Route::put('/admin/categories/{id}', [CategoryController::class, 'update']);
-            Route::delete('/admin/categories/{id}', [CategoryController::class, 'destroy']);
-
-            // Users management
             Route::get('/admin/users', [UserController::class, 'index']);
             Route::post('/admin/users', [UserController::class, 'store']);
             Route::put('/admin/users/{id}', [UserController::class, 'update']);
             Route::delete('/admin/users/{id}', [UserController::class, 'destroy']);
-
-            // Page content management
-            Route::get('/admin/page-contents', [PageContentController::class, 'index']);
-            Route::get('/admin/page-contents/{id}', [PageContentController::class, 'show']);
-            Route::post('/admin/page-contents', [PageContentController::class, 'store']);
-            Route::put('/admin/page-contents/{id}', [PageContentController::class, 'update']);
-            Route::put('/admin/page-contents/key/{key}', [PageContentController::class, 'updateByKey']);
-            Route::delete('/admin/page-contents/{id}', [PageContentController::class, 'destroy']);
-
-            // Machines management
-            Route::get('/admin/machines', [MachineController::class, 'all']);
-            Route::post('/admin/machines', [MachineController::class, 'store']);
-            Route::post('/admin/machines/{id}', [MachineController::class, 'update']); // For method spoofing
-            Route::put('/admin/machines/{id}', [MachineController::class, 'update']);
-            Route::delete('/admin/machines/{id}', [MachineController::class, 'destroy']);
-
-            // Machine Zones management
-            Route::get('/admin/machines/{machineId}/zones', [MachineZoneController::class, 'all']);
-            Route::post('/admin/machine-zones', [MachineZoneController::class, 'store']);
-            Route::post('/admin/machine-zones/{id}', [MachineZoneController::class, 'update']); // For method spoofing
-            Route::put('/admin/machine-zones/{id}', [MachineZoneController::class, 'update']);
-            Route::delete('/admin/machine-zones/{id}', [MachineZoneController::class, 'destroy']);
-
-            // Machine Zone Problems management
-            Route::get('/admin/machine-zones/{zoneId}/problems', [MachineZoneProblemController::class, 'all']);
-            Route::post('/admin/machine-zone-problems', [MachineZoneProblemController::class, 'store']);
-            Route::post('/admin/machine-zone-problems/{id}', [MachineZoneProblemController::class, 'update']); // For method spoofing
-            Route::put('/admin/machine-zone-problems/{id}', [MachineZoneProblemController::class, 'update']);
-            Route::delete('/admin/machine-zone-problems/{id}', [MachineZoneProblemController::class, 'destroy']);
-
-            // AI Gems management
-            Route::get('/admin/ai-gems', [AiGemController::class, 'all']);
-            Route::post('/admin/ai-gems', [AiGemController::class, 'store']);
-            Route::put('/admin/ai-gems/{id}', [AiGemController::class, 'update']);
-            Route::delete('/admin/ai-gems/{id}', [AiGemController::class, 'destroy']);
         });
     });
 });
