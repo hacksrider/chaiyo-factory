@@ -120,7 +120,10 @@ class MaintenanceRegisterSheetService
             $report['google']['token'] = 'exception';
             $report['google']['token_message'] = $e->getMessage();
             if (str_contains($e->getMessage(), 'SSL') || str_contains($e->getMessage(), 'certificate')) {
-                $report['hints'][] = 'ปัญหา SSL — ใน .env ลอง GOOGLE_MAINTENANCE_HTTP_VERIFY=/etc/ssl/certs/ca-certificates.crt';
+                $report['hints'][] = 'ปัญหา SSL — บน Plesk ใส่ GOOGLE_MAINTENANCE_HTTP_VERIFY=false ใน .env แล้ว clear-cache (อย่าใช้ path /etc/ssl — open_basedir บล็อก)';
+            }
+            if (str_contains($e->getMessage(), 'open_basedir')) {
+                $report['hints'][] = 'open_basedir — อัปเดตโค้ดล่าสุด หรือตั้ง GOOGLE_MAINTENANCE_HTTP_VERIFY=false ใน .env';
             }
             if (str_contains($e->getMessage(), 'Connection refused') || str_contains($e->getMessage(), 'Could not resolve')) {
                 $report['hints'][] = 'เซิร์ฟเวอร์ออกเน็ตไป Google ไม่ได้ — ตรวจ firewall Plesk / ModSecurity';
@@ -598,7 +601,10 @@ class MaintenanceRegisterSheetService
         return $client;
     }
 
-    /** Plesk/shared hosting: บางเครื่องไม่มี CA bundle ทำให้ SSL ล้ม */
+    /**
+     * Plesk มักมี open_basedir — ห้ามอ่าน /etc/ssl/... (is_readable จะ error)
+     * ใช้ Guzzle default หรือไฟล์ CA ใน storage/app เท่านั้น
+     */
     private function configureHttpClient(GoogleClient $client): void
     {
         if (! class_exists(\GuzzleHttp\Client::class)) {
@@ -611,25 +617,37 @@ class MaintenanceRegisterSheetService
 
             return;
         }
+
+        $bundled = storage_path('app/cacert.pem');
         if (is_string($verify) && $verify !== '' && $verify !== 'auto' && $verify !== 'true') {
-            $client->setHttpClient(new \GuzzleHttp\Client(['verify' => $verify, 'timeout' => 30]));
+            $path = $verify;
+        } elseif (is_file($bundled)) {
+            $path = $bundled;
+        } else {
+            $path = null;
+        }
+
+        if ($path !== null && $this->isPathAllowedForOpenBasedir($path) && is_readable($path)) {
+            $client->setHttpClient(new \GuzzleHttp\Client(['verify' => $path, 'timeout' => 30]));
 
             return;
         }
 
-        foreach ([
-            '/etc/ssl/certs/ca-certificates.crt',
-            '/etc/pki/tls/certs/ca-bundle.crt',
-            '/etc/ssl/ca-bundle.pem',
-            '/usr/local/share/certs/ca-root-nss.crt',
-        ] as $bundle) {
-            if (is_readable($bundle)) {
-                $client->setHttpClient(new \GuzzleHttp\Client(['verify' => $bundle, 'timeout' => 30]));
+        // auto — ให้ Guzzle/curl จัดการ SSL เอง (ไม่แตะ path นอก vhost)
+        $client->setHttpClient(new \GuzzleHttp\Client(['timeout' => 30]));
+    }
 
-                return;
-            }
+    private function isPathAllowedForOpenBasedir(string $path): bool
+    {
+        $real = realpath($path);
+        if ($real === false) {
+            return false;
+        }
+        $root = realpath(base_path());
+        if ($root !== false && str_starts_with($real, $root)) {
+            return true;
         }
 
-        $client->setHttpClient(new \GuzzleHttp\Client(['timeout' => 30]));
+        return str_starts_with($real, sys_get_temp_dir());
     }
 }
