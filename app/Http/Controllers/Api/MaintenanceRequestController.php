@@ -73,7 +73,8 @@ class MaintenanceRequestController extends Controller
             $this->validateReporterPayloadForRegisterSheet($payload);
         }
 
-        $record = $sheet->withAllocateLock(function () use ($request, $payload, $sheet) {
+        try {
+            $record = $sheet->withAllocateLock(function () use ($request, $payload, $sheet) {
             return DB::transaction(function () use ($request, $payload, $sheet) {
                 $before = $request->file('photo_before');
                 $after = $request->file('photo_after');
@@ -120,6 +121,14 @@ class MaintenanceRequestController extends Controller
                 return $row->fresh(['user:id,name,username', 'referenceMedia']);
             });
         });
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'บันทึกใบแจ้งซ่อมไม่สำเร็จ — กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 503);
+        }
 
         $this->notifyAdmins(
             $record,

@@ -12,7 +12,6 @@ import {
   storeMachineLogReporter,
   deleteMachineLogReporter,
 } from '../api/productionApi';
-import { useRealtimeSync } from '../hooks/useRealtimeSync';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1239,7 +1238,17 @@ const LedSignView = ({
     }
   }, [mergeLedStatusIntoUi]);
 
-  useRealtimeSync({ onLedState: handleSseLedState, onLedUpdated: handleSseLedUpdated });
+  // LED SSE มาจาก index.jsx ตัวเดียว — ฟังผ่าน window event (ไม่เปิด EventSource ซ้ำ)
+  useEffect(() => {
+    const onLedState = (e) => handleSseLedState(e.detail ?? {});
+    const onLedUpdated = (e) => handleSseLedUpdated(e.detail ?? {});
+    window.addEventListener('sse:led_state', onLedState);
+    window.addEventListener('sse:led_updated', onLedUpdated);
+    return () => {
+      window.removeEventListener('sse:led_state', onLedState);
+      window.removeEventListener('sse:led_updated', onLedUpdated);
+    };
+  }, [handleSseLedState, handleSseLedUpdated]);
 
   // ── SSE: re-push LED when production qty changes for the active machine ──
   // Listens to sse:production_updated from index.jsx (window event)

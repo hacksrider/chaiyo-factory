@@ -14,10 +14,34 @@ class AttachSanctumTokenFromQuery
 {
     public function handle(Request $request, Closure $next): Response
     {
-        if (! $request->bearerToken() && $request->filled('token')) {
-            $request->headers->set('Authorization', 'Bearer '.$request->query('token'));
+        if (! $request->bearerToken()) {
+            $token = $this->resolveQueryToken($request);
+            if ($token !== null && $token !== '') {
+                $request->headers->set('Authorization', 'Bearer '.$token);
+            }
         }
 
         return $next($request);
+    }
+
+    /**
+     * Sanctum tokens are "{id}|{secret}" — some proxies mishandle "|" in query strings.
+     * Prefer base64url param `t`; keep legacy `token` for older frontends.
+     */
+    private function resolveQueryToken(Request $request): ?string
+    {
+        if ($request->filled('t')) {
+            $raw = (string) $request->query('t');
+            $decoded = base64_decode(strtr($raw, '-_', '+/'), true);
+            if ($decoded !== false && $decoded !== '') {
+                return $decoded;
+            }
+        }
+
+        if ($request->filled('token')) {
+            return (string) $request->query('token');
+        }
+
+        return null;
     }
 }

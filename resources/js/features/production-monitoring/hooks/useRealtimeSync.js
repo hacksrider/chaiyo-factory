@@ -32,6 +32,12 @@ const MAX_BACKOFF   = 60_000;  // 60 s — ceiling
 const DEAD_TIMEOUT  = 30_000;  // 30 s without any event = dead connection
 const LS_TS_KEY     = 'prodmon_lastTs'; // localStorage key: JSON { [machineId]: number }
 
+/** base64url — หลีกเลี่ยง "|" ใน query ที่ proxy บางตัวตัดทิ้ง */
+const base64UrlEncode = (str) =>
+  btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+const sseAuthQuery = (token) => `t=${encodeURIComponent(base64UrlEncode(token))}`;
+
 /** Clear session and stop SSE when token is missing or rejected (401). */
 const handleAuthFailure = () => {
   try {
@@ -43,23 +49,37 @@ const handleAuthFailure = () => {
   }
 };
 
-/** Returns true when the stored token is absent or /api/me returns 401. */
-const isAuthRejected = async () => {
-  let token;
-  try {
-    token = localStorage.getItem('auth_token');
-  } catch {
-    return true;
-  }
+/** Returns true when token ใช้ไม่ได้ (401 จาก /api/me หรือ stream probe). */
+const isAuthRejected = async (token) => {
   if (!token) return true;
 
   try {
-    const res = await fetch('/api/me', {
+    const meRes = await fetch('/api/me', {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
-    return res.status === 401;
+    if (meRes.status === 401 || meRes.status === 403) return true;
   } catch {
-    return false; // network blip — allow reconnect
+    return false;
+  }
+
+  try {
+    const probeUrl = `${SSE_URL}?lastId=0&${sseAuthQuery(token)}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8_000);
+    const res = await fetch(probeUrl, {
+      headers: { Accept: 'text/event-stream' },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (res.status === 401 || res.status === 403) return true;
+    if (res.ok) {
+      try {
+        await res.body?.cancel?.();
+      } catch { /* ignore */ }
+    }
+    return false;
+  } catch {
+    return false;
   }
 };
 
@@ -153,7 +173,7 @@ export const useRealtimeSync = ({
   const resetDeadTimer = useCallback(() => {
     if (deadTimerRef.current) clearTimeout(deadTimerRef.current);
     deadTimerRef.current = setTimeout(() => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || authStoppedRef.current) return;
       esRef.current?.close();
       esRef.current = null;
       scheduleReconnect(false); // eslint-disable-line no-use-before-define
@@ -161,7 +181,7 @@ export const useRealtimeSync = ({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleReconnect = useCallback((immediate = false) => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || authStoppedRef.current) return;
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
 
     const rawDelay = immediate ? 0 : backoffRef.current;
@@ -223,7 +243,7 @@ export const useRealtimeSync = ({
     const urlCore = since > 0
       ? `${SSE_URL}?lastId=${lastEventIdRef.current}&since=${since}`
       : `${SSE_URL}?lastId=${lastEventIdRef.current}`;
-    const url = `${urlCore}&token=${encodeURIComponent(token)}`;
+    const url = `${urlCore}&${sseAuthQuery(token)}`;
 
     let es;
     try {
@@ -307,7 +327,7 @@ export const useRealtimeSync = ({
       esRef.current = null;
 
       if (authCheckRef.current) return;
-      authCheckRef.current = isAuthRejected().then((rejected) => {
+      authCheckRef.current = isAuthRejected(token).then((rejected) => {
         authCheckRef.current = null;
         if (!mountedRef.current) return;
         if (rejected) {

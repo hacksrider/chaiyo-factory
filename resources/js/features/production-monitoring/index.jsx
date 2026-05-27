@@ -298,7 +298,7 @@ const ProductionMonitoring = () => {
   const isLedPage = Boolean(urlLedMachineId);
   const { language } = useLanguage();
   const { t } = useTranslation(language);
-  const { user, isAdmin } = useAuth();
+  const { user, isAdmin, loading: authLoading } = useAuth();
   const canManageProduction = Boolean(isAdmin);
 
   const [ledChangedMachineIds, setLedChangedMachineIds] = useState(new Set());
@@ -817,12 +817,17 @@ const ProductionMonitoring = () => {
         speed: state.speed ?? 50,
       },
     }));
+    window.dispatchEvent(new CustomEvent('sse:led_state', {
+      detail: { machineId, state },
+    }));
   }, []);
 
   // SSE handler for led_updated — another browser changed LED config
-  const handleSseLedUpdated = useCallback(({ machineId }) => {
+  const handleSseLedUpdated = useCallback(({ machineId, ledConfig, state }) => {
+    window.dispatchEvent(new CustomEvent('sse:led_updated', {
+      detail: { machineId, ledConfig, state },
+    }));
     if (!machineId || machineId === selectedMachineId) return;
-    // Show a subtle indicator in the sidebar for that machine
     setLedChangedMachineIds((prev) => {
       if (prev.has(machineId)) return prev;
       const next = new Set(prev);
@@ -942,7 +947,7 @@ const ProductionMonitoring = () => {
 
   // Attach SSE — real-time push for all events (skip when logged out / no token)
   useRealtimeSync({
-    enabled: !!user,
+    enabled: !!user && !authLoading,
     onMachineSession:    handleSseMachineSession,
     onScaleWeight:       handleSseScaleWeight,
     onProductionUpdated: handleSseProductionUpdated,

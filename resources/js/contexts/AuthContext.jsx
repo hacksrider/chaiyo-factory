@@ -20,8 +20,7 @@ export const AuthProvider = ({ children }) => {
         const savedUser = localStorage.getItem('auth_user');
         
         if (token && savedUser) {
-            setUser(JSON.parse(savedUser));
-            // Verify token is still valid
+            // อย่า set user จาก cache ก่อนยืนยัน token — ป้องกัน SSE/API ยิงด้วย token หมดอายุ
             authAPI.me()
                 .then((response) => {
                     setUser(response.data);
@@ -34,6 +33,10 @@ export const AuthProvider = ({ children }) => {
                 })
                 .finally(() => setLoading(false));
         } else {
+            if (token || savedUser) {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('auth_user');
+            }
             setLoading(false);
         }
     }, []);
