@@ -442,23 +442,25 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
     }
 
     // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต (fire-and-forget + retry)
-    if (machineState.orderId && machineState.shift) {
+    if (machineState.orderId) {
       // ใช้ planDate (วันที่ของแถว Plan ที่กดเพิ่มคิว) ก่อน
       // fallback → startedAt → วันนี้
       const prodDate = machineState.planDate
         || (machineState.startedAt ? machineState.startedAt.slice(0, 10) : '')
         || new Date().toISOString().slice(0, 10);
 
-      // 2a) Daily sheet — กะ A/B/C (เหมือนเดิม)
-      fireAndRetry(() => updateDailyProduced({
-        machineId,
-        jobNo:    machineState.orderId,
-        date:     prodDate,
-        shift:    machineState.shift,
-        produced: goodCount,
-      }));
+      // 2a) Daily sheet — กะ A/B/C (ต้องการ shift เพื่อรู้ว่าอัปเดตคอลัมน์ไหน)
+      if (machineState.shift) {
+        fireAndRetry(() => updateDailyProduced({
+          machineId,
+          jobNo:    machineState.orderId,
+          date:     prodDate,
+          shift:    machineState.shift,
+          produced: goodCount,
+        }));
+      }
 
-      // 2b) แผนการผลิต sheet — บวกสะสมจำนวน + น้ำหนัก + รหัสพนักงาน
+      // 2b) แผนการผลิต sheet — ไม่ต้องการ shift, บวกสะสมจำนวน + น้ำหนัก + รหัสพนักงาน
       fireAndRetry(() => updatePlanProduced({
         jobNo:       machineState.orderId,
         date:        prodDate,
