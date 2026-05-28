@@ -8,6 +8,22 @@ import { formatProductionDateBangkok, formatProductionTimeBangkok, parseProducti
 import { isGoodWeightOutsideMinMax, hasWeightToleranceRange } from '../utils/weightRangeCheck';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+const LED_STATUS_FALLBACK_POLL_MS = 30_000;
+const LIVE_IDLE_ALERT_MINUTES_DEFAULT = 30;
+const LIVE_IDLE_ALERT_MINUTES_MIN = 1;
+const LIVE_IDLE_ALERT_MINUTES_MAX = 240;
+const IDLE_BADGE_INLINE_CLASS = 'ml-1.5 rounded border border-amber-400/50 bg-amber-500/15 px-1 py-0.5 text-[10px] font-semibold text-amber-200';
+const IDLE_BADGE_CORNER_CLASS = 'absolute left-1 top-1 rounded border border-amber-400/60 bg-amber-400 px-1.5 py-0.5 text-[9px] font-bold text-black';
+const IDLE_BADGE_CORNER_MOBILE_CLASS = 'absolute left-0.5 top-0.5 rounded border border-amber-400/70 bg-amber-400 px-1 py-0.5 text-[8px] font-bold text-black';
+const resolveLiveIdleAlertMinutes = () => {
+  const parsed = Number(import.meta.env?.VITE_PRODUCTION_IDLE_ALERT_MINUTES);
+  if (!Number.isFinite(parsed)) return LIVE_IDLE_ALERT_MINUTES_DEFAULT;
+  return Math.min(
+    LIVE_IDLE_ALERT_MINUTES_MAX,
+    Math.max(LIVE_IDLE_ALERT_MINUTES_MIN, Math.trunc(parsed)),
+  );
+};
+const LIVE_IDLE_ALERT_MS = resolveLiveIdleAlertMinutes() * 60 * 1000;
 
 function groupByZone(machines, unzoned) {
   const map = new Map();
@@ -50,7 +66,13 @@ function fmtWeight(n) {
 }
 
 function isMaintenanceLedText(text) {
-  return /แก้งาน|break\s*down|breakdown|fixing|fix/i.test(String(text || ''));
+  const raw = String(text || '');
+  if (!raw) return false;
+  return (
+    /แก้งาน/i.test(raw)
+    || /\bbreak\s*down\b/i.test(raw)
+    || /\bfix(?:ing)?\b/i.test(raw)
+  );
 }
 
 function ledColorFromState(state) {
@@ -65,6 +87,26 @@ function ledStateToPatch(state) {
     color: ledColorFromState(state),
     speed: state.speed ?? 50,
   };
+}
+
+function getLastWeightEventMs(state) {
+  const candidates = [
+    state?.lastGoodAt,
+    state?.lastNgAt,
+    state?.startedAt,
+  ];
+  for (const v of candidates) {
+    const ts = Date.parse(String(v ?? ''));
+    if (Number.isFinite(ts)) return ts;
+  }
+  return null;
+}
+
+function isLiveIdle(state, nowMs) {
+  if (state?.mode !== 'live') return false;
+  const lastMs = getLastWeightEventMs(state);
+  if (!Number.isFinite(lastMs)) return false;
+  return (nowMs - lastMs) >= LIVE_IDLE_ALERT_MS;
 }
 
 // ─── LedMarqueeText ───────────────────────────────────────────────────────────
@@ -156,12 +198,20 @@ function resolveMachineStatus(machine, state, ledText, t) {
       cardClass: 'bg-gray-700 text-white',
     };
   }
-  if (maintenance || (hasPause && !isLive)) {
+  if (maintenance) {
     return {
       key: 'fix',
       label: t('production.dashboardStatusFixing'),
       rowClass: 'bg-yellow-400 text-black border-b border-yellow-500/40',
       cardClass: 'bg-yellow-400 text-black',
+    };
+  }
+  if (hasPause && !isLive) {
+    return {
+      key: 'paused',
+      label: t('production.dashboardStatusPaused'),
+      rowClass: 'bg-indigo-500 text-white border-b border-indigo-600/40',
+      cardClass: 'bg-indigo-500 text-white',
     };
   }
   if (isLive) {
@@ -242,7 +292,7 @@ function useLedBoardStatuses(machines, sseLedByMachine) {
     };
 
     fetchAll();
-    const id = setInterval(fetchAll, 5_000);
+    const id = setInterval(fetchAll, LED_STATUS_FALLBACK_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -363,13 +413,7 @@ function useFluidStatusMetrics(containerRef, zoneGroups) {
   return metrics;
 }
 
-// ─── Shared row builder ───────────────────────────────────────────────────────
-
-function buildDashboardRows(machines) {
-  return machines;
-}
-
-function getDashboardRowData(machine, allStates, getMachineState, ledData, t) {
+function getDashboardRowData(machine, allStates, getMachineState, ledData, t, nowMs) {
   const state = allStates[machine.id] ?? getMachineState(machine.id) ?? DEFAULT_MACHINE_STATE;
   const led = ledData[machine.id] ?? {};
   const status = resolveMachineStatus(machine, state, led.text, t);
@@ -381,8 +425,9 @@ function getDashboardRowData(machine, allStates, getMachineState, ledData, t) {
   const ledLabel = led.noIp
     ? t('production.ledStatusNoIp')
     : led.text || t('production.dashboardLedNoText');
+  const staleAlert = isLiveIdle(state, nowMs);
 
-  return { machine, state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel };
+  return { machine, state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel, staleAlert };
 }
 
 // ─── Mobile table + status (scrollable, fixed readable sizes) ─────────────────
@@ -621,11 +666,12 @@ const DashboardWeightModal = ({ machineName, events, totalWeight, minWeight, max
 const statusShortLabel = (status) => {
   if (status.key === 'on') return 'ON';
   if (status.key === 'fix') return 'FX';
+  if (status.key === 'paused') return 'PA';
   return '—';
 };
 
-const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t }) => {
-  const rows = useMemo(() => buildDashboardRows(machines), [machines]);
+const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t, nowMs }) => {
+  const rows = useMemo(() => machines, [machines]);
   const rowH = 30;
   const fontSize = 11;
   const headerFont = 9;
@@ -651,8 +697,8 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t 
         </thead>
         <tbody>
           {rows.map((machine) => {
-            const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t);
-            const { state, led, status, produced, ledLabel } = row;
+            const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t, nowMs);
+            const { state, led, status, produced, ledLabel, staleAlert } = row;
 
             return (
               <tr
@@ -666,6 +712,11 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t 
                 <td className="truncate text-right align-middle font-mono tabular-nums" style={cellPad}>{fmtNum(produced)}</td>
                 <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
                   {state.productCode || state.productName || '—'}
+                  {staleAlert && (
+                    <span className={IDLE_BADGE_INLINE_CLASS}>
+                      {t('production.dashboardStatusIdle')}
+                    </span>
+                  )}
                 </td>
                 <td className="bg-black text-center align-middle" style={cellPad}>
                   <LedDot led={led} t={t} size={6} />
@@ -711,6 +762,7 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
             const status = resolveMachineStatus(m, state, ledData[m.id]?.text, t);
             const isLive = state?.mode === 'live';
             const value = isLive ? (state.pipeCounter ?? 0) : 0;
+            const staleAlert = isLiveIdle(state, Date.now());
             const goodEvents = state?.goodEvents ?? [];
             const hasAlert = goodEvents.some((ev) =>
               isGoodWeightOutsideMinMax(ev.weight, state?.minWeight, state?.maxWeight)
@@ -721,7 +773,7 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
               <button
                 key={m.id}
                 type="button"
-                onClick={canClick ? () => onChipClick(m, state) : undefined}
+                onClick={canClick ? () => onChipClick(m) : undefined}
                 disabled={!canClick}
                 className={`relative flex min-h-[44px] w-full flex-col items-center justify-center rounded border border-black/10 px-1 py-1.5 ${status.cardClass} ${canClick ? 'cursor-pointer hover:brightness-110 active:brightness-90 transition-[filter]' : 'cursor-default'}`}
                 title={`${zone} · ${m.label}: ${fmtNum(value)}${canClick ? ' (แตะเพื่อดูรายการ)' : ''}`}
@@ -729,6 +781,11 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
                 {hasAlert && (
                   <span className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-black text-white shadow">
                     !
+                  </span>
+                )}
+                {staleAlert && (
+                  <span className={IDLE_BADGE_CORNER_MOBILE_CLASS}>
+                    {t('production.dashboardStatusIdle')}
                   </span>
                 )}
                 <span className="max-w-full truncate text-[9px] font-bold leading-tight">
@@ -748,10 +805,10 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
 
 // ─── MachineTable (desktop / tablet) ──────────────────────────────────────────
 
-const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
+const MachineTable = ({ machines, allStates, getMachineState, ledData, t, nowMs }) => {
   const containerRef = useRef(null);
 
-  const rows = useMemo(() => buildDashboardRows(machines), [machines]);
+  const rows = useMemo(() => machines, [machines]);
 
   const m = useFluidTableMetrics(containerRef, rows.length);
   const cellPad = { padding: `${m.padY}px ${m.padX}px` };
@@ -803,8 +860,8 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
           </thead>
           <tbody>
             {rows.map((machine) => {
-              const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t);
-              const { state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel } = row;
+              const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t, nowMs);
+              const { state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel, staleAlert } = row;
 
               return (
                 <tr
@@ -814,6 +871,11 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t }) => {
                 >
                   <td className="font-bold truncate align-middle" style={cellPad} title={machine.label}>
                     {machine.label}
+                    {staleAlert && (
+                      <span className={IDLE_BADGE_INLINE_CLASS}>
+                        {t('production.dashboardStatusIdle')}
+                      </span>
+                    )}
                   </td>
                   <td className="font-semibold truncate align-middle" style={cellPad} title={status.label}>
                     {status.label}
@@ -894,6 +956,7 @@ const StatusMachineCard = ({ machine, state, ledText, t, metrics, onCardClick })
   const status = resolveMachineStatus(machine, state, ledText, t);
   const isLive = state?.mode === 'live';
   const value = isLive ? (state.pipeCounter ?? 0) : 0;
+  const staleAlert = isLiveIdle(state, Date.now());
   const goodEvents = state?.goodEvents ?? [];
   const hasAlert = goodEvents.some((ev) =>
     isGoodWeightOutsideMinMax(ev.weight, state?.minWeight, state?.maxWeight)
@@ -903,7 +966,7 @@ const StatusMachineCard = ({ machine, state, ledText, t, metrics, onCardClick })
   return (
     <button
       type="button"
-      onClick={canClick ? () => onCardClick(machine, state) : undefined}
+      onClick={canClick ? () => onCardClick(machine) : undefined}
       disabled={!canClick}
       className={`relative flex h-full min-h-0 w-full flex-col items-center justify-center overflow-hidden rounded-lg border border-black/10 ${status.cardClass} ${canClick ? 'cursor-pointer hover:brightness-110 active:brightness-90 transition-[filter]' : 'cursor-default'}`}
       style={{ padding: metrics.pad }}
@@ -915,6 +978,14 @@ const StatusMachineCard = ({ machine, state, ledText, t, metrics, onCardClick })
           style={{ fontSize: 9 }}
         >
           !
+        </span>
+      )}
+      {staleAlert && (
+        <span
+          className={IDLE_BADGE_CORNER_CLASS}
+          title={t('production.dashboardStatusIdle')}
+        >
+          {t('production.dashboardStatusIdle')}
         </span>
       )}
       <span
@@ -1037,20 +1108,37 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
   const { t } = useTranslation(language);
 
   const now = useClock();
+  const nowMs = now.getTime();
   const UNZONED = t('production.zoneUnspecified');
   const zoneGroups = useMemo(() => groupByZone(machines, UNZONED), [machines, UNZONED]);
   const ledData = useLedBoardStatuses(machines, sseLedByMachine);
 
   const liveCount = Object.values(allStates).filter((s) => s?.mode === 'live').length;
   const activeCount = machines.filter((m) => m.status?.toLowerCase() !== 'unactive').length;
+  const staleLiveCount = useMemo(
+    () =>
+      machines.reduce((count, m) => {
+        const st = allStates[m.id] ?? getMachineState(m.id) ?? DEFAULT_MACHINE_STATE;
+        return count + (isLiveIdle(st, nowMs) ? 1 : 0);
+      }, 0),
+    [machines, allStates, getMachineState, nowMs],
+  );
 
   // ── Weight modal ─────────────────────────────────────────────────────────────
-  const [weightModal, setWeightModal] = useState(null); // { machine, state }
+  // เก็บแค่ machineId — อ่าน allStates แบบ live เพื่อให้ modal อัปเดตตาม SSE/hydration
+  const [weightModalMachineId, setWeightModalMachineId] = useState(null);
 
-  const handleOpenWeightModal = (machine, state) => {
-    setWeightModal({ machine, state });
+  const handleOpenWeightModal = (machine) => {
+    setWeightModalMachineId(machine.id);
   };
-  const handleCloseWeightModal = () => setWeightModal(null);
+  const handleCloseWeightModal = () => setWeightModalMachineId(null);
+
+  const weightModalMachine = weightModalMachineId
+    ? (machines.find((m) => m.id === weightModalMachineId) ?? null)
+    : null;
+  const weightModalState = weightModalMachineId
+    ? (allStates[weightModalMachineId] ?? getMachineState(weightModalMachineId))
+    : null;
 
   return (
     <div className="flex h-[100dvh] min-h-0 w-full max-w-[100vw] flex-col bg-gray-950 text-white select-none">
@@ -1067,6 +1155,12 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
             <span className="h-1 w-1 animate-pulse rounded-full bg-green-400" />
             {liveCount}/{machines.length}
           </span>
+          {staleLiveCount > 0 && (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+              <span className="h-1 w-1 rounded-full bg-amber-400" />
+              {t('production.dashboardIdleMachines', { count: staleLiveCount })}
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
@@ -1093,6 +1187,15 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
 
       {/* ── Main ───────────────────────────────────────────────────────────── */}
       <div className="min-h-0 flex-1 overflow-hidden p-0.5 sm:p-1">
+        {machines.length === 0 ? (
+          <div className="flex h-full items-center justify-center rounded-xl border border-gray-800/60 bg-[#0a0a0a] px-6 text-center">
+            <div>
+              <p className="text-sm font-semibold text-gray-300">{t('production.noMachinesFound')}</p>
+              <p className="mt-1 text-xs text-gray-500">{t('production.syncFailed')}</p>
+            </div>
+          </div>
+        ) : (
+          <>
 
         {/* Mobile: scroll ทั้งตาราง + สถานะ — แสดงครบทุกเครื่อง */}
         <div className="flex h-full flex-col gap-2 overflow-y-auto overscroll-y-contain pb-[env(safe-area-inset-bottom)] md:hidden">
@@ -1102,6 +1205,7 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
             getMachineState={getMachineState}
             ledData={ledData}
             t={t}
+            nowMs={nowMs}
           />
           <StatusMobileOverview
             zoneGroups={zoneGroups}
@@ -1122,6 +1226,7 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
               getMachineState={getMachineState}
               ledData={ledData}
               t={t}
+              nowMs={nowMs}
             />
           </div>
 
@@ -1136,16 +1241,18 @@ const DashboardView = ({ machines, allStates, getMachineState, sseLedByMachine, 
             />
           </div>
         </div>
+          </>
+        )}
       </div>
 
-      {/* ── Weight event modal ──────────────────────────────────────────────── */}
-      {weightModal && (
+      {/* ── Weight event modal (อ่านจาก allStates แบบ live — ไม่ใช้ snapshot) ── */}
+      {weightModalMachine && weightModalState && (
         <DashboardWeightModal
-          machineName={weightModal.machine.label}
-          events={weightModal.state?.goodEvents ?? []}
-          totalWeight={weightModal.state?.totalGoodWeight ?? 0}
-          minWeight={weightModal.state?.minWeight}
-          maxWeight={weightModal.state?.maxWeight}
+          machineName={weightModalMachine.label}
+          events={weightModalState.goodEvents ?? []}
+          totalWeight={weightModalState.totalGoodWeight ?? 0}
+          minWeight={weightModalState.minWeight}
+          maxWeight={weightModalState.maxWeight}
           onClose={handleCloseWeightModal}
         />
       )}

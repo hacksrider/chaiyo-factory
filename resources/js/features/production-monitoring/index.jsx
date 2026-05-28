@@ -21,6 +21,7 @@ import {
   dbGetQueue,
   dbDeleteQueueItem,
   dbStartSession,
+    dbFinishSession,
   dbGetSession,
   dbCancelSession,
   fetchScaleWeights,
@@ -87,17 +88,22 @@ function mergeDedupGoodNgLists(prevGood, prevNg, addGoods, addNgs) {
   return { mergedG, mergedN };
 }
 
-// ─── withRetry — retry async fn สูงสุด N ครั้ง ด้วย delay แบบ linear backoff ──
+// ─── withRetry — retry async fn สูงสุด N ครั้ง ด้วย delay แบบ exponential backoff ──
 const withRetry = async (fn, retries = 3, baseDelayMs = 1500) => {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       return await fn();
     } catch (err) {
       if (attempt === retries - 1) throw err;
-      await new Promise((r) => setTimeout(r, baseDelayMs * (attempt + 1)));
+      const delay = baseDelayMs * (2 ** attempt);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 };
+const SEEN_SCALE_EVENTS_MAX = 20_000;
+const SEEN_SCALE_EVENTS_TTL_MS = 6 * 60 * 60 * 1000;
+const SCALE_HYDRATED_KEYS_MAX = 4_000;
+const SCALE_HYDRATED_KEYS_TTL_MS = 12 * 60 * 60 * 1000;
 
 // ─── Machine Log helpers ──────────────────────────────────────────────────────
 function _fmtDateForLog(d = new Date()) {
@@ -107,8 +113,9 @@ function _fmtDateForLog(d = new Date()) {
 function _fmtTimeForLog(d = new Date()) {
   const h = d.getHours();
   const m = d.getMinutes();
+  const s = d.getSeconds();
   const ampm = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${String(m).padStart(2, '0')}:00 ${ampm}`;
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')} ${ampm}`;
 }
 
 /** ช่อง team ใน Machine Log — Laravel required ไม่รับว่างเปล่า */
@@ -324,11 +331,28 @@ const ProductionMonitoring = () => {
   const [view, setView] = useState('machines'); // 'machines' | 'history' | 'schedule' | 'dashboard'
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [productionViewsMenuOpen, setProductionViewsMenuOpen] = useState(false);
+  const [sseStatus, setSseStatus] = useState('connecting');
 
   /** หลังรีเฟรช: DB ใส่ pipeCounter แล้วแต่ goodEvents=[] → poll ดึงเหตุซ้ำแล้ว onWeightUpdate +1 ซ้ำ (เลขคูณสอง) */
-  const scaleEventsHydratedKeyRef = useRef(new Set());
+  const scaleEventsHydratedKeyRef = useRef(new Map());
   const scaleHydrationInflightRef = useRef(new Set());
   const [scalePollResumeByMachine, setScalePollResumeByMachine] = useState({});
+  const hasScaleEventsHydrated = useCallback(
+    (key) => scaleEventsHydratedKeyRef.current.has(key),
+    [],
+  );
+  const markScaleEventsHydrated = useCallback((key) => {
+    scaleEventsHydratedKeyRef.current.set(key, Date.now());
+    const cutoff = Date.now() - SCALE_HYDRATED_KEYS_TTL_MS;
+    for (const [k, ts] of scaleEventsHydratedKeyRef.current) {
+      if (ts < cutoff) scaleEventsHydratedKeyRef.current.delete(k);
+    }
+    while (scaleEventsHydratedKeyRef.current.size > SCALE_HYDRATED_KEYS_MAX) {
+      const oldestKey = scaleEventsHydratedKeyRef.current.keys().next().value;
+      if (!oldestKey) break;
+      scaleEventsHydratedKeyRef.current.delete(oldestKey);
+    }
+  }, []);
 
   /** ซิงค์จาก URL เฉพาะเมื่อ segment ใน URL เปลี่ยนจริง (ลิงก์แชร์ / กดปุ่มป้ายไฟ / browser back) — ไม่รันซ้ำทุกครั้งที่ `machines` เป็น array ใหม่ */
   const lastLedUrlSegmentRef = useRef(undefined);
@@ -496,7 +520,9 @@ const ProductionMonitoring = () => {
 
   // Dedup tracker for scale_weight events received via SSE
   // (each browser has its own seen-set — server keeps all events, clients dedup locally)
-  const seenScaleEventsRef = useRef(new Set());
+  // ใช้ Map<dedupKey, ts> + pruning เพื่อไม่ให้ memory โตไม่จำกัดตอนรัน 24 ชม.
+  const seenScaleEventsRef = useRef(new Map());
+  const seenScaleEventsPruneTickRef = useRef(0);
 
   /**
    * โหลดรายการ production_weight_events ใส่ goodEvents/ngEvents (ไม่ใช้ +1 pipeCounter — เก็บตรง DB แล้ว)
@@ -507,7 +533,7 @@ const ProductionMonitoring = () => {
     async (machineId, sessionRunUlid, opts = {}) => {
       if (!machineId || !sessionRunUlid) return;
       const hk = `${machineId}:${sessionRunUlid}`;
-      if (scaleEventsHydratedKeyRef.current.has(hk)) return;
+      if (hasScaleEventsHydrated(hk)) return;
 
       const { bypassGate = false, pipeAndNgHint } = opts;
       if (!bypassGate) {
@@ -549,7 +575,7 @@ const ProductionMonitoring = () => {
         const inconsistentBackend = !gotRows && !gotId && sumCounts > 0;
 
         if (!inconsistentBackend) {
-          scaleEventsHydratedKeyRef.current.add(hk);
+          markScaleEventsHydrated(hk);
         }
 
         if (gotId && !inconsistentBackend) {
@@ -564,7 +590,7 @@ const ProductionMonitoring = () => {
         scaleHydrationInflightRef.current.delete(hk);
       }
     },
-    [updateMachineState],
+    [updateMachineState, hasScaleEventsHydrated, markScaleEventsHydrated],
   );
 
   // Load DB queue and session for each machine once the machine list is ready
@@ -617,6 +643,12 @@ const ProductionMonitoring = () => {
       }, 600);
     });
   }, [allStates, canManageProduction]);
+  useEffect(
+    () => () => {
+      Object.values(pushDebounceRef.current).forEach((id) => clearTimeout(id));
+    },
+    [],
+  );
 
   // SSE handler for machine_session events (push from other browsers/devices)
   const handleSseMachineSession = useCallback(({ machineId, state }) => {
@@ -792,8 +824,24 @@ const ProductionMonitoring = () => {
   const handleSseScaleWeight = useCallback(({ machineId, event: ev }) => {
     if (!machineId || !ev) return;
     const dedupKey = scaleEventDedupKey(ev);
-    if (!dedupKey || seenScaleEventsRef.current.has(dedupKey)) return;
-    seenScaleEventsRef.current.add(dedupKey);
+    if (!dedupKey) return;
+    if (seenScaleEventsRef.current.has(dedupKey)) return;
+    seenScaleEventsRef.current.set(dedupKey, Date.now());
+    seenScaleEventsPruneTickRef.current += 1;
+    if (
+      seenScaleEventsRef.current.size > SEEN_SCALE_EVENTS_MAX
+      || seenScaleEventsPruneTickRef.current % 200 === 0
+    ) {
+      const cutoff = Date.now() - SEEN_SCALE_EVENTS_TTL_MS;
+      for (const [k, ts] of seenScaleEventsRef.current) {
+        if (ts < cutoff) seenScaleEventsRef.current.delete(k);
+      }
+      while (seenScaleEventsRef.current.size > SEEN_SCALE_EVENTS_MAX) {
+        const oldestKey = seenScaleEventsRef.current.keys().next().value;
+        if (!oldestKey) break;
+        seenScaleEventsRef.current.delete(oldestKey);
+      }
+    }
 
     const weight = parseFloat(ev.weight) || 0;
     const type = ev.type === 'good' ? 'good' : 'ng';
@@ -855,7 +903,7 @@ const ProductionMonitoring = () => {
       const mid = payload.machineId;
       if (sess?.mode === 'live' && sess.sessionRunUlid && sess._db) {
         const hk = `${mid}:${sess.sessionRunUlid}`;
-        if (!scaleEventsHydratedKeyRef.current.has(hk)) {
+        if (!hasScaleEventsHydrated(hk)) {
           queueMicrotask(() => {
             void hydrateLiveWeightEventsFromDb(mid, sess.sessionRunUlid, {
               bypassGate: true,
@@ -865,7 +913,7 @@ const ProductionMonitoring = () => {
         }
       }
     },
-    [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState],
+    [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState, hasScaleEventsHydrated],
   );
 
   // DB-aware add-to-queue: write to DB first, update local state on success
@@ -957,6 +1005,7 @@ const ProductionMonitoring = () => {
     onQueueUpdated:      handleSseQueueUpdated,
     onSessionUpdated:    handleSseSessionUpdated,
     onReconnect:         handleSseReconnect,
+    onStatusChange:      setSseStatus,
   });
 
   // Clear LED changed badge when user selects that machine
@@ -970,10 +1019,12 @@ const ProductionMonitoring = () => {
     });
   }, [selectedMachineId]);
 
-  // Fallback poll every 15s — catches any events SSE may have missed
-  // (e.g. server restart, browser wake from sleep, SSE gap during reconnect)
+  // Session poll (single loop): dashboard=3s, อื่นๆ=15s
+  // catches events when SSE misses (sleep/reconnect/server restart)
   useEffect(() => {
-    const doFallbackPoll = async () => {
+    if (!user || authLoading) return undefined;
+    const intervalMs = view === 'dashboard' ? 3_000 : 15_000;
+    const doSessionPoll = async () => {
       try {
         const data = await fetchAllMachineSessions();
         if (!data?.sessions) return;
@@ -990,36 +1041,30 @@ const ProductionMonitoring = () => {
       } catch { /* network error — ignore */ }
     };
 
-    // Initial load (state starts empty — must populate from server)
-    doFallbackPoll();
-
-    const id = setInterval(doFallbackPoll, 15_000);
+    doSessionPoll();
+    const id = setInterval(doSessionPoll, intervalMs);
     return () => clearInterval(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, user, authLoading]);
 
-  // Dashboard: poll ถี่ขึ้น (3s) เผื่อ SSE พลาด — ให้ wallboard อัปเดตโดยไม่รีเฟรช
+  // Dashboard: hydrate weight events สำหรับเครื่องที่ live แต่ goodEvents ยังว่าง
+  // ทำให้ popup น้ำหนักในหน้า Dashboard แสดงข้อมูลได้โดยไม่ต้องผ่าน LiveMonitoring ก่อน
   useEffect(() => {
     if (view !== 'dashboard') return undefined;
 
-    const pollDashboard = async () => {
-      try {
-        const data = await fetchAllMachineSessions();
-        if (!data?.sessions) return;
-        Object.entries(data.sessions).forEach(([mid, serverState]) => {
-          const serverTs = Number(serverState?._ts) || 0;
-          const localTs  = Number(allStatesRef.current[mid]?._ts) || 0;
-          if (serverTs > localTs) {
-            sessionSyncTsRef.current[mid] = serverTs;
-          }
-        });
-        mergeServerStatesRef.current(data.sessions);
-      } catch { /* ignore */ }
+    const hydrateWeightsForDashboard = () => {
+      Object.entries(allStatesRef.current).forEach(([mid, st]) => {
+        if (st?.mode !== 'live' || !st?.sessionRunUlid) return;
+        if ((st.goodEvents?.length ?? 0) > 0) return; // มีข้อมูลแล้ว ไม่ต้อง fetch
+        if ((st.pipeCounter ?? 0) <= 0 && (st.ngCount ?? 0) <= 0) return; // ยังไม่มีรายการ
+        void hydrateLiveWeightEventsFromDb(mid, st.sessionRunUlid);
+      });
     };
 
-    pollDashboard();
-    const id = setInterval(pollDashboard, 3_000);
+    hydrateWeightsForDashboard();
+    // Poll ซ้ำทุก 10 วินาที เผื่อมี live machine เพิ่มขึ้นหลังจาก Dashboard เปิดอยู่
+    const id = setInterval(hydrateWeightsForDashboard, 10_000);
     return () => clearInterval(id);
-  }, [view]);
+  }, [view, hydrateLiveWeightEventsFromDb]);
 
   // ── Auto-fetch remainingQty จาก Daily Plan เมื่อ remainingQty = 0 ───────────
   // กรณี production ถูก start ก่อน remainingQty feature พร้อมใช้งาน
@@ -1122,6 +1167,41 @@ const ProductionMonitoring = () => {
     });
     return map;
   }, [allStates]);
+  const sseStatusUi = useMemo(() => {
+    if (!user || authLoading) {
+      return {
+        label: t('production.realtimeAuth'),
+        dotClass: 'bg-gray-500',
+        badgeClass: 'text-gray-300 border-gray-600/70 bg-gray-800/70',
+      };
+    }
+    if (sseStatus === 'open') {
+      return {
+        label: t('production.realtimeLive'),
+        dotClass: 'bg-emerald-400',
+        badgeClass: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
+      };
+    }
+    if (sseStatus === 'error') {
+      return {
+        label: t('production.realtimeError'),
+        dotClass: 'bg-red-400',
+        badgeClass: 'text-red-300 border-red-500/40 bg-red-500/10',
+      };
+    }
+    if (sseStatus === 'closed') {
+      return {
+        label: t('production.realtimeOff'),
+        dotClass: 'bg-gray-500',
+        badgeClass: 'text-gray-300 border-gray-600/70 bg-gray-800/70',
+      };
+    }
+    return {
+      label: t('production.realtimeSync'),
+      dotClass: 'bg-amber-400',
+      badgeClass: 'text-amber-300 border-amber-500/40 bg-amber-500/10',
+    };
+  }, [sseStatus, user, authLoading, t]);
 
   // Dashboard renders full-screen, replacing the normal layout entirely
   if (view === 'dashboard') {
@@ -1177,6 +1257,13 @@ const ProductionMonitoring = () => {
 
           {/* Right: ใบแจ้งซ่อม + ภาษา */}
           <div className="flex items-center gap-2 flex-shrink-0">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-1.5 py-1 text-[10px] font-semibold sm:px-2 ${sseStatusUi.badgeClass}`}
+              title={`${t('production.realtimeStatus')}: ${sseStatusUi.label} (${sseStatus})`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${sseStatusUi.dotClass}`} />
+              <span className="hidden sm:inline">{sseStatusUi.label}</span>
+            </span>
             <div className="flex flex-shrink-0 items-center">
               <MaintenanceNavSuite variant="dark" />
             </div>
@@ -1617,15 +1704,14 @@ const ProductionMonitoring = () => {
                           .catch(() => {});
                       }, 50);
                     }}
-                    onPauseAndStart={(item) => {
+                    onPauseAndStart={async (item) => {
                       pauseLiveToSetup(selectedMachineId, {
                         ...item,
                         sheetName: item.sheetName ?? selectedMachine.sheetName,
                         ledIp:     item.ledIp     ?? selectedMachine.ledIp,
                       });
-                      queueProductionLedForMachine(selectedMachineId, { ...item }, 0).catch(() => {});
+                      await queueProductionLedForMachine(selectedMachineId, { ...item }, 0).catch(() => {});
                     }}
-                    onAddToQueue={(item) => addToQueue(selectedMachineId, item)}
                     onRemoveFromQueue={(queueId) => handleDbRemoveFromQueue(selectedMachineId, queueId)}
                     onCancelOrder={() => {
                       const mid = selectedMachineId;
@@ -1644,8 +1730,27 @@ const ProductionMonitoring = () => {
                         }, 50);
                       })();
                     }}
-                    onCloseAndStart={(item) => {
+                    onCloseAndStart={async (item) => {
                       const mid = selectedMachineId;
+                      if (!mid) throw new Error('Machine is not selected');
+                      const closing = allStatesRef.current[mid] ?? machineState;
+                      await dbFinishSession(mid, {
+                        goodCount:       closing?.pipeCounter     ?? 0,
+                        ngCount:         closing?.ngCount         ?? 0,
+                        totalGoodWeight: closing?.totalGoodWeight ?? 0,
+                        totalNgWeight:   closing?.totalNgWeight   ?? 0,
+                        skipGasDispatch: true,
+                      });
+                      await dbStartSession(mid, {
+                        orderId:      item.orderId,
+                        productCode:  item.productCode || '',
+                        productName:  item.productName,
+                        targetQty:    item.targetQty,
+                        remainingQty: item.remainingQty ?? 0,
+                        planDate:     item.planDate     ?? '',
+                        sheetName:    item.sheetName ?? selectedMachine.sheetName,
+                        ledIp:        item.ledIp     ?? selectedMachine.ledIp,
+                      });
                       if (item.queueId) handleDbRemoveFromQueue(mid, item.queueId);
                       updateMachineState(mid, {
                         orderId:      item.orderId,
@@ -1663,16 +1768,6 @@ const ProductionMonitoring = () => {
                         startedAt:    new Date().toISOString(),
                         pausedOrder:  null,
                       });
-                      dbStartSession(mid, {
-                        orderId:     item.orderId,
-                        productCode: item.productCode || '',
-                        productName: item.productName,
-                        targetQty:   item.targetQty,
-                        remainingQty:item.remainingQty ?? 0,
-                        planDate:    item.planDate     ?? '',
-                        sheetName:   item.sheetName ?? selectedMachine.sheetName,
-                        ledIp:       item.ledIp     ?? selectedMachine.ledIp,
-                      }).catch(() => {});
                       queueProductionLedForMachine(mid, { ...item }, 0).catch(() => {});
                       logStartNow({
                         machineId:    mid,
@@ -1776,6 +1871,8 @@ const ProductionMonitoring = () => {
                         planDate:     data.planDate     ?? '',
                         sheetName:    data.sheetName,
                         ledIp:        data.ledIp,
+                        shift:        data.shift        || '',
+                        employeeId:   data.employeeId   || '',
                         peType:       data.peType      ?? '',
                         size:         data.size        ?? null,
                         length:       data.length      ?? null,

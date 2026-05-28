@@ -6,6 +6,7 @@ import {
   fetchScaleConfirm,
   dbStartSession,
   dbCancelSession,
+  storeScaleLive,
 } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
@@ -45,7 +46,19 @@ const NoticeBanner = ({ notice }) =>
 // ─── Queue row ────────────────────────────────────────────────────────────────
 
 /** เวลาสูงสุดรอกดยืนยันที่ตาชั่ง (นับจากเวลาเริ่มเซสชันฝั่งเซิร์ฟเวอร์ หรือจากครั้งที่กด Start Now) */
-const SCALE_CONFIRM_WAIT_MS = 10 * 60 * 1000;
+const SCALE_CONFIRM_WAIT_MS_DEFAULT = 10 * 60 * 1000;
+const SCALE_CONFIRM_WAIT_MS_MIN = 60 * 1000;
+const SCALE_CONFIRM_WAIT_MS_MAX = 60 * 60 * 1000;
+const resolveScaleConfirmWaitMs = () => {
+  const raw = import.meta.env?.VITE_SCALE_CONFIRM_WAIT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return SCALE_CONFIRM_WAIT_MS_DEFAULT;
+  return Math.min(
+    SCALE_CONFIRM_WAIT_MS_MAX,
+    Math.max(SCALE_CONFIRM_WAIT_MS_MIN, Math.trunc(parsed)),
+  );
+};
+const SCALE_CONFIRM_WAIT_MS = resolveScaleConfirmWaitMs();
 
 /** แถบด้านบนเมื่อมีเซสชัน awaiting_scale — ให้เห็นชัดระหว่างรอตาชั่งหลังรีเฟรช */
 const MachineScaleWaitBanner = ({ t, sessionWait, canCancel, onCancel, cancelling }) => {
@@ -206,19 +219,28 @@ const QueueRow = ({
       const last = await fetchScaleConfirm(machineId);
       if (last?.pending) {
         await handleConfirmed(last.shift, last.employeeId);
-
         return;
       }
     } catch {
       /* เดินหน้ายกเลิก */
     }
+    // ยกเลิก session ใน DB
     try {
       await dbCancelSession(machineId);
     } catch {
       /* best-effort cancel after timeout */
     }
-    setPhase('timeout');
-    setNotice({ type: 'warn', text: t('production.scaleConfirmTimeout') });
+    // ส่งสัญญาณให้ตาชั่งกลับสู่หน้ารอรับคำสั่ง
+    storeScaleLive(machineId, { live: false }).catch(() => {});
+    // กลับเป็น idle เพื่อให้ปุ่ม Start Now แสดงใหม่
+    setPhase('idle');
+    setNotice(null);
+    // รีเฟรช queue จาก DB ให้ parent
+    try {
+      await onCancelAwaitingScale?.();
+    } catch {
+      /* non-critical */
+    }
   };
 
   // ─── กดปุ่ม Start Now ──────────────────────────────────────────────
@@ -339,6 +361,8 @@ const QueueRow = ({
     } catch {
       /* best-effort cancel */
     }
+    // ส่งสัญญาณให้ตาชั่งกลับสู่หน้ารอรับคำสั่ง
+    storeScaleLive(machineId, { live: false }).catch(() => {});
     setPhase('idle');
     setNotice(null);
     try {
@@ -348,13 +372,6 @@ const QueueRow = ({
     } finally {
       setCancelling(false);
     }
-  };
-
-  // ─── เริ่มใหม่หลัง timeout ────────────────────────────────────────
-  const handleRetry = () => {
-    hydratedAwaitingRef.current = false;
-    setPhase('idle');
-    setNotice(null);
   };
 
   return (
@@ -467,38 +484,24 @@ const QueueRow = ({
         </div>
       )}
 
-      {/* ── Action row (idle / timeout) ── */}
+      {/* ── Action row (idle) ── */}
       {phase !== 'waiting' && interactive && (
         <div className="flex gap-2">
           <button
             type="button"
-            disabled={starting || phase === 'waiting'}
-            onClick={phase === 'timeout' ? handleRetry : handleStart}
-            className={`flex-1 flex items-center justify-center gap-2 font-semibold text-sm py-2 px-4 rounded-lg transition-all border disabled:opacity-50 disabled:cursor-not-allowed ${
-              phase === 'timeout'
-                ? 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/40 text-amber-400'
-                : 'bg-green-500/10 hover:bg-green-500/20 active:bg-green-500/30 border-green-500/40 text-green-400'
-            }`}
+            disabled={starting}
+            onClick={handleStart}
+            className="flex-1 flex items-center justify-center gap-2 font-semibold text-sm py-2 px-4 rounded-lg transition-all border disabled:opacity-50 disabled:cursor-not-allowed bg-green-500/10 hover:bg-green-500/20 active:bg-green-500/30 border-green-500/40 text-green-400"
           >
-            {phase === 'timeout' ? (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                {t('production.retryAction')}
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                {t('production.startNow')}
-              </>
-            )}
+            <>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {t('production.startNow')}
+            </>
           </button>
 
           <button
@@ -829,6 +832,7 @@ const SetupMode = ({
           setBannerCancelling(true);
           try {
             await dbCancelSession(machineId);
+            storeScaleLive(machineId, { live: false }).catch(() => {});
             await onCancelAwaitingScale?.();
           } catch {
             /* best-effort */

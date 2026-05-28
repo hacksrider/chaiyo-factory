@@ -7,9 +7,19 @@ import {
   parseProductionInstant,
 } from '../utils/formatProductionBangkok';
 import StatCard from './StatCard';
-import { updateWeight, closeOrder, createOrder, fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
+import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
+
+const NG_ALERT_PERCENT_DEFAULT = 5;
+const NG_ALERT_PERCENT_MIN = 0;
+const NG_ALERT_PERCENT_MAX = 100;
+const resolveNgAlertPercent = () => {
+  const parsed = Number(import.meta.env?.VITE_PRODUCTION_NG_ALERT_PERCENT);
+  if (!Number.isFinite(parsed)) return NG_ALERT_PERCENT_DEFAULT;
+  return Math.min(NG_ALERT_PERCENT_MAX, Math.max(NG_ALERT_PERCENT_MIN, parsed));
+};
+const NG_ALERT_PERCENT = resolveNgAlertPercent();
 
 // ─── Elapsed timer hook ───────────────────────────────────────────────────────
 
@@ -57,17 +67,25 @@ const Spinner = ({ className = 'w-4 h-4' }) => (
   </svg>
 );
 
+const fireAndRetry = (fn, retries = 3, baseDelayMs = 2500) => {
+  const run = (attempt) => {
+    fn().catch(() => {
+      if (attempt >= retries) return;
+      const delay = baseDelayMs * (2 ** (attempt - 1));
+      setTimeout(() => run(attempt + 1), delay);
+    });
+  };
+  run(1);
+};
+
 // ─── Switch Order modal ───────────────────────────────────────────────────────
 // Shown when user clicks "Start" on a queued item while an order is live.
 
 const SwitchOrderModal = ({
   targetItem,           // queue item the user wants to start
   currentOrderId,       // currently running order id
-  machineId,
-  sheetName,
-  ledIp,
   onPauseAndStart,      // (targetItem) → pause current, start target
-  onCloseAndStart,      // (targetItem) → close current in GAS, start target
+  onCloseAndStart,      // (targetItem) → close current in DB, start target
   onCancel,
 }) => {
   const [action, setAction] = useState(null); // 'pause' | 'close'
@@ -84,34 +102,15 @@ const SwitchOrderModal = ({
     setAction(mode);
     setWarn(null);
 
-    if (mode === 'close') {
-      try {
-        await closeOrder({ machineId, sheetName, orderId: currentOrderId });
-      } catch (err) {
-        setWarn(`Close API failed (${err.message}) — closing locally.`);
-        await new Promise((r) => setTimeout(r, 800));
-      }
-    }
-
     try {
-      await createOrder({
-        machineId,
-        sheetName: targetItem.sheetName ?? sheetName,
-        ledIp:     targetItem.ledIp     ?? ledIp,
-        orderId:      targetItem.orderId,
-        productName:  targetItem.productName,
-        targetQty:    targetItem.targetQty,
-      });
+      if (mode === 'pause') await onPauseAndStart(targetItem);
+      else await onCloseAndStart(targetItem);
     } catch (err) {
-      // GAS fail — หยุด ไม่เปลี่ยน order เพื่อป้องกัน order ใหม่หาย
-      setWarn(t('production.switchOrderCreateFailed', { msg: err.message }));
+      setWarn(t('production.switchOrderCreateFailed', { msg: err?.message ?? '' }));
       setBusy(false);
       busyLockRef.current = false;
       return;
     }
-
-    if (mode === 'pause') onPauseAndStart(targetItem);
-    else                  onCloseAndStart(targetItem);
 
     setBusy(false);
     busyLockRef.current = false;
@@ -211,105 +210,6 @@ const SwitchOrderModal = ({
     </div>
   );
 };
-
-// ─── Add to Queue popup modal ─────────────────────────────────────────────────
-
-const FIELD = 'w-full bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 text-white ' +
-  'placeholder-gray-600 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/40 transition';
-
-// const AddToQueueModal = ({ onAdd, onClose }) => {
-//   const [form, setForm]   = useState({ orderId: '', productName: '', targetQty: '' });
-//   const [error, setError] = useState(null);
-
-//   const handleChange = (e) => {
-//     setForm((p) => ({ ...p, [e.target.name]: e.target.value }));
-//     if (error) setError(null);
-//   };
-
-//   const handleSubmit = (e) => {
-//     e.preventDefault();
-//     if (!form.orderId.trim())     { setError('Order ID is required.');                  return; }
-//     if (!form.productName.trim()) { setError('Product Name is required.');               return; }
-//     const qty = parseInt(form.targetQty, 10);
-//     if (!form.targetQty || isNaN(qty) || qty < 1) { setError('Target Qty must be a positive number.'); return; }
-
-//     onAdd({ orderId: form.orderId.trim(), productName: form.productName.trim(), targetQty: qty });
-//     onClose();
-//   };
-
-//   return (
-//     <div
-//       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
-//       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-//     >
-//       <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden">
-//         {/* Header */}
-//         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700/60">
-//           <div className="flex items-center gap-2">
-//             <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-//             </svg>
-//             <h3 className="text-base font-bold text-white">เพิ่มรายการเข้าคิว</h3>
-//           </div>
-//           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition p-1">
-//             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-//             </svg>
-//           </button>
-//         </div>
-
-//         {/* Form */}
-//         <form onSubmit={handleSubmit} noValidate className="px-6 py-5 space-y-4">
-//           <div>
-//             <label className="block text-sm font-medium text-gray-300 mb-1.5">
-//               Order ID <span className="text-red-400">*</span>
-//             </label>
-//             <input type="text" name="orderId" value={form.orderId} onChange={handleChange}
-//               placeholder="e.g. ORD-2026-002" autoComplete="off"
-//               className={`${FIELD} font-mono`} autoFocus />
-//           </div>
-//           <div>
-//             <label className="block text-sm font-medium text-gray-300 mb-1.5">
-//               Product Name <span className="text-red-400">*</span>
-//             </label>
-//             <input type="text" name="productName" value={form.productName} onChange={handleChange}
-//               placeholder="e.g. HDPE Pipe DN110 PN10" autoComplete="off" className={FIELD} />
-//           </div>
-//           <div>
-//             <label className="block text-sm font-medium text-gray-300 mb-1.5">
-//               Target Quantity <span className="text-xs text-gray-500">(pipes)</span>{' '}
-//               <span className="text-red-400">*</span>
-//             </label>
-//             <input type="number" name="targetQty" value={form.targetQty} onChange={handleChange}
-//               placeholder="e.g. 500" min="1" className={`${FIELD} font-mono`} />
-//           </div>
-
-//           {error && (
-//             <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2.5">
-//               {error}
-//             </p>
-//           )}
-
-//           <div className="flex gap-3 pt-1">
-//             <button type="submit"
-//               className="flex-1 flex items-center justify-center gap-2 bg-cyan-500 hover:bg-cyan-400 active:bg-cyan-600 text-gray-950 font-bold py-2.5 rounded-xl transition-all"
-//             >
-//               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-//               </svg>
-//               Add to Queue
-//             </button>
-//             <button type="button" onClick={onClose}
-//               className="px-5 text-sm text-gray-400 hover:text-gray-200 border border-gray-700 hover:border-gray-500 rounded-xl transition"
-//             >
-//               Cancel
-//             </button>
-//           </div>
-//         </form>
-//       </div>
-//     </div>
-//   );
-// };
 
 // ─── WeightEventListModal — รายการกดตาชั่งแต่ละครั้ง ─────────────────────────
 
@@ -508,7 +408,7 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
     setClosing(true);
     setCloseErr(null);
     try {
-      // 1) บันทึกสรุปลง production sheet (machine-specific)
+      // ส่ง Google Sheet ทันทีตอนกดเสร็จ (เร็วที่สุด — ไม่ผ่าน queue/cron)
       await closeOrder({
         machineId,
         sheetName:        machineState.sheetName,
@@ -519,7 +419,6 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         totalNgWeight,
       });
     } catch (err) {
-      // GAS/API fail — แสดง error ไม่ reset state เพื่อให้ลอง retry ได้
       setCloseErr(t('production.finishSaveSheetFailed', { msg: err.message }));
       setClosing(false);
       confirmLockRef.current = false;
@@ -542,7 +441,7 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       return;
     }
 
-    // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต (fire-and-forget — ไม่ block)
+    // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต (fire-and-forget + retry)
     if (machineState.orderId && machineState.shift) {
       // ใช้ planDate (วันที่ของแถว Plan ที่กดเพิ่มคิว) ก่อน
       // fallback → startedAt → วันนี้
@@ -551,23 +450,23 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         || new Date().toISOString().slice(0, 10);
 
       // 2a) Daily sheet — กะ A/B/C (เหมือนเดิม)
-      updateDailyProduced({
+      fireAndRetry(() => updateDailyProduced({
         machineId,
         jobNo:    machineState.orderId,
         date:     prodDate,
         shift:    machineState.shift,
         produced: goodCount,
-      }).catch(() => {});
+      }));
 
       // 2b) แผนการผลิต sheet — บวกสะสมจำนวน + น้ำหนัก + รหัสพนักงาน
-      updatePlanProduced({
+      fireAndRetry(() => updatePlanProduced({
         jobNo:       machineState.orderId,
         date:        prodDate,
         goodCount:   goodCount,
         goodWeight:  totalGoodWeight,
         ngWeight:    totalNgWeight,
         employeeId:  machineState.employeeId ?? '',
-      }).catch(() => {});
+      }));
     }
 
     onConfirm();
@@ -667,7 +566,6 @@ const LiveMonitoring = ({
   onCloseOrder,
   onPauseAndStart,
   onCloseAndStart,
-  onAddToQueue,
   onRemoveFromQueue, // optional: ลบรายการคิวออกจาก DB เมื่อ Live
   onCancelOrder,
 }) => {
@@ -677,7 +575,6 @@ const LiveMonitoring = ({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [toast, setToast]               = useState(null);
   const [switchTarget, setSwitchTarget] = useState(null);
-  const [showAddModal, setShowAddModal] = useState(false);
   const [showGoodList, setShowGoodList] = useState(false);
   const [showNgList,   setShowNgList]   = useState(false);
 
@@ -700,6 +597,9 @@ const LiveMonitoring = ({
   const ngCount         = machineState.ngCount         ?? 0;
   const totalGoodWeight = machineState.totalGoodWeight ?? 0;
   const totalNgWeight   = machineState.totalNgWeight   ?? 0;
+  const totalCount = goodCount + ngCount;
+  const ngRate = totalCount > 0 ? (ngCount / totalCount) * 100 : 0;
+  const showNgRateAlert = totalCount >= 20 && ngRate >= NG_ALERT_PERCENT;
 
   const showToast = (type, message, ms = 3500) => {
     setToast({ type, message });
@@ -731,6 +631,8 @@ const LiveMonitoring = ({
     onWeightUpdateRef.current(type, weight, ev);
     if (type === 'good') {
       showToast('success', `ของดี ✓  ${weight} kg`);
+    } else {
+      showToast('warning', `ของเสีย ✕  ${weight} kg`, 4500);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -829,9 +731,6 @@ const LiveMonitoring = ({
         <SwitchOrderModal
           targetItem={switchTarget}
           currentOrderId={machineState.orderId}
-          machineId={machineId}
-          sheetName={machineState.sheetName}
-          ledIp={machineState.ledIp}
           onPauseAndStart={(item) => { setSwitchTarget(null); onPauseAndStart(item); }}
           onCloseAndStart={(item) => { setSwitchTarget(null); onCloseAndStart(item); }}
           onCancel={() => setSwitchTarget(null)}
@@ -1072,6 +971,22 @@ const LiveMonitoring = ({
         )}
       </div>
 
+      {showNgRateAlert && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2.5 text-xs sm:text-sm">
+          <p className="font-semibold text-red-300">
+            {t('production.ngRateAlertTitle')}
+          </p>
+          <p className="mt-0.5 text-red-200/90">
+            {t('production.ngRateAlertDetail', {
+              rate: ngRate.toFixed(1),
+              threshold: NG_ALERT_PERCENT.toFixed(1),
+              ngCount,
+              totalCount,
+            })}
+          </p>
+        </div>
+      )}
+
       {/* ── Action buttons ── */}
       <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
         <div className="col-span-2 flex min-h-[36px] items-center gap-2 rounded-lg border border-cyan-500/20 bg-cyan-500/8 px-2.5 py-2 font-mono text-[10px] text-cyan-400/70 xs:text-xs sm:col-span-1 sm:min-h-[40px] sm:flex-initial sm:px-3">
@@ -1225,14 +1140,6 @@ const LiveMonitoring = ({
           </div>
         )}
       </div>
-
-      {/* Add to Queue modal */}
-      {showAddModal && (
-        <AddToQueueModal
-          onAdd={onAddToQueue}
-          onClose={() => setShowAddModal(false)}
-        />
-      )}
     </div>
   );
 };

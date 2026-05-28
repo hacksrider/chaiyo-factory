@@ -6,30 +6,38 @@
  * 1. ใน .env: MAINTENANCE_DIAGNOSE_KEY=รหัสลับยาวๆ
  * 2. ล้าง cache:  https://โดเมน/plesk-tools.php?key=รหัส&action=clear-cache
  * 3. ทด Google:  https://โดเมน/plesk-tools.php?key=รหัส&action=diagnose
- * 4. ลบไฟล์นี้หลังใช้เสร็จ
+ * 4. อุ่น GAS (ลด cold start): https://โดเมน/plesk-tools.php?key=รหัส&action=gas-warm
+ * 5. Queue (ถ้าใช้ background job): ...&action=queue
+ * 6. ลบไฟล์นี้หลังใช้เสร็จ
  */
 
 declare(strict_types=1);
 
 header('Content-Type: text/plain; charset=utf-8');
 
-function plesk_read_diagnose_key(): string
+function plesk_read_env_value(string $key): string
 {
     $envFile = dirname(__DIR__).'/.env';
     if (! is_readable($envFile)) {
         return '';
     }
+    $prefix = $key.'=';
     foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
         $line = trim($line);
         if ($line === '' || str_starts_with($line, '#')) {
             continue;
         }
-        if (str_starts_with($line, 'MAINTENANCE_DIAGNOSE_KEY=')) {
-            return trim(substr($line, strlen('MAINTENANCE_DIAGNOSE_KEY=')), " \t\"'");
+        if (str_starts_with($line, $prefix)) {
+            return trim(substr($line, strlen($prefix)), " \t\"'");
         }
     }
 
     return '';
+}
+
+function plesk_read_diagnose_key(): string
+{
+    return plesk_read_env_value('MAINTENANCE_DIAGNOSE_KEY');
 }
 
 function plesk_clear_laravel_cache(): array
@@ -61,7 +69,60 @@ if ($expectedKey === '' || $provided === '' || ! hash_equals($expectedKey, $prov
     exit("Forbidden\n\nตั้ง MAINTENANCE_DIAGNOSE_KEY ใน .env ก่อน\n".
         "ตัวอย่าง: MAINTENANCE_DIAGNOSE_KEY=mySecretKey2026\n\n".
         "แล้วเปิด:\n  plesk-tools.php?key=mySecretKey2026&action=clear-cache\n".
-        "  plesk-tools.php?key=mySecretKey2026&action=diagnose\n");
+        "  plesk-tools.php?key=mySecretKey2026&action=diagnose\n".
+        "  plesk-tools.php?key=mySecretKey2026&action=gas-warm\n".
+        "  plesk-tools.php?key=mySecretKey2026&action=queue\n");
+}
+
+if ($action === 'gas-warm') {
+    $gasUrl = plesk_read_env_value('GAS_PRODUCTION_URL');
+    if ($gasUrl === '') {
+        http_response_code(500);
+        exit("ไม่พบ GAS_PRODUCTION_URL ใน .env\n");
+    }
+
+    $pingUrl = $gasUrl.(str_contains($gasUrl, '?') ? '&' : '?').'action=getSettings';
+    $start = microtime(true);
+    $ctx = stream_context_create([
+        'http' => [
+            'timeout'       => 25,
+            'ignore_errors' => true,
+        ],
+    ]);
+    $body = @file_get_contents($pingUrl, false, $ctx);
+    $ms = (int) round((microtime(true) - $start) * 1000);
+
+    if ($body === false) {
+        http_response_code(502);
+        exit("GAS warm ล้มเหลว ({$ms} ms)\n");
+    }
+
+    echo "GAS warm OK ({$ms} ms)\n";
+    echo 'เวลา: '.date('Y-m-d H:i:s')."\n";
+    exit;
+}
+
+if ($action === 'queue') {
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php — รัน composer install บน server ก่อน\n");
+    }
+
+    require $vendorAutoload;
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+    $kernel->bootstrap();
+
+    $exitCode = $kernel->call('queue:work', [
+        '--stop-when-empty' => true,
+        '--max-time'        => 50,
+        '--queue'           => 'gas-sync,default',
+    ]);
+
+    echo "queue:work เสร็จแล้ว (exit {$exitCode})\n";
+    echo "เวลา: ".date('Y-m-d H:i:s')."\n";
+    exit;
 }
 
 if ($action === 'clear-cache') {
@@ -118,7 +179,9 @@ if ($action === 'diagnose') {
 
 echo "Plesk tools — ไม่ต้องใช้ SSH\n\n";
 echo "action=clear-cache  ล้าง config cache หลังแก้ .env\n";
-echo "action=diagnose     ทดสอบ Google Sheets (JSON)\n\n";
+echo "action=diagnose     ทดสอบ Google Sheets (JSON)\n";
+echo "action=gas-warm     ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
+echo "action=queue        ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";
 echo "URL ตัวอย่าง:\n";
 echo "  ".(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http')
     .'://'.($_SERVER['HTTP_HOST'] ?? 'your-domain')

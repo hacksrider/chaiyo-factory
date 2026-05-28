@@ -83,6 +83,17 @@ function getCurrentTimeInput() {
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 }
 
+/** dd/m/yy Buddhist Era short — e.g. "28/5/69" */
+function formatDateThaiShort(d = new Date()) {
+  const beYear = d.getFullYear() + 543;
+  return `${d.getDate()}/${d.getMonth() + 1}/${String(beYear).slice(-2)}`;
+}
+
+/** HH.MMน. — e.g. "17.28น." */
+function formatTimeThaiDot(d = new Date()) {
+  return `${String(d.getHours()).padStart(2, '0')}.${String(d.getMinutes()).padStart(2, '0')}น.`;
+}
+
 // ─── LED pixel-width calculator ───────────────────────────────────────────────
 const LED_COMBINING = new Set([
   0x0E31,
@@ -635,7 +646,7 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
 
 // ─── QuickLedPopup ────────────────────────────────────────────────────────────
 // เปลี่ยนข้อความป้ายไฟอย่างเดียว — ไม่บันทึกสถานะเครื่องจักรลง Sheet
-const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, submitting, confirmError }) => {
+const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, submitting, confirmError, recorderName = '' }) => {
   const [text,       setText]      = useState('');
   const [errors,     setErrors]    = useState({});
 
@@ -702,8 +713,16 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
             {errors.text && <p className="text-[10px] text-red-400 mt-0.5">{errors.text}</p>}
           </div>
 
-          <div className="text-[11px] text-gray-500 bg-gray-800/30 border border-gray-700/40 rounded-lg px-3 py-2">
-            ใช้ <span className="text-gray-300 font-semibold">สี/ความเร็ว/ฟอนต์เดิม</span> ของเครื่องนี้ (ปรับได้ที่หน้าหลักด้านนอก)
+          <div className="text-[11px] text-gray-500 bg-gray-800/30 border border-gray-700/40 rounded-lg px-3 py-2 space-y-1">
+            <div>ใช้ <span className="text-gray-300 font-semibold">สี/ความเร็ว/ฟอนต์เดิม</span> ของเครื่องนี้ (ปรับได้ที่หน้าหลักด้านนอก)</div>
+            {recorderName && (
+              <div className="pt-1 border-t border-gray-700/40">
+                <span className="text-gray-500">ป้ายไฟจะแสดง: </span>
+                <span className="text-cyan-400/80 font-mono break-all">
+                  {text.trim() || '…'}{' |- '}{recorderName}{' '}{formatDateThaiShort()}{' - '}{formatTimeThaiDot()}
+                </span>
+              </div>
+            )}
           </div>
 
           {confirmError && (
@@ -1489,14 +1508,22 @@ const LedSignView = ({
       const cfg = configs[sid] ?? DEFAULT_CONFIG;
       const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-      await queueLedCommand(selectedMachine.id, { text, r, g, b, fontSize: cfg.fontSize ?? 1, speed: speedMs });
 
-      // อัปเดต local config และ signature
-      const newCfg = { ...cfg, text };
+      // ต่อท้ายชื่อผู้แก้ไข วันที่ เวลา เช่น "ป้ายไฟพร้อม |- เกียรติภูมิ 28/5/69 - 17.28น."
+      const now = new Date();
+      const nameSuffix = defaultRecorderName
+        ? ` |- ${defaultRecorderName} ${formatDateThaiShort(now)} - ${formatTimeThaiDot(now)}`
+        : '';
+      const fullText = text + nameSuffix;
+
+      await queueLedCommand(selectedMachine.id, { text: fullText, r, g, b, fontSize: cfg.fontSize ?? 1, speed: speedMs });
+
+      // อัปเดต local config และ signature (ใช้ fullText ที่ต่อท้ายชื่อ/วันที่/เวลาแล้ว)
+      const newCfg = { ...cfg, text: fullText };
       setConfigs(prev => ({ ...prev, [sid]: newCfg }));
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildLedConfigSignature(newCfg) };
       setStatuses(prev => ({ ...prev, [sid]: 'ok' }));
-      setLedStates(prev => ({ ...prev, [sid]: { text, r, g, b, fontSize: cfg.fontSize ?? 1, updatedAt: new Date().toISOString() } }));
+      setLedStates(prev => ({ ...prev, [sid]: { text: fullText, r, g, b, fontSize: cfg.fontSize ?? 1, updatedAt: new Date().toISOString() } }));
       setTimeout(() => setStatuses(prev => ({ ...prev, [sid]: 'idle' })), 4000);
       setQuickOpen(false);
     } catch (err) {
@@ -1688,6 +1715,7 @@ const LedSignView = ({
         currentConfig={configs[sid] ?? DEFAULT_CONFIG}
         submitting={quickSubmitting}
         confirmError={quickError}
+        recorderName={defaultRecorderName}
       />
     </div>
   );

@@ -14,6 +14,7 @@
  */
 
 const BASE = '/api/production-monitor';
+let authFailureHandled = false;
 
 // ─── Transport helpers ────────────────────────────────────────────────────────
 
@@ -26,6 +27,22 @@ const buildError = (data, status) => {
   err.raw        = data.raw   ?? data.debug ?? null;
   err.httpStatus = status;
   return err;
+};
+
+const isAuthFailureStatus = (status) => status === 401 || status === 403;
+
+const handleAuthFailure = () => {
+  if (authFailureHandled) return;
+  authFailureHandled = true;
+  try {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+  } catch {
+    /* ignore */
+  }
+  if (typeof window !== 'undefined' && !window.location.pathname.includes('/admin/login')) {
+    window.location.href = '/admin/login';
+  }
 };
 
 /** Fetch พร้อม AbortController timeout — ป้องกัน GAS ช้าทำ UI ค้างไม่มีกำหนด */
@@ -69,6 +86,7 @@ const get = async (endpoint) => {
     .catch(() => ({ success: false, message: response.statusText }));
 
   if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
     throw buildError(data, response.status);
   }
 
@@ -91,6 +109,7 @@ const del = async (endpoint) => {
     .catch(() => ({ success: false, message: response.statusText }));
 
   if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
     throw buildError(data, response.status);
   }
 
@@ -112,6 +131,7 @@ const post = async (endpoint, body) => {
     .catch(() => ({ success: false, message: response.statusText }));
 
   if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
     throw buildError(data, response.status);
   }
 
@@ -146,7 +166,7 @@ const normaliseMachines = (raw) => {
     .filter((row) => row.MachineID) // skip blank trailing rows
     .map((row) => ({
       id:        row.MachineID,
-      label:     String(row.MachineID).replace(/_/g, ' '),
+      label:     String(row.MachineName ?? row.Label ?? row.MachineID).replace(/_/g, ' '),
       ledIp:     row.LED_IP    ?? '',
       sheetName: row.SheetName ?? row.MachineID,
       zone:      (row.Zone     ?? '').toString().trim(),
@@ -224,7 +244,10 @@ export const updatePlanProduced = async (params) => {
     body: JSON.stringify(params),
   }, 90_000);
   const data = await response.json().catch(() => ({ success: false, message: response.statusText }));
-  if (!response.ok) throw buildError(data, response.status);
+  if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
+    throw buildError(data, response.status);
+  }
   return data;
 };
 
@@ -238,7 +261,10 @@ export const updateDailyProduced = async (params) => {
     body: JSON.stringify(params),
   }, 90_000); // GAS cold start อาจนานถึง 60-90s
   const data = await response.json().catch(() => ({ success: false, message: response.statusText }));
-  if (!response.ok) throw buildError(data, response.status);
+  if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
+    throw buildError(data, response.status);
+  }
   return data;
 };
 
@@ -373,12 +399,12 @@ export const LED_BREAKDOWN_PAYLOAD = {
   target: '0',
 };
 
-/** ข้อความป้ายไฟเมื่อ Pause Order / Finished Order (เตรียมการ - สีน้ำเงิน) */
+/** ข้อความป้ายไฟเมื่อ Finished Order / Cancel Order (ออเดอร์ครบ/รออเดอร์ - สีเขียว) */
 export const LED_PREP_PAYLOAD = {
-  text: 'เตรียมการ',
+  text: 'ออเดอร์ครบ/รออเดอร์',
   r: 0,
-  g: 136,
-  b: 255,
+  g: 220,
+  b: 50,
   fontSize: 1,
   speed: 50,
   actual: '0',
@@ -447,6 +473,10 @@ export const appendMachineLog = async (payload) => {
     body: JSON.stringify(payload),
   }, 90_000); // GAS cold start อาจใช้เวลาถึง 60-90s
   const data = await response.json().catch(() => ({ success: false }));
+  if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
+    throw buildError(data, response.status);
+  }
   return data;
 };
 
@@ -463,6 +493,7 @@ export const fetchMachineLogReporters = async () => {
   });
   const data = await response.json().catch(() => ({ reporters: [] }));
   if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
     throw buildError(data, response.status);
   }
   return Array.isArray(data.reporters) ? data.reporters : [];
@@ -485,6 +516,7 @@ export const storeMachineLogReporter = async (name) => {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
     throw buildError(data, response.status);
   }
   if (!data.reporter) {
@@ -506,6 +538,7 @@ export const deleteMachineLogReporter = async (id) => {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (isAuthFailureStatus(response.status)) handleAuthFailure();
     throw buildError(data, response.status);
   }
 };

@@ -32,7 +32,14 @@ class AttachSanctumTokenFromQuery
     {
         if ($request->filled('t')) {
             $raw = (string) $request->query('t');
-            $decoded = base64_decode(strtr($raw, '-_', '+/'), true);
+            // Frontend sends base64url without "=" padding. PHP's base64_decode(strict)
+            // can fail when padding is missing, so we normalize + pad to a multiple of 4.
+            $b64 = strtr($raw, '-_', '+/');
+            $padLen = (4 - (strlen($b64) % 4)) % 4;
+            if ($padLen > 0) {
+                $b64 .= str_repeat('=', $padLen);
+            }
+            $decoded = base64_decode($b64, true);
             if ($decoded !== false && $decoded !== '') {
                 return $decoded;
             }
