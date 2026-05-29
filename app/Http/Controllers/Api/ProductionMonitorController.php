@@ -473,7 +473,7 @@ class ProductionMonitorController extends Controller
      */
     public function storeLedCommand(Request $request, string $machineId): JsonResponse
     {
-        $payload = $request->only(['text', 'r', 'g', 'b', 'fontSize', 'speed', 'actual', 'target']);
+        $payload = $request->only(['text', 'r', 'g', 'b', 'fontSize', 'speed', 'actual', 'target', 'showClock']);
 
         // Pending command — ESP32 ดึงแล้วลบทิ้ง (TTL 5 นาที)
         Cache::put("led_cmd_{$machineId}", $payload, now()->addMinutes(5));
@@ -520,11 +520,15 @@ class ProductionMonitorController extends Controller
      */
     public function fetchLedCommand(Request $request, string $machineId): JsonResponse
     {
-        // Heartbeat: บันทึกเวลา + IP จริงของ ESP32 (TTL 30 วินาที — หาย = offline)
-        // $request->ip() คือ IP ของ ESP32 บน LAN ที่ยิง request มา (ใช้ DHCP แล้วก็รู้ IP จริง)
+        // Heartbeat: บันทึกเวลา + localIp (WiFi DHCP บน LAN) + public IP ที่ server เห็น
+        $localIp = trim((string) $request->query('localIp', ''));
+        if ($localIp !== '' && ! filter_var($localIp, FILTER_VALIDATE_IP)) {
+            $localIp = '';
+        }
         Cache::put("led_heartbeat_{$machineId}", [
-            'time' => now()->toISOString(),
-            'ip'   => $request->ip(),
+            'time'    => now()->toISOString(),
+            'localIp' => $localIp,
+            'ip'      => $request->ip(),
         ], now()->addSeconds(30));
 
         $command = Cache::pull("led_cmd_{$machineId}");
@@ -548,17 +552,19 @@ class ProductionMonitorController extends Controller
      */
     public function getLedHeartbeat(string $machineId): JsonResponse
     {
-        $raw        = Cache::get("led_heartbeat_{$machineId}");
-        $online     = false;
-        $secondsAgo = null;
-        $deviceIp   = null;
-        $lastSeenAt = null;
+        $raw            = Cache::get("led_heartbeat_{$machineId}");
+        $online         = false;
+        $secondsAgo     = null;
+        $deviceIp       = null;
+        $deviceLocalIp  = null;
+        $lastSeenAt     = null;
 
         if ($raw !== null) {
-            // รองรับ 2 format: เก่า = string ISO, ใหม่ = array { time, ip }
+            // รองรับ 2 format: เก่า = string ISO, ใหม่ = array { time, localIp, ip }
             if (is_array($raw)) {
-                $lastSeenAt = $raw['time'] ?? null;
-                $deviceIp   = $raw['ip']   ?? null;
+                $lastSeenAt    = $raw['time'] ?? null;
+                $deviceLocalIp = $raw['localIp'] ?? null;
+                $deviceIp      = $raw['ip'] ?? null;
             } else {
                 $lastSeenAt = $raw; // format เก่า (string)
             }
@@ -580,7 +586,8 @@ class ProductionMonitorController extends Controller
             'online'     => $online,
             'lastSeenAt' => $lastSeenAt,
             'secondsAgo' => $secondsAgo,
-            'deviceIp'   => $deviceIp, // IP จริงของ ESP32 (DHCP) — null ถ้ายังไม่เคย poll
+            'deviceIp'      => $deviceIp,      // public IP ที่ server เห็น (NAT)
+            'deviceLocalIp' => $deviceLocalIp, // WiFi.localIP() จาก ESP — ใช้ OTA / ping ใน LAN
         ]);
     }
 
@@ -741,13 +748,22 @@ class ProductionMonitorController extends Controller
     /**
      * GET /api/production-monitor/scale-command/{machineId}
      *
-     * Scale ESP32 ดึงงาน (pull-once: อ่านแล้วลบ)
+     * Scale ESP32 ดึงงาน — keep-until-confirmed (อ่านโดยไม่ลบ)
+     * คำสั่งจะอยู่ใน cache จนกว่า:
+     *   - ตาชั่งยืนยัน (session-confirm / scale-confirm) → ลบใน handler นั้น
+     *   - Web ยกเลิก (cancelSession) → ลบผ่าน finalizeScaleCachesForIdle
+     *   - TTL หมดอายุ (10 นาที ตั้งตอน storeScaleCommand)
+     *
+     * เหตุผล: Cache::pull() ลบทันทีหลัง server ประมวลผล
+     * ถ้า WiFi glitch / TCP retransmit ทำให้ response ไม่ถึง ESP32
+     * การ poll ครั้งต่อไปจะได้ pending:false และรอไปเรื่อยๆ จนครบ 10 นาที
+     *
      * Response: { pending: true, orderId, productCode, targetQty, sheetName }
      *        หรือ { pending: false }
      */
     public function fetchScaleCommand(string $machineId): JsonResponse
     {
-        $cmd = Cache::pull("scale_cmd_{$machineId}");
+        $cmd = Cache::get("scale_cmd_{$machineId}");
 
         if ($cmd) {
             return response()->json(array_merge(['pending' => true], $cmd));
@@ -782,6 +798,9 @@ class ProductionMonitorController extends Controller
         }
         $session->ts = (int) (now()->timestamp * 1000);
         $session->save();
+
+        // ลบ scale_cmd เมื่อยืนยันแล้ว — ไม่ต้องส่งคำสั่งเดิมซ้ำอีก
+        Cache::forget("scale_cmd_{$machineId}");
 
         $fresh = $session->fresh();
         $this->ensureActiveGasOrderForSession($fresh);
@@ -837,6 +856,9 @@ class ProductionMonitorController extends Controller
                 }
                 $session->ts = (int) (now()->timestamp * 1000);
                 $session->save();
+
+                // ลบ scale_cmd เมื่อยืนยันแล้ว — ป้องกัน scale poll แล้วได้งานเดิมซ้ำ
+                Cache::forget("scale_cmd_{$machineId}");
 
                 $fresh = $session->fresh();
                 $this->ensureActiveGasOrderForSession($fresh);
@@ -1813,6 +1835,7 @@ class ProductionMonitorController extends Controller
      */
     private function finalizeScaleCachesForIdle(string $machineId): void
     {
+        Cache::forget("scale_cmd_{$machineId}");      // ลบคำสั่งที่รอส่ง เมื่อ session จบ/ยกเลิก
         Cache::forget("scale_events_{$machineId}");
         Cache::forget("scale_count_{$machineId}");
         Cache::forget("scale_confirm_{$machineId}");

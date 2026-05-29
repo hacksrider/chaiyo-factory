@@ -399,6 +399,19 @@ export const LED_BREAKDOWN_PAYLOAD = {
   target: '0',
 };
 
+/** ล้างป้ายไฟ — ป้ายแสดงนาฬิกา HH:MM:SS (ไม่แสดงข้อความ/ตัวเลขผลิต) */
+export const LED_CLEAR_PAYLOAD = {
+  text: '',
+  showClock: true,
+  r: 0,
+  g: 255,
+  b: 255,
+  fontSize: 1,
+  speed: 50,
+  actual: '0',
+  target: '0',
+};
+
 /** ข้อความป้ายไฟเมื่อ Finished Order / Cancel Order (ออเดอร์ครบ/รออเดอร์ - สีเขียว) */
 export const LED_PREP_PAYLOAD = {
   text: 'ออเดอร์ครบ/รออเดอร์',

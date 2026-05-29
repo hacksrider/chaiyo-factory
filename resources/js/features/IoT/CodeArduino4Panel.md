@@ -33,6 +33,7 @@
   - Adafruit GFX Library
   - U8g2_for_Adafruit_GFX (by Oli Kraus)
   - ArduinoJson (by Benoit Blanchon)
+  - ElegantOTA
 */
 
 #include <WiFi.h>
@@ -43,6 +44,8 @@
 #include <Adafruit_GFX.h>
 #include <U8g2_for_Adafruit_GFX.h>
 #include <string.h>
+#include <time.h>
+#include <ElegantOTA.h>
 
 // ลดโอกาสรีเซ็ตจากไฟตกตอนบูต (HUB75 กินกระแสสูง)
 #include "soc/rtc_cntl_reg.h"
@@ -92,11 +95,13 @@ MatrixPanel_I2S_DMA *dma_display = nullptr;
 U8G2_FOR_ADAFRUIT_GFX u8g2_for_gfx;
 WebServer server(80);
 
-// ---------------- ข้อความเริ่มต้นเมื่อเว็บไม่มี state / ข้อความว่าง ----------------
-#define DEFAULT_LED_TEXT "ป้ายไฟพร้อม!"
+// ---------------- โหมดนาฬิกา (เมื่อเว็บไม่มีข้อความ / กดล้างป้ายไฟ) ----------------
+bool g_clockMode = false;
+bool g_ntpSynced = false;
+unsigned long g_lastClockTickMs = 0;
 
 // ---------------- ตัวแปรข้อมูล Production ----------------
-String currentText  = DEFAULT_LED_TEXT;
+String currentText  = "";
 String actualCount  = "0";
 String targetCount  = "0";
 uint16_t currentColor;
@@ -116,11 +121,12 @@ int scrollSpeed     = 50;
 // โครงสร้างคำสั่งที่รับจาก Laravel Cache
 struct LedCmd {
   char    text[256];
-  char    actual[16];  // actualCount (ของดีที่ผลิตแล้ว)
-  char    target[16];  // targetCount (เป้า/กะ)
+  char    actual[16];
+  char    target[16];
   uint8_t r, g, b;
   uint8_t fontSize;
-  int     speed;   // 0 = ไม่เปลี่ยน
+  int     speed;
+  bool    showClock;
 };
 
 QueueHandle_t cmdQueue = nullptr; // Queue ส่งคำสั่งจาก pollTask → loop()
@@ -132,6 +138,96 @@ static const uint32_t    WIFI_BACKOFF_MIN_MS            = 2000;
 static const uint32_t    WIFI_BACKOFF_MAX_MS            = 60000;
 static const uint32_t    WIFI_RECONNECT_INTERVAL_MS     = 5000; // legacy — replaced by backoff below
 
+bool jsonWantsClockMode(JsonObject o) {
+  if (o.isNull()) return true;
+  if (o["showClock"] | false) return true;
+  String t = o["text"].as<String>();
+  t.trim();
+  return t.length() == 0;
+}
+
+void syncNtpIfNeeded() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) { g_ntpSynced = true; return; }
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+  for (int i = 0; i < 25; i++) {
+    if (getLocalTime(&timeinfo, 500)) {
+      g_ntpSynced = true;
+      Serial.println("[NTP] Synced (Bangkok UTC+7)");
+      return;
+    }
+    delay(200);
+  }
+  Serial.println("[NTP] Sync timeout");
+}
+
+bool formatClockTime(char* buf, size_t len) {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 50)) {
+    strncpy(buf, "--:--:--", len);
+    buf[len - 1] = '\0';
+    return false;
+  }
+  strftime(buf, len, "%H:%M:%S", &timeinfo);
+  return true;
+}
+
+void updateClockTextProperties() {
+  u8g2_for_gfx.setFont(u8g2_font_helvB08_tf);
+  textWidth = u8g2_for_gfx.getUTF8Width(currentText.c_str());
+  cursor_x  = max(0, (NAME_ZONE_PX - textWidth) / 2);
+}
+
+void applyClockVisual() {
+  if (!dma_display) return;
+  g_clockMode = true;
+  currentFontSize = 1;
+  scrollSpeed     = 50;
+  currentColor    = dma_display->color565(0, 255, 255);
+  actualCount     = "0";
+  targetCount     = "0";
+  char buf[16];
+  formatClockTime(buf, sizeof(buf));
+  currentText = String(buf);
+  updateClockTextProperties();
+  s_ledStateFingerprint = "|CLOCK|0,255,255|1|50|0|0";
+  g_lastClockTickMs = millis();
+}
+
+void tickClockIfNeeded() {
+  if (!g_clockMode) return;
+  unsigned long now = millis();
+  if (now - g_lastClockTickMs < 1000) return;
+  g_lastClockTickMs = now;
+  if (!g_ntpSynced) syncNtpIfNeeded();
+  char buf[16];
+  formatClockTime(buf, sizeof(buf));
+  String next = String(buf);
+  if (next != currentText) {
+    currentText = next;
+    updateClockTextProperties();
+  }
+}
+
+void applyLedCommandFromQueue(const LedCmd& cmd) {
+  if (cmd.showClock || cmd.text[0] == '\0') {
+    applyClockVisual();
+    Serial.println("[LED] Clock mode (HH:MM:SS)");
+    return;
+  }
+  g_clockMode     = false;
+  currentText     = String(cmd.text);
+  currentFontSize = cmd.fontSize;
+  if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
+  currentColor    = dma_display->color565(cmd.r, cmd.g, cmd.b);
+  if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
+  if (cmd.target[0] != '\0') targetCount = String(cmd.target);
+  updateTextProperties();
+  s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
+  Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
+}
+
 String buildLedStateFingerprint(
   const String& text, int r, int g, int b, int fontSize, int speed, const String& act, const String& tgt) {
   return text + "|" + String(r) + "," + String(g) + "," + String(b)
@@ -141,6 +237,7 @@ String buildLedStateFingerprint(
 
 String buildFingerprintFromStateJson(JsonObject o) {
   if (o.isNull()) return String();
+  if (jsonWantsClockMode(o)) return "|CLOCK|0,255,255|1|50|0|0";
   String t = o["text"].as<String>();
   t.trim();
   int r   = o["r"]         | 0,   g   = o["g"]         | 255, b  = o["b"]         | 255;
@@ -158,12 +255,11 @@ void stateJsonToLedCmd(JsonObject o, LedCmd& cmd) {
   memset(&cmd, 0, sizeof(cmd));
   String t = o["text"].as<String>();
   t.trim();
-  if (t.length() == 0) {
-    strncpy(cmd.text, DEFAULT_LED_TEXT, sizeof(cmd.text) - 1);
-  } else {
+  cmd.showClock = jsonWantsClockMode(o);
+  if (!cmd.showClock) {
     strncpy(cmd.text, t.c_str(), sizeof(cmd.text) - 1);
+    cmd.text[sizeof(cmd.text) - 1] = '\0';
   }
-  cmd.text[sizeof(cmd.text) - 1] = '\0';
   cmd.r  = o["r"]  | 0;   cmd.g  = o["g"]  | 255;  cmd.b  = o["b"]  | 255;
   cmd.fontSize = o["fontSize"] | 1;
   cmd.speed    = o["speed"]    | 0;
@@ -214,9 +310,6 @@ void reconcileLedStateWithWeb() {
   }
   JsonObject st = doc["state"];
   if (st.isNull()) return;
-  String txt = st["text"].as<String>();
-  txt.trim();
-  if (txt.length() == 0) return;
 
   String fp = buildFingerprintFromStateJson(st);
   if (fp.length() == 0) return;
@@ -409,8 +502,14 @@ void handleLed() {
       doc["r"].as<int>(), doc["g"].as<int>(), doc["b"].as<int>()
     );
   }
-
-  updateTextProperties();
+  bool wantClock = doc["showClock"] | false;
+  currentText.trim();
+  if (wantClock || currentText.length() == 0) {
+    applyClockVisual();
+  } else {
+    g_clockMode = false;
+    updateTextProperties();
+  }
 
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
@@ -449,16 +548,7 @@ void handleMeasure() {
 //  applyDefaultLedVisual — ข้อความ/สีเริ่มต้นเมื่อเว็บไม่มีอะไรให้แสดง
 // ======================================================================
 void applyDefaultLedVisual() {
-  if (!dma_display) return;
-  currentText     = DEFAULT_LED_TEXT;
-  currentFontSize = 1;
-  scrollSpeed     = 50;
-  currentColor    = dma_display->color565(0, 255, 255);
-  actualCount     = "0";
-  targetCount     = "0";
-  updateTextProperties();
-  s_ledStateFingerprint = buildLedStateFingerprint(
-    String(DEFAULT_LED_TEXT), 0, 255, 255, 1, 50, "0", "0");
+  applyClockVisual();
 }
 
 // ======================================================================
@@ -509,14 +599,15 @@ bool syncLedDisplayFromServer() {
     return false;
   }
 
-  String txt = st["text"].as<String>();
-  txt.trim();
-  if (txt.length() == 0) {
-    Serial.println("[Sync] ข้อความว่างบนเว็บ — default text");
-    applyDefaultLedVisual();
-    return false;
+  if (jsonWantsClockMode(st)) {
+    Serial.println("[Sync] เว็บล้างป้าย / ไม่มีข้อความ — แสดงนาฬิกา");
+    applyClockVisual();
+    return true;
   }
 
+  g_clockMode     = false;
+  String txt = st["text"].as<String>();
+  txt.trim();
   currentText     = txt;
   currentFontSize = st["fontSize"] | 1;
   int sp          = st["speed"] | 50;
@@ -620,8 +711,7 @@ bool connectBestWifi() {
                   WiFi.localIP().toString().c_str(), g_serverUrl.c_str());
     // รอ 1.5s ให้ routing/DHCP ของ router พร้อมก่อน — ถ้าเรียก HTTP ทันทีมักจะ timeout
     delay(1500);
-    // ดึง led_state จาก Laravel ให้ป้ายตรงกับหน้าเว็บ
-    // ถ้ายังล้มเหลว pollTask จะ retry ซ้ำในรอบถัดไป
+    syncNtpIfNeeded();
     syncLedDisplayFromServer();
     return true;
   }
@@ -678,6 +768,8 @@ void setup() {
   server.on("/led",     HTTP_ANY, handleLed);
   server.on("/status",  HTTP_ANY, handleStatus);
   server.on("/measure", HTTP_ANY, handleMeasure);
+  // OTA firmware update ผ่านหน้าเว็บ: http://<ESP_IP>/update
+  ElegantOTA.begin(&server);
   server.begin();
   Serial.println("HTTP server started on port 80");
 
@@ -701,22 +793,14 @@ void setup() {
 //  ไม่มี blocking call ที่นี่เลย → scroll ลื่น 50ms ทุกครั้ง
 // ======================================================================
 void loop() {
-  server.handleClient();   // HTTP server (status / direct push fallback)
-  processSerialCommand();  // fallback Serial
+  server.handleClient();
+  ElegantOTA.loop(); // OTA upload handler
+  processSerialCommand();
+  tickClockIfNeeded();
 
-  // รับคำสั่งที่ pollTask ส่งมาผ่าน Queue (non-blocking, pdMS_TO_TICKS(0))
   LedCmd cmd;
   if (cmdQueue && xQueueReceive(cmdQueue, &cmd, 0) == pdTRUE) {
-    currentText     = String(cmd.text);
-    currentFontSize = cmd.fontSize;
-    if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
-    currentColor    = dma_display->color565(cmd.r, cmd.g, cmd.b);
-    // อัปเดต actual/target ถ้ามีใน command
-    if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
-    if (cmd.target[0] != '\0') targetCount = String(cmd.target);
-    updateTextProperties();
-    s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
-    Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
+    applyLedCommandFromQueue(cmd);
   }
 
   drawAndScrollText();
@@ -824,6 +908,7 @@ void pollTask(void* pv) {
     if (justReconnected) {
       vTaskDelay(pdMS_TO_TICKS(2000));
       Serial.println("[Poll] WiFi เชื่อมสำเร็จ — Reconcile กับเว็บ...");
+      syncNtpIfNeeded();
       s_ledStateFingerprint = "";
       reconcileLedStateWithWeb();
       vTaskDelay(pdMS_TO_TICKS(1500));
@@ -841,7 +926,8 @@ void pollTask(void* pv) {
     // URL-encode MACHINE_ID (ช่องว่างต้องเป็น %20 ไม่งั้น HTTP request จะ malformed)
     String mid = String(MACHINE_ID);
     mid.replace(" ", "%20");
-    String url = g_serverUrl + "/api/production-monitor/led-command/" + mid;
+    String url = g_serverUrl + "/api/production-monitor/led-command/" + mid
+               + "?localIp=" + WiFi.localIP().toString();
     http.begin(url);
     http.setTimeout(1800); // timeout ของ HTTP request (ไม่ block loop() เพราะอยู่ task แยก)
 
@@ -851,14 +937,16 @@ void pollTask(void* pv) {
       StaticJsonDocument<512> doc;
       if (!deserializeJson(doc, http.getString()) && doc["pending"].as<bool>()) {
         LedCmd cmd = {};
+        cmd.showClock = doc["showClock"] | false;
         String t = doc["text"].as<String>();
         t.trim();
-        if (t.length() == 0) {
-          strncpy(cmd.text, DEFAULT_LED_TEXT, sizeof(cmd.text) - 1);
+        if (t.length() == 0 || cmd.showClock) {
+          cmd.showClock = true;
+          cmd.text[0] = '\0';
         } else {
           strncpy(cmd.text, t.c_str(), sizeof(cmd.text) - 1);
+          cmd.text[sizeof(cmd.text) - 1] = '\0';
         }
-        cmd.text[sizeof(cmd.text) - 1] = '\0';
         // actual / target (จากตาชั่ง ESP32 อัปเดตผ่าน storeScaleWeight)
         if (doc.containsKey("actual")) {
           strncpy(cmd.actual, doc["actual"].as<String>().c_str(), sizeof(cmd.actual) - 1);
@@ -965,13 +1053,20 @@ void drawAndScrollText() {
   lastScrollTime = millis();
   dma_display->clearScreen();
 
+  dma_display->fillRect(NUM_ZONE_X, 0, NUM_ZONE_W, 16, dma_display->color565(0, 0, 0));
+
+  if (g_clockMode) {
+    u8g2_for_gfx.setFont(u8g2_font_helvB08_tf);
+    u8g2_for_gfx.setForegroundColor(currentColor);
+    u8g2_for_gfx.setCursor(cursor_x, 12);
+    u8g2_for_gfx.print(currentText);
+    return;
+  }
+
   // ---------- โซน 1 (จอ 1-3) ----------
   applyFont(currentFontSize);
   u8g2_for_gfx.setForegroundColor(currentColor);
   printThaiText(currentText, cursor_x, 14);
-
-  // ตัดขอบที่ล้นเข้าโซนตัวเลข (จอ 4)
-  dma_display->fillRect(NUM_ZONE_X, 0, NUM_ZONE_W, 16, dma_display->color565(0, 0, 0));
 
   // ---------- โซน 2 (จอ 4) ----------
   const uint8_t* numFonts[] = {
@@ -1001,11 +1096,11 @@ void drawAndScrollText() {
 
   int total_block_width = w_actual + gap + w_target;
   int start_x = NUM_ZONE_X + ((NUM_ZONE_W - total_block_width) / 2);
-  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 0, 255));
+  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 255)); // ผลิตได้ — Cyan
   u8g2_for_gfx.setCursor(start_x, draw_y);
   u8g2_for_gfx.print(actualCount);
 
-  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 0));
+  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 0)); // ค้างผลิต — เขียว
   u8g2_for_gfx.setCursor(start_x + w_actual + gap, draw_y);
   u8g2_for_gfx.print(targetCount);
 

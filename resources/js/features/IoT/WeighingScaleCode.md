@@ -48,6 +48,7 @@
   - Keypad             (by Mark Stanley, Alexander Brevig)
   - ArduinoJson        (by Benoit Blanchon)
   - Preferences          (ESP32 NVS — built-in)
+  - ElegantOTA
 
   หลังไฟดับ / reboot:
   - เก็บสถานะผลิต (รหัสสินค้า กะ พนักงาน Order ...) ใน NVS
@@ -60,9 +61,11 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <WebServer.h>
 #include <Keypad.h>
 #include <Preferences.h>
 #include <time.h>
+#include <ElegantOTA.h>
 
 // ======================================================================
 //  ⚙️  ปรับค่าตรงนี้ก่อน upload ทุกชุด
@@ -85,6 +88,7 @@ const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
 
 // ─── Hardware ──────────────────────────────────────────────────────────
 LiquidCrystal_I2C lcd(0x27, 20, 4);
+WebServer otaServer(80);
 
 #define RXD2      16
 #define TXD2      17
@@ -487,6 +491,10 @@ void setup() {
     lcd.setCursor(0, 3); lcd.print("WiFi connecting...  ");
   }
   connectWifi();
+  // OTA firmware update ผ่านหน้าเว็บ: http://<ESP_IP>/update
+  ElegantOTA.begin(&otaServer);
+  otaServer.begin();
+  Serial.println("[OTA] ready at /update");
 
   // ── 3. sync กับ /scale-live เสมอ (ทั้ง NVS restored และไม่ restored)
   //    เว็บเป็น source of truth — ถ้าเว็บบอก live=false → clear NVS → IDLE
@@ -980,6 +988,8 @@ void flushPendingEvents() {
 //  loop
 // ======================================================================
 void loop() {
+  otaServer.handleClient();
+  ElegantOTA.loop();
 
   // ─── 1. อ่านข้อมูลตาชั่ง (UART2) ────────────────────────────────
   if (Serial2.available()) {

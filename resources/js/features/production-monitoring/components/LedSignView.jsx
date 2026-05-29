@@ -4,6 +4,7 @@ import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import {
   queueLedCommand,
+  LED_CLEAR_PAYLOAD,
   pingLedMulti,
   getLedStatus,
   getLedHeartbeat,
@@ -929,15 +930,18 @@ const WiFiBadge = ({ status, onPing }) => {
 
 // ─── ControlPanel ─────────────────────────────────────────────────────────────
 const ControlPanel = ({
-  machine, config, onChange, onSpeedChange, onOpenPopup, onOpenQuick,
+  machine, config, onChange, onSpeedChange, onOpenPopup, onOpenQuick, onClearLed,
   onPing, onForceSync, sendStatus, pingStatus, pingMsg, errorMsg,
-  wifiStatus = 'noip', syncStatus = 'idle', speedForAll, onSpeedForAllChange,
+  wifiStatus = 'noip', syncStatus = 'idle', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
+  deviceLocalIp = null, heartbeatSecondsAgo = null,
 }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
   const { text, colorHex, scrollSpeed = 10 } = config;
   const hasIp = !!machine?.ledIp;
+  const sheetIps = String(machine?.ledIp ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const { r, g, b } = hexToRgb(colorHex);
+  const otaUrl = deviceLocalIp ? `http://${deviceLocalIp}/update` : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -969,6 +973,48 @@ const ControlPanel = ({
             </button>
           )}
         </div>
+      </div>
+
+      {/* ── IP ป้าย (จาก ESP poll) + ชีต Settings ── */}
+      <div className={`rounded-xl border px-3 py-2.5 text-[11px] space-y-2 ${
+        wifiStatus === 'online'
+          ? 'bg-cyan-500/8 border-cyan-500/25'
+          : 'bg-gray-800/50 border-gray-700/50'
+      }`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-gray-500 uppercase tracking-wide text-[10px]">
+            {t('production.ledWifiIpLabel')}
+          </span>
+          {heartbeatSecondsAgo != null && wifiStatus === 'online' && (
+            <span className="text-gray-500 text-[10px]">
+              {t('production.ledOnlineAgo', { ago: heartbeatSecondsAgo })}
+            </span>
+          )}
+        </div>
+        <p className={`font-mono text-sm font-semibold break-all ${
+          deviceLocalIp ? 'text-cyan-300' : 'text-gray-500'
+        }`}>
+          {deviceLocalIp ?? t('production.ledWifiIpUnknown')}
+        </p>
+        {otaUrl && (
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+            <a
+              href={otaUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25"
+            >
+              {t('production.ledOtaOpen')} → /update
+            </a>
+            <span className="text-[10px] text-gray-500">{t('production.ledOtaHint')}</span>
+          </div>
+        )}
+        {sheetIps.length > 0 && (
+          <div className="pt-1 border-t border-gray-700/40">
+            <span className="text-[10px] text-gray-500">{t('production.ledSheetIpLabel')}: </span>
+            <span className="font-mono text-[11px] text-gray-400 break-all">{sheetIps.join(' · ')}</span>
+          </div>
+        )}
       </div>
 
       {/* ── Ping / Error message ── */}
@@ -1082,6 +1128,31 @@ const ControlPanel = ({
           <span className="text-[10px] font-normal opacity-60"></span>
         </button>
 
+        {/* ล้างป้าย — ป้ายแสดงนาฬิกา HH:MM:SS */}
+        <button
+          type="button"
+          onClick={onClearLed}
+          disabled={clearStatus === 'clearing'}
+          className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
+            clearStatus === 'clearing'
+              ? 'bg-gray-600/40 text-gray-400 cursor-wait'
+              : clearStatus === 'ok'
+              ? 'bg-green-500/20 border border-green-500/40 text-green-300'
+              : clearStatus === 'error'
+              ? 'bg-red-500/20 border border-red-500/40 text-red-300'
+              : 'bg-gray-700/40 border border-gray-500/50 text-gray-200 hover:bg-gray-600/50 hover:border-gray-400/60'
+          }`}
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          {clearStatus === 'clearing'
+            ? t('production.ledClearSending')
+            : clearStatus === 'ok'
+            ? t('production.ledClearOk')
+            : t('production.ledClearBtn')}
+        </button>
+
         {/* Full change — บันทึก Machine Log */}
         <button
           onClick={onOpenPopup}
@@ -1149,6 +1220,8 @@ const LedSignView = ({
   const [ledStates,    setLedStates]  = useState({});
   const [speedForAll,  setSpeedForAll] = useState(true);
   const [wifiStatuses, setWifiStatuses] = useState({});
+  const [deviceLocalIps, setDeviceLocalIps] = useState({});
+  const [heartbeatAgo, setHeartbeatAgo] = useState({});
 
   // Popup state (full — พร้อม log สถานะเครื่องจักร)
   const [popupOpen,      setPopupOpen]      = useState(false);
@@ -1202,9 +1275,16 @@ const LedSignView = ({
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
-    const has = res?.hasState && state && String(state.text ?? '').trim().length > 0;
+    const isCleared = state?.showClock || (res?.hasState && !String(state?.text ?? '').trim());
+    const has = res?.hasState && state && !isCleared && String(state.text ?? '').trim().length > 0;
     setLedStates((prev) => ({ ...prev, [machineId]: state }));
-    if (has) {
+    if (isCleared) {
+      setConfigs((prev) => ({
+        ...prev,
+        [machineId]: { ...(prev[machineId] ?? DEFAULT_CONFIG), text: '' },
+      }));
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: '|CLOCK|' };
+    } else if (has) {
       const scrollIdx = speedMsToScrollIndex(state.speed);
       setConfigs((prev) => ({
         ...prev,
@@ -1382,32 +1462,34 @@ const LedSignView = ({
       pingIntervalRef.current = null;
     }
 
-    if (!sid || !selectedMachine?.ledIp) {
-      setWifiStatuses((prev) => ({ ...prev, [sid ?? '']: 'noip' }));
+    if (!sid) {
       return;
     }
 
-    const ledIp = selectedMachine.ledIp;
+    const applyHeartbeat = (result) => {
+      const localIp = result?.deviceLocalIp?.trim() || null;
+      setDeviceLocalIps((prev) => ({ ...prev, [sid]: localIp }));
+      setHeartbeatAgo((prev) => ({
+        ...prev,
+        [sid]: result?.secondsAgo != null ? result.secondsAgo : null,
+      }));
+      if (result?.online) {
+        setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
+        setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
+      } else {
+        setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
+        const ago = result?.secondsAgo != null ? ` (${result.secondsAgo}s ago)` : '';
+        setPingMsgs((prev) => ({ ...prev, [sid]: `Offline${ago}` }));
+        if (!localIp) setDeviceLocalIps((prev) => ({ ...prev, [sid]: null }));
+      }
+    };
 
-    // ใช้ heartbeat (timestamp จาก ESP32 polling) แทน direct-ping
-    // → ทำงานได้แม้ PC กับ ESP32 อยู่คนละ subnet
     const doPing = (showChecking = false) => {
       if (showChecking) {
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'checking' }));
       }
       getLedHeartbeat(sid)
-        .then((result) => {
-          if (result.online) {
-            setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
-            const ago = result.secondsAgo != null ? ` · ${result.secondsAgo}s ago` : '';
-            const ip  = result.deviceIp ? ` [${result.deviceIp}]` : '';
-            setPingMsgs((prev) => ({ ...prev, [sid]: `Online${ip}${ago}` }));
-          } else {
-            setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
-            const ago = result.secondsAgo != null ? ` (last seen ${result.secondsAgo}s ago)` : '';
-            setPingMsgs((prev) => ({ ...prev, [sid]: ago ? `Offline${ago}` : '' }));
-          }
-        })
+        .then(applyHeartbeat)
         .catch(() => {
           setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
           setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
@@ -1423,7 +1505,7 @@ const LedSignView = ({
         pingIntervalRef.current = null;
       }
     };
-  }, [sid, selectedMachine?.ledIp]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sid]);
 
   // ── Popup handlers ────────────────────────────────────────────────────────
   const handleOpenPopup = useCallback(() => {
@@ -1539,26 +1621,57 @@ const LedSignView = ({
     setWifiStatuses((prev)  => ({ ...prev, [sid]: 'checking' }));
     setPingMsgs((prev)      => ({ ...prev, [sid]: '' }));
     try {
-      // ใช้ heartbeat ก่อน — ไม่ต้องรู้ IP ของ ESP32 และทำงานข้าม subnet ได้
       const hb = await getLedHeartbeat(sid);
+      const localIp = hb.deviceLocalIp?.trim() || null;
+      setDeviceLocalIps((prev) => ({ ...prev, [sid]: localIp }));
+      setHeartbeatAgo((prev) => ({
+        ...prev,
+        [sid]: hb.secondsAgo != null ? hb.secondsAgo : null,
+      }));
+
       if (hb.online) {
-        const ago = hb.secondsAgo != null ? ` · ${hb.secondsAgo}s ago` : '';
-        const ip  = hb.deviceIp ? ` [${hb.deviceIp}]` : '';
         setPingStatuses((prev)  => ({ ...prev, [sid]: 'ok' }));
         setWifiStatuses((prev)  => ({ ...prev, [sid]: 'online' }));
-        setPingMsgs((prev)      => ({ ...prev, [sid]: `Online${ip}${ago}` }));
-      } else {
-        // heartbeat หาย → ลอง direct-ping ด้วย IP ล่าสุดที่รู้จาก heartbeat (DHCP)
-        // หรือ ledIp ในชีต (fallback สุดท้าย)
-        const fallbackIp = hb.deviceIp || selectedMachine?.ledIp;
-        if (fallbackIp) {
-          const result = await pingLedMulti(fallbackIp);
-          const msg = `Online [${result.ip}] · machineId: ${result.machineId ?? '?'} · text: "${result.text ?? ''}"`;
-          setPingStatuses((prev)  => ({ ...prev, [sid]: 'ok' }));
-          setWifiStatuses((prev)  => ({ ...prev, [sid]: 'online' }));
-          setPingMsgs((prev)      => ({ ...prev, [sid]: msg }));
+        if (localIp) {
+          try {
+            const result = await pingLed(localIp);
+            const body = result?.body ?? result;
+            setPingMsgs((prev) => ({
+              ...prev,
+              [sid]: `LAN OK · ${localIp} · "${body?.text ?? ''}"`,
+            }));
+          } catch {
+            setPingMsgs((prev) => ({
+              ...prev,
+              [sid]: `ป้ายออนไลน์ แต่ ping ${localIp} จากคอมนี้ไม่ได้ — ตรวจ WiFi/subnet`,
+            }));
+          }
         } else {
-          const ago = hb.secondsAgo != null ? ` (last seen ${hb.secondsAgo}s ago)` : '';
+          setPingMsgs((prev) => ({
+            ...prev,
+            [sid]: 'ออนไลน์ — รอ localIp (อัปโหลดโค้ด ESP ใหม่ที่ส่ง ?localIp=)',
+          }));
+        }
+      } else {
+        const sheetIp = selectedMachine?.ledIp;
+        if (sheetIp) {
+          try {
+            const result = await pingLedMulti(sheetIp);
+            setDeviceLocalIps((prev) => ({ ...prev, [sid]: result.ip }));
+            setPingStatuses((prev)  => ({ ...prev, [sid]: 'ok' }));
+            setWifiStatuses((prev)  => ({ ...prev, [sid]: 'online' }));
+            setPingMsgs((prev)      => ({
+              ...prev,
+              [sid]: `เชื่อมตามชีต [${result.ip}] · ยังไม่มี heartbeat ล่าสุด`,
+            }));
+          } catch {
+            const ago = hb.secondsAgo != null ? ` (${hb.secondsAgo}s ago)` : '';
+            setPingStatuses((prev)  => ({ ...prev, [sid]: 'error' }));
+            setWifiStatuses((prev)  => ({ ...prev, [sid]: 'offline' }));
+            setPingMsgs((prev)      => ({ ...prev, [sid]: `Offline${ago}` }));
+          }
+        } else {
+          const ago = hb.secondsAgo != null ? ` (${hb.secondsAgo}s ago)` : '';
           setPingStatuses((prev)  => ({ ...prev, [sid]: 'error' }));
           setWifiStatuses((prev)  => ({ ...prev, [sid]: 'offline' }));
           setPingMsgs((prev)      => ({ ...prev, [sid]: `Offline${ago}` }));
@@ -1570,6 +1683,27 @@ const LedSignView = ({
       setPingMsgs((prev)      => ({ ...prev, [sid]: err.message ?? 'Connection failed' }));
     }
     setTimeout(() => setPingStatuses((prev) => ({ ...prev, [sid]: 'idle' })), 6000);
+  }, [sid, selectedMachine]);
+
+  const [clearStatus, setClearStatus] = useState('idle');
+
+  const handleClearLed = useCallback(async () => {
+    if (!selectedMachine?.id || !sid) return;
+    setClearStatus('clearing');
+    try {
+      await queueLedCommand(selectedMachine.id, LED_CLEAR_PAYLOAD);
+      const cleared = { ...LED_CLEAR_PAYLOAD, updatedAt: new Date().toISOString() };
+      setLedStates((prev) => ({ ...prev, [sid]: cleared }));
+      setConfigs((prev) => ({
+        ...prev,
+        [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: '' },
+      }));
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: '|CLOCK|' };
+      setClearStatus('ok');
+    } catch {
+      setClearStatus('error');
+    }
+    setTimeout(() => setClearStatus('idle'), 4000);
   }, [sid, selectedMachine]);
 
   // Force sync
@@ -1669,13 +1803,17 @@ const LedSignView = ({
             onSpeedChange={handleSpeedChange}
             onOpenPopup={handleOpenPopup}
             onOpenQuick={() => { setQuickError(''); setQuickOpen(true); }}
+            onClearLed={handleClearLed}
+            clearStatus={clearStatus}
             onPing={handlePing}
             onForceSync={handleForceSync}
             sendStatus={statuses[sid]      ?? 'idle'}
             pingStatus={pingStatuses[sid]  ?? 'idle'}
             pingMsg={pingMsgs[sid]         ?? ''}
             errorMsg={errorMsgs[sid]       ?? ''}
-            wifiStatus={wifiStatuses[sid]  ?? (selectedMachine?.ledIp ? 'checking' : 'noip')}
+            wifiStatus={wifiStatuses[sid] ?? 'checking'}
+            deviceLocalIp={deviceLocalIps[sid] ?? null}
+            heartbeatSecondsAgo={heartbeatAgo[sid] ?? null}
             syncStatus={syncStatus}
             speedForAll={speedForAll}
             onSpeedForAllChange={handleSpeedForAll}
