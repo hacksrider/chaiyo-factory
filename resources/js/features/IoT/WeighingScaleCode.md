@@ -563,8 +563,16 @@ void renderLcd() {
 
   if (g_state == ST_IDLE) {
     lcd.setCursor(0, 0); lcd.print(MACHINE_ID);
-    lcd.setCursor(0, 1); lcd.print(g_wifiOk ? "WiFi: OK" : "WiFi: No Network");
-    lcd.setCursor(0, 2); lcd.print("Waiting command...");
+    lcd.setCursor(0, 1); lcd.print(g_wifiOk ? "WiFi: OK!           " : "WiFi: No Network    ");
+    lcd.setCursor(0, 2); lcd.print("Waiting command...  ");
+    // บรรทัด 4: แสดง IP จริงใน LAN (ใช้ OTA / แก้ปัญหา)
+    if (g_wifiOk) {
+      String ipLine = "IP:" + WiFi.localIP().toString();
+      while (ipLine.length() < 20) ipLine += ' ';
+      lcd.setCursor(0, 3); lcd.print(ipLine.substring(0, 20));
+    } else {
+      lcd.setCursor(0, 3); lcd.print("IP: ---.---.---.--- ");
+    }
   }
 
   else if (g_state == ST_WAIT_SHIFT) {
@@ -1035,8 +1043,15 @@ void loop() {
         g_lastStatus = "OK - " + trimWeight(g_liveWeight) + " kg.";
         lcd.setCursor(0, 3);
         lcd.print(g_lastStatus);
-        if (!sendWeightToServer("good")) {
+            bool goodOk = sendWeightToServer("good");
+        if (!goodOk) {
           g_btnLockUntil = 0;
+          // WiFi หลุด แต่ event ถูก queue แล้ว — แจ้ง user
+          if (!g_wifiOk) {
+            lcd.setCursor(0, 3);
+            String qMsg = "!WiFi Lost Q:" + String(g_pendingCount) + "        ";
+            lcd.print(qMsg.substring(0, 20));
+          }
         }
         Serial.printf("[BTN] GOOD (server count) #%d w=%s\n", g_actualCount, g_liveWeight.c_str());
         saveProductionSession();
@@ -1057,8 +1072,14 @@ void loop() {
         g_lastStatus = "NG - " + trimWeight(g_liveWeight) + " kg.";
         lcd.setCursor(0, 3);
         lcd.print(g_lastStatus);
-        if (!sendWeightToServer("ng")) {
+        bool ngOk = sendWeightToServer("ng");
+        if (!ngOk) {
           g_btnLockUntil = 0;
+          if (!g_wifiOk) {
+            lcd.setCursor(0, 3);
+            String qMsg = "!WiFi Lost Q:" + String(g_pendingCount) + "        ";
+            lcd.print(qMsg.substring(0, 20));
+          }
         }
         Serial.printf("[BTN] REJECT  w=%s\n", g_liveWeight.c_str());
         saveProductionSession();   // persist NG count เผื่อไฟดับ
@@ -1105,13 +1126,14 @@ void loop() {
       bool wasOffline = g_wifiOk;
       g_wifiOk = false;
 
-      // แสดง "WiFi Reconnecting..." บน LCD ทุก state
+      // แสดงสถานะ WiFi หลุดบน LCD
       if (g_state == ST_IDLE) {
         lcd.setCursor(0, 1); lcd.print("WiFi:Reconnecting.."); // 20 chars
+        lcd.setCursor(0, 3); lcd.print("IP: ---.---.---.--- ");
       } else if (g_state == ST_PRODUCTION) {
-        // บรรทัด 3 ชั่วคราว (lock timer จะล้างเอง)
+        // บรรทัด 3: แจ้ง WiFi หลุด ถ้าไม่มี lock timer กำลังแสดงผลอยู่
         if (millis() >= g_btnLockUntil) {
-          lcd.setCursor(0, 3); lcd.print("WiFi:Reconnecting...");
+          lcd.setCursor(0, 3); lcd.print("!WiFi Lost-queuing..");
         }
       }
 
@@ -1121,10 +1143,11 @@ void loop() {
         connectWifi();
         if (g_wifiOk) {
           g_wifiBackoffMs = WIFI_BACKOFF_MIN; // reset backoff on success
-          if (g_state == ST_IDLE) renderLcd();
-          else if (g_state == ST_PRODUCTION) {
-            // ล้าง "WiFi Reconnecting..." บรรทัด 3
-            lcd.setCursor(0, 3); lcd.print("                    ");
+          if (g_state == ST_IDLE) {
+            renderLcd(); // รวม IP บรรทัด 4 ด้วย
+          } else if (g_state == ST_PRODUCTION) {
+            // WiFi กลับมา — ล้างแจ้งเตือนบรรทัด 3 แล้วแจ้งว่ากำลัง flush
+            lcd.setCursor(0, 3); lcd.print("WiFi OK-Syncing...  ");
           }
         } else {
           g_wifiBackoffMs = nextWifiBackoff(g_wifiBackoffMs);
@@ -1136,6 +1159,19 @@ void loop() {
       if (wasOffline && g_wifiOk) {
         flushPendingEvents();
         pollScaleLiveFromServer();
+        // ล้างข้อความ "Syncing..." หลัง flush เสร็จ
+        if (g_state == ST_PRODUCTION && millis() >= g_btnLockUntil) {
+          lcd.setCursor(0, 3);
+          if (g_pendingCount == 0) {
+            lcd.print("WiFi OK-Synced!     ");
+            delay(1500);
+            lcd.setCursor(0, 3); lcd.print("                    ");
+          } else {
+            // flush ยังไม่หมด — แสดงจำนวนที่ค้าง
+            String pendMsg = "!Pending:" + String(g_pendingCount) + "          ";
+            lcd.print(pendMsg.substring(0, 20));
+          }
+        }
       }
 
       return; // ออกจาก poll loop รอ WiFi ก่อน

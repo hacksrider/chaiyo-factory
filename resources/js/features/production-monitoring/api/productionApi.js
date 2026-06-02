@@ -399,13 +399,13 @@ export const LED_BREAKDOWN_PAYLOAD = {
   target: '0',
 };
 
-/** ล้างป้ายไฟ — ป้ายแสดงนาฬิกา HH:MM:SS (ไม่แสดงข้อความ/ตัวเลขผลิต) */
+/** ล้างป้ายไฟ — ป้ายแสดงนาฬิกา HH : MM : SS สีเขียว */
 export const LED_CLEAR_PAYLOAD = {
   text: '',
   showClock: true,
   r: 0,
   g: 255,
-  b: 255,
+  b: 0,
   fontSize: 1,
   speed: 50,
   actual: '0',

@@ -10,7 +10,7 @@
     → ป้ายจะตรงกับหน้าเว็บ (รวม actual/target) โดยไม่ต้องกดซิงก์
   - หลัง WiFi กลับมา: reconcile ทันที 2 รอบ
   - ไม่ต้องให้ PC รู้ IP ของ ESP32 — ESP32 เป็นฝ่ายเชื่อมต่อออกเอง
-  - เมื่อเว็บไม่มีข้อความ (หรือกดล้างป้ายไฟ): แสดงนาฬิกา HH:MM:SS (NTP UTC+7, อัปเดตทุกวินาที)
+  - เมื่อเว็บไม่มีข้อความ (หรือกดล้างป้ายไฟ): แสดงนาฬิกา HH : MM : SS (NTP UTC+7, อัปเดตทุกวินาที)
   - Serial fallback: text|actual|target|r|g|b
 
   WiFi (Multi-Network + DHCP อัตโนมัติ):
@@ -163,11 +163,12 @@ void syncNtpIfNeeded() {
 bool formatClockTime(char* buf, size_t len) {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo, 50)) {
-    strncpy(buf, "--:--:--", len);
+    strncpy(buf, "-- : -- : --", len);
     buf[len - 1] = '\0';
     return false;
   }
-  strftime(buf, len, "%H:%M:%S", &timeinfo);
+  snprintf(buf, len, "%02d : %02d : %02d",
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
   return true;
 }
 
@@ -182,14 +183,14 @@ void applyClockVisual() {
   g_clockMode = true;
   currentFontSize = 1;
   scrollSpeed     = 50;
-  currentColor    = dma_display->color565(0, 255, 255);
+  currentColor    = dma_display->color565(0, 255, 0); // นาฬิกา — เขียว
   actualCount     = "0";
   targetCount     = "0";
   char buf[16];
   formatClockTime(buf, sizeof(buf));
   currentText = String(buf);
   updateClockTextProperties();
-  s_ledStateFingerprint = "|CLOCK|0,255,255|1|50|0|0";
+  s_ledStateFingerprint = "|CLOCK|0,255,0|1|50|0|0";
   g_lastClockTickMs = millis();
 }
 
@@ -211,7 +212,7 @@ void tickClockIfNeeded() {
 void applyLedCommandFromQueue(const LedCmd& cmd) {
   if (cmd.showClock || cmd.text[0] == '\0') {
     applyClockVisual();
-    Serial.println("[LED] Clock mode (HH:MM:SS)");
+    Serial.println("[LED] Clock mode (HH : MM : SS)");
     return;
   }
   g_clockMode     = false;
@@ -235,7 +236,7 @@ String buildLedStateFingerprint(
 
 String buildFingerprintFromStateJson(JsonObject o) {
   if (o.isNull()) return String();
-  if (jsonWantsClockMode(o)) return "|CLOCK|0,255,255|1|50|0|0";
+  if (jsonWantsClockMode(o)) return "|CLOCK|0,255,0|1|50|0|0";
   String t = o["text"].as<String>();
   t.trim();
   int r   = o["r"]         | 0,   g   = o["g"]         | 255, b  = o["b"]         | 255;
