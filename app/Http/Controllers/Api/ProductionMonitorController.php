@@ -3,8 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Jobs\SyncWeightEventToGas;
-use App\Jobs\SyncOrderToGas;
 use App\Models\ProductionQueueItem;
 use App\Models\ProductionSession;
 use App\Models\ProductionWeightEvent;
@@ -23,26 +21,13 @@ use Carbon\Carbon;
 class ProductionMonitorController extends Controller
 {
     /**
-     * GAS Web App URL for the weight-monitoring spreadsheet (Settings + machine sheets).
-     * Override via GAS_PRODUCTION_URL in .env.
-     */
-    private string $gasUrl;
-
-    /**
-     * GAS Web App URL for the production-plan spreadsheet (แผนการผลิต / Monthly / Daily).
-     * Override via GAS_PLAN_URL in .env.
+     * GAS Web App URL สำหรับ แผนการผลิต (Daily Plan / Monthly Plan).
+     * GAS_PRODUCTION_URL ถูกถอดออกแล้ว — ข้อมูลเครื่องจักร Hardcode ใน config/machines.php
      */
     private string $gasPlanUrl;
 
     public function __construct()
     {
-        $this->gasUrl = env(
-            'GAS_PRODUCTION_URL',
-            'https://script.google.com/macros/s/AKfycbzg1FRP4zDvgJpIQmgLAGBPM9EpUbjndLmEOWD52WlL6U-ixhm4GZu9kESCZDWJn05o/exec'
-        );
-
-        // Separate deployment pointing at the แผนการผลิต spreadsheet.
-        // Set GAS_PLAN_URL in .env once you deploy the plan script.
         $this->gasPlanUrl = env('GAS_PLAN_URL', '');
     }
 
@@ -56,75 +41,24 @@ class ProductionMonitorController extends Controller
      * Proxies to GAS doGet?action=getSettings.
      * GAS issues a 302 → script.googleusercontent.com; we follow it explicitly.
      */
+    /**
+     * GET /api/production-monitor/get-settings
+     *
+     * ส่งรายชื่อเครื่องจักรจาก config/machines.php (Hardcoded)
+     * ไม่เรียก Google Sheets อีกต่อไป — เร็วขึ้น ไม่ขึ้นกับ GAS
+     */
     public function getSettings(): JsonResponse
     {
-        try {
-            $response = Http::withoutVerifying()
-                ->withOptions([
-                    'allow_redirects' => [
-                        'max'       => 10,
-                        'strict'    => false,
-                        'referer'   => false,
-                        'protocols' => ['https', 'http'],
-                    ],
-                ])
-                ->timeout(30)
-                ->get($this->gasUrl, ['action' => 'getSettings']);
-
-            if ($response->failed()) {
-                Log::error('[ProductionMonitor] getSettings: GAS returned HTTP ' . $response->status(), [
-                    'body' => $response->body(),
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'GAS returned HTTP ' . $response->status(),
-                    'debug'   => $response->body(),
-                ], 502);
-            }
-
-            $data = $response->json();
-
-            if ($data === null) {
-                $preview = substr($response->body(), 0, 1000);
-
-                Log::warning('[ProductionMonitor] getSettings: GAS returned non-JSON', [
-                    'content_type' => $response->header('Content-Type'),
-                    'body_preview' => $preview,
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'GAS script has no doGet() function, or is returning an error page instead of JSON. '
-                               . 'Visit /api/production-monitor/debug to inspect the raw GAS response.',
-                    'raw'     => $preview,
-                ], 502);
-            }
-
-            return response()->json($data);
-
-        } catch (ConnectionException $e) {
-            Log::error('[ProductionMonitor] getSettings: Connection failed', ['error' => $e->getMessage()]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Could not connect to GAS: ' . $e->getMessage(),
-            ], 502);
-
-        } catch (\Exception $e) {
-            Log::error('[ProductionMonitor] getSettings: Unexpected error', ['error' => $e->getMessage()]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Proxy error: ' . $e->getMessage(),
-            ], 500);
-        }
+        return response()->json([
+            'machines' => config('machines.machines', []),
+        ]);
     }
 
     /**
      * POST /api/production-monitor/create-order
      *
-     * Body: { machineId, sheetName, orderId, productCode?, productName, targetQty, shift?, employeeId? }
+     * GAS sync ถูกถอดออกแล้ว — DB record ถูกสร้างอัตโนมัติใน maybeCreateOrderInDb()
+     * endpoint นี้ยังคงไว้เพื่อ backward-compat กับ frontend (SetupMode)
      */
     public function createOrder(Request $request): JsonResponse
     {
@@ -139,35 +73,18 @@ class ProductionMonitorController extends Controller
             'employeeId'  => 'nullable|string',
         ]);
 
-        return $this->forwardPost('createOrder', $request->only([
-            'machineId', 'sheetName', 'orderId', 'productCode',
-            'productName', 'targetQty', 'shift', 'employeeId',
-        ]));
+        return response()->json(['success' => true]);
     }
 
     /**
      * POST /api/production-monitor/log-weight-event
      *
-     * ส่งรายการน้ำหนักแต่ละครั้ง (กดปุ่มตาชั่ง) ลง GAS Sheet ของเครื่องนั้น
-     * เรียกจาก Web หลัง poll รับ events จาก scale-weight (fire-and-forget)
-     *
-     * Body: { machineId, sheetName, orderId, seq, type, weight, pressedAt }
+     * GAS sync ถูกถอดออกแล้ว — น้ำหนักแต่ละรายการถูกบันทึกใน production_weight_events แล้ว
+     * endpoint นี้ยังคงไว้เพื่อ backward-compat (frontend fire-and-forget call ยังส่งมา)
      */
     public function logWeightEvent(Request $request): JsonResponse
     {
-        $request->validate([
-            'machineId' => 'required|string',
-            'sheetName' => 'required|string',
-            'orderId'   => 'required|string',
-            'type'      => 'required|in:good,ng',
-            'weight'    => 'required|numeric|min:0',
-            'seq'       => 'nullable|integer|min:0',
-            'pressedAt' => 'nullable|string',
-        ]);
-
-        return $this->forwardPost('logWeightEvent', $request->only([
-            'machineId', 'sheetName', 'orderId', 'seq', 'type', 'weight', 'pressedAt',
-        ]));
+        return response()->json(['success' => true]);
     }
 
     /**
@@ -214,155 +131,22 @@ class ProductionMonitorController extends Controller
      * Fetches production records from GAS.
      * If sheetName is omitted, GAS returns records from all machine sheets.
      */
+    /**
+     * GET /api/production-monitor/history
+     * GAS ถูกถอดออก — proxy ไปยัง getHistoryDb() แทน
+     */
     public function getHistory(Request $request): JsonResponse
     {
-        $params = ['action' => 'getHistory'];
-        if ($request->filled('sheetName')) {
-            $params['sheetName'] = $request->input('sheetName');
-        }
-
-        try {
-            $response = Http::withoutVerifying()
-                ->withOptions([
-                    'allow_redirects' => [
-                        'max'       => 10,
-                        'strict'    => false,
-                        'referer'   => false,
-                        'protocols' => ['https', 'http'],
-                    ],
-                ])
-                ->timeout(30)
-                ->get($this->gasUrl, $params);
-
-            if ($response->failed()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'GAS returned HTTP ' . $response->status(),
-                ], 502);
-            }
-
-            $data = $response->json();
-            if ($data === null) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'GAS returned non-JSON. Make sure doGet() handles action=getHistory.',
-                    'raw'     => substr($response->body(), 0, 500),
-                ], 502);
-            }
-
-            return response()->json($data);
-
-        } catch (ConnectionException $e) {
-            return response()->json(['success' => false, 'message' => 'Connection failed: ' . $e->getMessage()], 502);
-        } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => 'Proxy error: ' . $e->getMessage()], 500);
-        }
+        return $this->getHistoryDb($request);
     }
 
     /**
-     * GET /api/production-monitor/order-detail?sheetName=Machine_01&orderId=123
-     *
-     * Returns per-order weight events (between Started → Completed) from GAS.
-     * Used by the History UI popup ("ดูข้อมูล").
+     * GET /api/production-monitor/order-detail
+     * GAS ถูกถอดออก — proxy ไปยัง orderDetailDb() แทน
      */
     public function getOrderDetail(Request $request): JsonResponse
     {
-        $request->validate([
-            'sheetName' => 'required|string',
-            'orderId'   => 'required|string',
-            'startedAt' => 'nullable|string',
-        ]);
-
-        $params = [
-            'action'    => 'getOrderDetail',
-            'sheetName' => $request->input('sheetName'),
-            'orderId'   => $request->input('orderId'),
-        ];
-        if ($request->filled('startedAt')) {
-            $params['startedAt'] = $request->input('startedAt');
-        }
-
-        $data = $this->fetchFromGas($params, $this->gasUrl);
-
-        if (isset($data['_error'])) {
-            return response()->json([
-                'success' => false,
-                'message' => $data['_error'],
-                'debug'   => $data['_debug'] ?? null,
-            ], $data['_status'] ?? 502);
-        }
-
-        return response()->json($data);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Private helpers
-    // ──────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Forward a POST payload to the GAS web app.
-     *
-     * Why asJson():
-     *   Our GAS doPost(e) reads the body with JSON.parse(e.postData.contents),
-     *   so the request must carry Content-Type: application/json and a JSON body.
-     *   Using asForm() (URL-encoded) would make JSON.parse throw a SyntaxError.
-     *
-     * Why allow_redirects strict => false:
-     *   GAS returns a 302 after doPost() runs. Guzzle converts POST → GET on
-     *   the redirect (standard RFC 2616 behaviour). The redirect target just
-     *   serves the pre-computed response body, so the method change is fine.
-     *
-     * @param string $action  GAS action name (e.g. 'createOrder')
-     * @param array  $data    Validated request fields
-     */
-    /**
-     * GET /api/production-monitor/debug
-     *
-     * Diagnostic endpoint — returns the raw GAS response without any
-     * processing so you can see exactly what the script is returning.
-     * Open this URL directly in your browser while troubleshooting.
-     *
-     * Remove or protect this endpoint before deploying to production.
-     */
-    public function debug(): JsonResponse
-    {
-        // Bug 6 fix: เปิด endpoint นี้เฉพาะ local / dev เท่านั้น
-        if (app()->isProduction()) {
-            abort(404);
-        }
-
-        try {
-            $response = Http::withoutVerifying()
-                ->withOptions([
-                    'allow_redirects' => [
-                        'max'       => 10,
-                        'strict'    => false,
-                        'referer'   => false,
-                        'protocols' => ['https', 'http'],
-                    ],
-                ])
-                ->timeout(30)
-                ->get($this->gasUrl, ['action' => 'getSettings']);
-
-            return response()->json([
-                'gas_url'           => $this->gasUrl,
-                'http_status'       => $response->status(),
-                'content_type'      => $response->header('Content-Type'),
-                'redirect_followed' => $response->effectiveUri() ?? null,
-                'body_length'       => strlen($response->body()),
-                'body_preview'      => substr($response->body(), 0, 3000),
-                'json_parsed'       => $response->json(),
-                'hint'              => $response->json() === null
-                    ? 'GAS returned non-JSON. Your Apps Script must implement doGet(e) and return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON).'
-                    : 'JSON parsed successfully — data looks good.',
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'gas_url' => $this->gasUrl,
-                'error'   => $e->getMessage(),
-            ], 500);
-        }
+        return $this->orderDetailDb($request);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -1169,9 +953,6 @@ class ProductionMonitorController extends Controller
 
                     $createdEventId = $weightEvent->id;
 
-                    SyncWeightEventToGas::dispatch($weightEvent->id, $this->gasUrl)
-                        ->onQueue('gas-sync');
-
                     if ($session) {
                         $tsMs = (int) (now()->timestamp * 1000);
                         if ($type === 'good') {
@@ -1376,68 +1157,12 @@ class ProductionMonitorController extends Controller
         }
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-
-    private function forwardPost(string $action, array $data): JsonResponse
-    {
-        // action goes in the body so GAS can read it from e.parameter.action
-        $payload = array_merge($data, ['action' => $action]);
-
-        try {
-            $response = Http::withoutVerifying()
-                ->withOptions([
-                    'allow_redirects' => [
-                        'max'       => 10,
-                        'strict'    => false,
-                        'referer'   => false,
-                        'protocols' => ['https', 'http'],
-                    ],
-                ])
-                ->timeout(30)
-                ->asJson()          // sends as application/json — GAS reads via JSON.parse(e.postData.contents)
-                ->post($this->gasUrl, $payload);
-
-            if ($response->failed()) {
-                Log::error("[ProductionMonitor] {$action}: GAS returned HTTP " . $response->status(), [
-                    'payload' => $payload,
-                    'body'    => $response->body(),
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => "GAS [{$action}] returned HTTP " . $response->status(),
-                    'debug'   => $response->body(),
-                ], 502);
-            }
-
-            $body = $response->json() ?? ['success' => true, 'raw' => $response->body()];
-
-            return response()->json($body);
-
-        } catch (ConnectionException $e) {
-            Log::error("[ProductionMonitor] {$action}: Connection failed", ['error' => $e->getMessage()]);
-
-            return response()->json([
-                'success' => false,
-                'message' => "Could not connect to GAS for [{$action}]: " . $e->getMessage(),
-            ], 502);
-
-        } catch (\Exception $e) {
-            Log::error("[ProductionMonitor] {$action}: Unexpected error", ['error' => $e->getMessage()]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Proxy error: ' . $e->getMessage(),
-            ], 500);
-        }
-    }
-
     /**
-     * Shared GET proxy to GAS — no caching.
+     * Shared GET proxy to GAS — ใช้กับ gasPlanUrl เท่านั้น
      */
-    private function gasGet(array $params, string $url = ''): JsonResponse
+    private function gasGet(array $params, string $url): JsonResponse
     {
-        $data = $this->fetchFromGas($params, $url ?: $this->gasUrl);
+        $data = $this->fetchFromGas($params, $url);
         if (isset($data['_error'])) {
             return response()->json(['success' => false, 'message' => $data['_error'], 'debug' => $data['_debug'] ?? null], $data['_status'] ?? 502);
         }
@@ -1454,9 +1179,9 @@ class ProductionMonitorController extends Controller
      * Cache is stored in the configured CACHE_STORE (default: database).
      * TTL: 5 minutes (300 s).
      */
-    private function gasGetCached(array $params, string $url = '', int $ttl = 300): JsonResponse
+    private function gasGetCached(array $params, string $url, int $ttl = 300): JsonResponse
     {
-        $targetUrl = $url ?: $this->gasUrl;
+        $targetUrl = $url;
         $cacheKey  = 'gas_plan_' . md5($targetUrl . serialize($params));
 
         $cached = Cache::get($cacheKey);
@@ -2435,12 +2160,6 @@ class ProductionMonitorController extends Controller
 
         $this->finalizeScaleCachesForIdle($machineId);
 
-        // Web เรียก close-order ผ่าน GAS อยู่แล้ว — อย่ายิงซ้ำถ้าระบุ skipGasDispatch
-        if (!$skipGasDispatch && $prodOrder !== null) {
-            SyncOrderToGas::dispatch($prodOrder->id, 'closeOrder', $this->gasUrl)
-                ->onQueue('gas-sync');
-        }
-
         $state = $session->fresh()->toFrontendState();
 
         $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
@@ -2699,10 +2418,8 @@ class ProductionMonitorController extends Controller
             'led_ip'           => $session->led_ip,
             'started_at'       => $session->started_at,
             'status'           => 'active',
-            'gas_sync_status'  => 'pending',
+            'gas_sync_status'  => 'skipped',
         ]);
-        SyncOrderToGas::dispatch($tmpOrder->id, 'createOrder', $this->gasUrl)
-            ->onQueue('gas-sync');
     }
 
     /**
