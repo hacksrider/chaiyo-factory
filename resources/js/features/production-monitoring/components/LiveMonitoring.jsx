@@ -392,6 +392,7 @@ const WeightEventListModal = ({ type, events, totalWeight, minWeight, maxWeight,
 const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) => {
   const [closing,   setClosing]   = useState(false);
   const [closeErr,  setCloseErr]  = useState(null);
+  const [shift,     setShift]     = useState(machineState.shift ?? '');
   const { language } = useLanguage();
   const { t } = useTranslation(language);
   const goodCount       = machineState.pipeCounter   ?? 0;
@@ -450,12 +451,13 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         || new Date().toISOString().slice(0, 10);
 
       // 2a) Daily sheet — กะ A/B/C (ต้องการ shift เพื่อรู้ว่าอัปเดตคอลัมน์ไหน)
-      if (machineState.shift) {
+      const effectiveShift = shift || machineState.shift || '';
+      if (effectiveShift) {
         fireAndRetry(() => updateDailyProduced({
           machineId,
           jobNo:    machineState.orderId,
           date:     prodDate,
-          shift:    machineState.shift,
+          shift:    effectiveShift,
           produced: goodCount,
         }));
       }
@@ -517,6 +519,31 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
             <p className="text-lg font-bold font-mono text-red-300">{totalNgWeight.toFixed(2)} <span className="text-sm font-normal text-red-500">kg</span></p>
           </div>
         </div>
+
+        {/* Shift selector — แสดงเมื่อ shift ว่าง เพื่อให้บันทึก Daily sheet ได้ */}
+        {!machineState.shift && (
+          <div className="mx-6 mb-3 px-4 py-3 bg-yellow-500/10 border border-yellow-500/25 rounded-xl">
+            <p className="text-[11px] text-yellow-400 font-semibold mb-2">
+              เลือกกะ เพื่อบันทึกลง Daily Sheet
+            </p>
+            <div className="flex gap-2">
+              {['A', 'B', 'C'].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setShift(s)}
+                  className={`flex-1 py-1.5 rounded-lg text-sm font-bold border transition-all ${
+                    shift === s
+                      ? 'bg-yellow-500/30 border-yellow-400/60 text-yellow-200'
+                      : 'bg-gray-800/60 border-gray-700/50 text-gray-400 hover:border-yellow-500/40 hover:text-yellow-300'
+                  }`}
+                >
+                  กะ {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Error banner */}
         {closeErr && (

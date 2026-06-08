@@ -1273,6 +1273,25 @@ const LedSignView = ({
   useEffect(() => { configsRef.current = configs; }, [configs]);
   const ledStatesRef = useRef(ledStates);
   useEffect(() => { ledStatesRef.current = ledStates; }, [ledStates]);
+  const allMachineStatesRef = useRef(allMachineStates);
+  useEffect(() => { allMachineStatesRef.current = allMachineStates; }, [allMachineStates]);
+
+  // Reset textOverride เมื่อ orderId เปลี่ยน (เริ่มงานใหม่) — ป้องกันข้อความเก่าค้าง
+  const prevOrderIdRef = useRef({});
+  useEffect(() => {
+    if (!sid) return;
+    const mState = allMachineStates[sid];
+    const newOrderId = mState?.orderId ?? '';
+    const prevOrderId = prevOrderIdRef.current[sid] ?? '';
+    if (newOrderId && newOrderId !== prevOrderId) {
+      prevOrderIdRef.current[sid] = newOrderId;
+      // orderId เปลี่ยน = งานใหม่ → clear textOverride เพื่อให้ชื่อสินค้าชนะ
+      setLedStates((prev) => ({
+        ...prev,
+        [sid]: { ...(prev[sid] ?? {}), textOverride: false },
+      }));
+    }
+  }, [sid, allMachineStates]);
 
   const lastQueuedSigRef = useRef({});
   const getLiveCounterPayload = useCallback((machineId) => {
@@ -1399,15 +1418,34 @@ const LedSignView = ({
 
       // Build updated LED command with new counters
       const cfg = configsRef.current[mid] ?? DEFAULT_CONFIG;
-      if (!cfg.text) return;
-      const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+      const isOverridden = Boolean(ledStatesRef.current[mid]?.textOverride);
+      const mState = allMachineStatesRef.current[mid];
+
+      // ถ้าไม่ได้ override → ใช้ชื่อสินค้าจริงๆ (green) แทน cfg.text เก่า
+      let displayText = cfg.text;
+      let displayR = 0, displayG = 255, displayB = 0;
+      if (!isOverridden && mState?.mode === 'live') {
+        const code = String(mState.productCode ?? '').trim();
+        const name = String(mState.productName ?? '').trim();
+        const liveTxt = code && name ? `${code} — ${name}` : (code || name || String(mState.orderId ?? '').trim());
+        if (liveTxt) {
+          displayText = liveTxt;
+        } else {
+          displayR = 0; displayG = 255; displayB = 0;
+        }
+      } else if (isOverridden) {
+        const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+        displayR = r; displayG = g; displayB = b;
+      }
+
+      if (!displayText) return;
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
       queueLedCommand(mid, {
-        text: cfg.text,
-        r, g, b,
+        text: displayText,
+        r: displayR, g: displayG, b: displayB,
         fontSize: cfg.fontSize ?? 1,
         speed: speedMs,
-        textOverride: Boolean(ledStatesRef.current[mid]?.textOverride),
+        textOverride: isOverridden,
         actual: String(qty_good ?? 0),
         target: String(qty_remaining ?? 0),
       }).catch(() => { /* retry handled by next poll */ });
