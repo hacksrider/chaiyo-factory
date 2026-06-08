@@ -1187,6 +1187,13 @@ const ProductionMonitoring = () => {
         badgeClass: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
       };
     }
+    if (sseStatus === 'persistent_error') {
+      return {
+        label: 'SSE ขัดข้อง',
+        dotClass: 'bg-orange-400 animate-pulse',
+        badgeClass: 'text-orange-300 border-orange-500/40 bg-orange-500/10',
+      };
+    }
     if (sseStatus === 'error') {
       return {
         label: t('production.realtimeError'),
@@ -1230,6 +1237,30 @@ const ProductionMonitoring = () => {
 
   return (
     <div className="flex flex-col h-[100dvh] bg-gray-950 text-white overflow-hidden">
+
+      {/* ── SSE persistent_error banner ───────────────────────────────────── */}
+      {sseStatus === 'persistent_error' && (
+        <div className="flex-shrink-0 flex items-center gap-3 bg-orange-900/80 border-b border-orange-500/40 px-4 py-2 text-sm text-orange-200">
+          <span className="flex-1">
+            ⚠️ Realtime stream ขัดข้อง (SSE 401) — กรุณา&nbsp;
+            <strong>ล้าง cache</strong> บน server หรือ&nbsp;
+            <button
+              type="button"
+              className="underline font-semibold hover:text-white"
+              onClick={() => { localStorage.removeItem('auth_token'); localStorage.removeItem('auth_user'); window.location.href = '/admin/login'; }}
+            >
+              Logout แล้ว Login ใหม่
+            </button>
+          </span>
+          <button
+            type="button"
+            className="flex-shrink-0 rounded-lg border border-orange-400/40 bg-orange-800/60 px-3 py-1 text-xs font-semibold hover:bg-orange-700/60"
+            onClick={() => window.location.reload()}
+          >
+            Refresh
+          </button>
+        </div>
+      )}
 
       {/* ── Top bar ───────────────────────────────────────────────────────── */}
       <header className="flex-shrink-0 border-b border-gray-700/50 bg-gray-900 pt-[env(safe-area-inset-top)]">

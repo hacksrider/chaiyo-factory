@@ -50,33 +50,19 @@ const handleAuthFailure = () => {
 };
 
 /**
- * Returns true เมื่อ token ถูก reject จริงๆ
- *
- * ตรวจสองเส้นทาง:
- *  1) Bearer header  → /api/me           (standard auth)
- *  2) ?t= query param → /api/production-monitor/get-settings  (same path as SSE)
- *
- * ถ้า Bearer ผ่านแต่ ?t= ไม่ผ่าน แสดงว่า sanctum.query middleware ไม่ทำงานบน server
- * (เช่น route cache เก่า) → treat เป็น auth failure เพื่อหยุด retry loop
+ * Returns true เมื่อ token ถูก reject จริงๆ (401/403 จาก /api/me เท่านั้น)
+ * ใช้ Bearer header — ไม่ตรวจ ?t= เพราะถ้า sanctum.query middleware พัง
+ * ?t= จะ fail เสมอ แต่นั่นไม่ใช่ "token invalid" แค่ server config ผิด
+ * → ให้ consecutiveFailuresRef จัดการแทน
  */
 const isAuthRejected = async (token) => {
   if (!token) return true;
 
   try {
-    // 1) Bearer check — ถ้า 401/403 = token invalid จริงๆ
     const meRes = await fetch('/api/me', {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
     if (meRes.status === 401 || meRes.status === 403) return true;
-
-    // 2) ?t= check — ทดสอบ path เดียวกับ SSE stream
-    // ถ้า Bearer ผ่านแต่ ?t= fail = sanctum.query middleware ไม่ทำงาน
-    const tParam = sseAuthQuery(token);
-    const qRes = await fetch(`/api/production-monitor/get-settings?${tParam}`, {
-      headers: { Accept: 'application/json' },
-    });
-    if (qRes.status === 401 || qRes.status === 403) return true;
-
     return false;
   } catch {
     // network error — ไม่ใช่ auth failure ให้ retry ปกติ
@@ -340,11 +326,19 @@ export const useRealtimeSync = ({
         authCheckRef.current = null;
         if (!mountedRef.current) return;
 
-        if (rejected || failures >= MAX_CONSECUTIVE_FAILURES) {
-          // Token invalid หรือล้มเหลวซ้ำเกิน limit → หยุดและ redirect login
+        if (rejected) {
+          // Token invalid จริงๆ → clear localStorage + redirect login
           authStoppedRef.current = true;
           if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
           handleAuthFailure();
+          return;
+        }
+        if (failures >= MAX_CONSECUTIVE_FAILURES) {
+          // ล้มเหลวซ้ำโดยที่ token ยังดีอยู่ = server config ผิด (เช่น route cache)
+          // หยุด retry แต่ไม่ logout — แสดง status 'persistent_error' แทน
+          authStoppedRef.current = true;
+          if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+          setStatus('persistent_error');
           return;
         }
         scheduleReconnect(false);

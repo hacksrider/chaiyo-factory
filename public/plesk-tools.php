@@ -202,7 +202,16 @@ if ($action === 'clear-all-cache') {
             echo "  - {$f}\n";
         }
     }
-    echo "\nถ้า SSE ยัง 401 อยู่ ให้ logout แล้ว login ใหม่ หรือติดต่อผู้ดูแล\n";
+
+    // ล้าง PHP OPcache ด้วย (ถ้าเปิดใช้) — สำคัญเมื่อ middleware เปลี่ยนแต่ PHP ยังโหลด code เก่า
+    if (function_exists('opcache_reset')) {
+        $ok = opcache_reset();
+        echo "\nOPcache reset: ".($ok ? 'สำเร็จ ✓' : 'ล้มเหลว (อาจต้อง restart PHP-FPM)')."\n";
+    } else {
+        echo "\nOPcache: ไม่ได้เปิดใช้ หรือไม่ได้ทำงานจาก web\n";
+    }
+
+    echo "\nถ้า SSE ยัง 401 อยู่ ให้ logout แล้ว login ใหม่ หรือ restart PHP-FPM\n";
     exit;
 }
 
