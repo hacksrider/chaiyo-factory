@@ -732,6 +732,7 @@ export default {
         ledPausedPcs: 'ชิ้น',
         ledPausedShift: 'กะ',
         ledResumeBtn: 'Resume (พนักงานเดิม)',
+        ledRestoreProductBtn: 'กลับไปแสดงชื่อสินค้า',
         ledNoMachineHint: 'เลือกเครื่องจากรายการทางซ้าย (HDPE Lines)',
     },
 

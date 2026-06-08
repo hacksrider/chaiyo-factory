@@ -68,6 +68,7 @@ class SyncOrderToGas implements ShouldQueue
         try {
             $response = Http::timeout(25)
                 ->retry(1, 5000)
+                ->asJson()
                 ->post($this->gasUrl, $payload);
 
             if ($response->successful()) {

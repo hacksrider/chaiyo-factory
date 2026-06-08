@@ -1205,6 +1205,7 @@ const LedSignView = ({
   canAutoPushQtyToLed = true,
   onPauseOrder,
   onResumeOrder,
+  onRestoreProductionLed,
   onBack,
 }) => {
   const { language } = useLanguage();
@@ -1270,8 +1271,31 @@ const LedSignView = ({
 
   const configsRef = useRef(configs);
   useEffect(() => { configsRef.current = configs; }, [configs]);
+  const ledStatesRef = useRef(ledStates);
+  useEffect(() => { ledStatesRef.current = ledStates; }, [ledStates]);
 
   const lastQueuedSigRef = useRef({});
+  const getLiveCounterPayload = useCallback((machineId) => {
+    const mState = allMachineStates[machineId];
+    if (mState?.mode !== 'live') return {};
+    const actual = Number(mState.pipeCounter ?? 0);
+    const targetRaw = Number(mState.remainingQty ?? 0);
+    const fallbackTarget = Number(mState.targetQty ?? 0);
+    return {
+      actual: String(actual),
+      target: String(targetRaw > 0 ? targetRaw : fallbackTarget),
+    };
+  }, [allMachineStates]);
+  const getLiveProductText = useCallback((machineId) => {
+    const mState = allMachineStates[machineId];
+    if (mState?.mode !== 'live') return '';
+    const code = String(mState.productCode ?? '').trim();
+    const name = String(mState.productName ?? '').trim();
+    if (code && name) return `${code} — ${name}`;
+    if (code) return code;
+    if (name) return name;
+    return String(mState.orderId ?? '').trim();
+  }, [allMachineStates]);
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
@@ -1383,6 +1407,7 @@ const LedSignView = ({
         r, g, b,
         fontSize: cfg.fontSize ?? 1,
         speed: speedMs,
+        textOverride: Boolean(ledStatesRef.current[mid]?.textOverride),
         actual: String(qty_good ?? 0),
         target: String(qty_remaining ?? 0),
       }).catch(() => { /* retry handled by next poll */ });
@@ -1427,19 +1452,17 @@ const LedSignView = ({
         if (!sig) continue;
         if (lastQueuedSigRef.current[machine.id] === sig) continue;
 
-        const mState = allMachineStates[machine.id];
-        if (mState?.mode === 'live' && onPauseOrder) {
-          onPauseOrder(machine.id);
-        }
-
         const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
         const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
         try {
+          const liveCounterPayload = getLiveCounterPayload(machine.id);
           await queueLedCommand(machine.id, {
             text: cfg.text,
             r, g, b,
             fontSize: cfg.fontSize ?? 1,
             speed: speedMs,
+            textOverride: Boolean(ledStatesRef.current[machine.id]?.textOverride),
+            ...liveCounterPayload,
           });
           lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machine.id]: sig };
         } catch {
@@ -1451,7 +1474,7 @@ const LedSignView = ({
     return () => {
       if (autoPushDebounceRef.current) clearTimeout(autoPushDebounceRef.current);
     };
-  }, [configs, sid, selectedMachine, speedForAll, validMachines, allMachineStates, onPauseOrder]);
+  }, [configs, sid, selectedMachine, speedForAll, validMachines, getLiveCounterPayload]);
 
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
@@ -1597,15 +1620,23 @@ const LedSignView = ({
         ? ` |- ${defaultRecorderName} ${formatDateThaiShort(now)} - ${formatTimeThaiDot(now)}`
         : '';
       const fullText = text + nameSuffix;
+      const liveCounterPayload = getLiveCounterPayload(sid);
 
-      await queueLedCommand(selectedMachine.id, { text: fullText, r, g, b, fontSize: cfg.fontSize ?? 1, speed: speedMs });
+      await queueLedCommand(selectedMachine.id, {
+        text: fullText,
+        r, g, b,
+        fontSize: cfg.fontSize ?? 1,
+        speed: speedMs,
+        textOverride: true,
+        ...liveCounterPayload,
+      });
 
       // อัปเดต local config และ signature (ใช้ fullText ที่ต่อท้ายชื่อ/วันที่/เวลาแล้ว)
       const newCfg = { ...cfg, text: fullText };
       setConfigs(prev => ({ ...prev, [sid]: newCfg }));
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildLedConfigSignature(newCfg) };
       setStatuses(prev => ({ ...prev, [sid]: 'ok' }));
-      setLedStates(prev => ({ ...prev, [sid]: { text: fullText, r, g, b, fontSize: cfg.fontSize ?? 1, updatedAt: new Date().toISOString() } }));
+      setLedStates(prev => ({ ...prev, [sid]: { text: fullText, r, g, b, fontSize: cfg.fontSize ?? 1, textOverride: true, updatedAt: new Date().toISOString() } }));
       setTimeout(() => setStatuses(prev => ({ ...prev, [sid]: 'idle' })), 4000);
       setQuickOpen(false);
     } catch (err) {
@@ -1613,7 +1644,7 @@ const LedSignView = ({
     } finally {
       setQuickSubmitting(false);
     }
-  }, [sid, selectedMachine, configs]);
+  }, [sid, selectedMachine, configs, getLiveCounterPayload, defaultRecorderName]);
 
   const handlePing = useCallback(async () => {
     if (!sid) return;
@@ -1716,7 +1747,15 @@ const LedSignView = ({
     setSyncStatus('syncing');
     try {
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-      await queueLedCommand(selectedMachine.id, { text: cfg.text, r, g, b, fontSize: cfg.fontSize, speed: speedMs });
+      const liveCounterPayload = getLiveCounterPayload(sid);
+      await queueLedCommand(selectedMachine.id, {
+        text: cfg.text,
+        r, g, b,
+        fontSize: cfg.fontSize,
+        speed: speedMs,
+        textOverride: Boolean(ledStates[sid]?.textOverride),
+        ...liveCounterPayload,
+      });
       lastQueuedSigRef.current = {
         ...lastQueuedSigRef.current,
         [selectedMachine.id]: buildLedConfigSignature(cfg),
@@ -1726,7 +1765,56 @@ const LedSignView = ({
       setSyncStatus('error');
     }
     setTimeout(() => setSyncStatus('idle'), 3000);
-  }, [sid, selectedMachine, configs]);
+  }, [sid, selectedMachine, configs, getLiveCounterPayload, ledStates]);
+
+  const handleRestoreLiveProductText = useCallback(async () => {
+    if (!selectedMachine?.id || !sid) return;
+    const liveText = getLiveProductText(sid);
+    if (!liveText) return;
+    const cfg = configs[sid] ?? DEFAULT_CONFIG;
+    const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+    const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+    try {
+      if (onRestoreProductionLed) {
+        await Promise.resolve(onRestoreProductionLed(sid));
+      } else {
+        await queueLedCommand(selectedMachine.id, {
+          text: liveText,
+          r, g, b,
+          fontSize: cfg.fontSize ?? 1,
+          speed: speedMs,
+          textOverride: false,
+          ...getLiveCounterPayload(sid),
+        });
+      }
+      setLedStates((prev) => ({
+        ...prev,
+        [sid]: {
+          ...(prev[sid] ?? {}),
+          text: liveText,
+          textOverride: false,
+          updatedAt: new Date().toISOString(),
+        },
+      }));
+      setConfigs((prev) => ({ ...prev, [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: liveText } }));
+      setStatuses((prev) => ({ ...prev, [sid]: 'ok' }));
+      setTimeout(() => setStatuses((prev) => ({ ...prev, [sid]: 'idle' })), 4000);
+    } catch {
+      setStatuses((prev) => ({ ...prev, [sid]: 'error' }));
+    }
+  }, [sid, selectedMachine, configs, onRestoreProductionLed, getLiveCounterPayload, getLiveProductText]);
+
+  const activeMachineState = sid ? allMachineStates[sid] : null;
+  const liveProductText = sid ? getLiveProductText(sid) : '';
+  const isLiveMachine = activeMachineState?.mode === 'live';
+  const isTextOverridden = Boolean(ledStates[sid]?.textOverride);
+  const currentLedText = String(configs[sid]?.text ?? '').trim();
+  const shouldShowRestoreProductBtn = Boolean(
+    sid
+    && isLiveMachine
+    && liveProductText
+    && (isTextOverridden || currentLedText !== liveProductText)
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900/20">
@@ -1796,28 +1884,39 @@ const LedSignView = ({
         })()}
 
         {selectedMachine ? (
-          <ControlPanel
-            machine={selectedMachine}
-            config={config}
-            onChange={setConfigField}
-            onSpeedChange={handleSpeedChange}
-            onOpenPopup={handleOpenPopup}
-            onOpenQuick={() => { setQuickError(''); setQuickOpen(true); }}
-            onClearLed={handleClearLed}
-            clearStatus={clearStatus}
-            onPing={handlePing}
-            onForceSync={handleForceSync}
-            sendStatus={statuses[sid]      ?? 'idle'}
-            pingStatus={pingStatuses[sid]  ?? 'idle'}
-            pingMsg={pingMsgs[sid]         ?? ''}
-            errorMsg={errorMsgs[sid]       ?? ''}
-            wifiStatus={wifiStatuses[sid] ?? 'checking'}
-            deviceLocalIp={deviceLocalIps[sid] ?? null}
-            heartbeatSecondsAgo={heartbeatAgo[sid] ?? null}
-            syncStatus={syncStatus}
-            speedForAll={speedForAll}
-            onSpeedForAllChange={handleSpeedForAll}
-          />
+          <>
+            {shouldShowRestoreProductBtn && (
+              <button
+                type="button"
+                onClick={handleRestoreLiveProductText}
+                className="mb-3 w-full rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 transition-all hover:bg-emerald-500/20"
+              >
+                {t('production.ledRestoreProductBtn')}
+              </button>
+            )}
+            <ControlPanel
+              machine={selectedMachine}
+              config={config}
+              onChange={setConfigField}
+              onSpeedChange={handleSpeedChange}
+              onOpenPopup={handleOpenPopup}
+              onOpenQuick={() => { setQuickError(''); setQuickOpen(true); }}
+              onClearLed={handleClearLed}
+              clearStatus={clearStatus}
+              onPing={handlePing}
+              onForceSync={handleForceSync}
+              sendStatus={statuses[sid]      ?? 'idle'}
+              pingStatus={pingStatuses[sid]  ?? 'idle'}
+              pingMsg={pingMsgs[sid]         ?? ''}
+              errorMsg={errorMsgs[sid]       ?? ''}
+              wifiStatus={wifiStatuses[sid] ?? 'checking'}
+              deviceLocalIp={deviceLocalIps[sid] ?? null}
+              heartbeatSecondsAgo={heartbeatAgo[sid] ?? null}
+              syncStatus={syncStatus}
+              speedForAll={speedForAll}
+              onSpeedForAllChange={handleSpeedForAll}
+            />
+          </>
         ) : (
           <div className="h-full min-h-[320px] flex items-center justify-center text-gray-500 text-sm">
             {t('production.ledNoMachineHint')}

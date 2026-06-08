@@ -461,6 +461,7 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
     b: 255,
     fontSize: 1,
     speed: 50,
+    textOverride: false,
     actual,
     // target = ค้างผลิตจากแผน (คงที่) — เทียบกับของดีสะสมจาก actual
     target: String(backlogTarget),

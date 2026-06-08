@@ -732,6 +732,7 @@ export default {
         ledPausedPcs: 'ချောင်း',
         ledPausedShift: 'ကျပ်',
         ledResumeBtn: 'Resume (ဝန်ထမ်းဟောင်း)',
+        ledRestoreProductBtn: 'สินค้าအမည် ပြန်ပြရန်',
         ledNoMachineHint: 'ဘယ်ဘက်မှ စက်ရွေးပါ (HDPE Lines)',
     },
 

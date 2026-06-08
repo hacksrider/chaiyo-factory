@@ -1512,6 +1512,11 @@ const ProductionMonitoring = () => {
                   canAutoPushQtyToLed={canManageProduction}
                   onPauseOrder={canManageProduction ? (mid) => pauseOrder(mid) : undefined}
                   onResumeOrder={canManageProduction ? (mid) => { void resumeOrderWithLed(mid); } : undefined}
+                  onRestoreProductionLed={canManageProduction ? (mid) => {
+                    const st = getMachineState(mid);
+                    if (!st || st.mode !== 'live') return Promise.resolve();
+                    return queueProductionLedForMachine(mid, st, st.pipeCounter ?? 0);
+                  } : undefined}
                   onBack={handleExitView}
                 />
               )}

@@ -473,13 +473,46 @@ class ProductionMonitorController extends Controller
      */
     public function storeLedCommand(Request $request, string $machineId): JsonResponse
     {
-        $payload = $request->only(['text', 'r', 'g', 'b', 'fontSize', 'speed', 'actual', 'target', 'showClock']);
+        $payload = $request->only([
+            'text', 'r', 'g', 'b', 'fontSize', 'speed',
+            'actual', 'target', 'showClock', 'textOverride',
+        ]);
+        $existing = Cache::get("led_state_{$machineId}");
+        $existing = is_array($existing) ? $existing : [];
+
+        $ledState = $existing;
+        foreach (['text', 'r', 'g', 'b', 'fontSize', 'speed', 'actual', 'target', 'showClock', 'textOverride'] as $k) {
+            if (array_key_exists($k, $payload)) {
+                $ledState[$k] = $payload[$k];
+            }
+        }
+
+        $session = ProductionSession::where('machine_id', $machineId)->first();
+        if (!array_key_exists('actual', $payload) && $session) {
+            $ledState['actual'] = (string) ((int) ($session->pipe_counter ?? 0));
+        }
+        if (!array_key_exists('target', $payload) && $session) {
+            $remaining = (int) ($session->remaining_qty ?? 0);
+            $fallbackTarget = (int) ($session->target_qty ?? 0);
+            $ledState['target'] = (string) ($remaining > 0 ? $remaining : $fallbackTarget);
+        }
+        if (!array_key_exists('textOverride', $payload)) {
+            $ledState['textOverride'] = (bool) ($ledState['textOverride'] ?? false);
+        }
+        if (!array_key_exists('showClock', $payload)) {
+            $textFromPayload = array_key_exists('text', $payload) ? trim((string) ($payload['text'] ?? '')) : null;
+            if ($textFromPayload !== null && $textFromPayload !== '') {
+                $ledState['showClock'] = false;
+            } else {
+                $ledState['showClock'] = (bool) ($ledState['showClock'] ?? false);
+            }
+        }
 
         // Pending command — ESP32 ดึงแล้วลบทิ้ง (TTL 5 นาที)
-        Cache::put("led_cmd_{$machineId}", $payload, now()->addMinutes(5));
+        Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
 
         // Persistent state — ใช้แสดงใน UI ว่าป้ายไฟกำลังแสดงอะไร (TTL 30 วัน)
-        $ledState = array_merge($payload, ['updatedAt' => now()->toISOString()]);
+        $ledState['updatedAt'] = now()->toISOString();
         Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
 
         // Broadcast ให้ทุก browser รับ LED state ทันที
@@ -1217,6 +1250,7 @@ class ProductionMonitorController extends Controller
                     'b'         => 255,
                     'fontSize'  => 1,
                     'speed'     => 50,
+                    'textOverride' => false,
                     'actual'    => (string) $pipeFromDb,
                     'target'    => (string) $ledTarget,
                 ];
@@ -1225,7 +1259,8 @@ class ProductionMonitorController extends Controller
                 if ($remainingFromDb >= 0) {
                     $ledState['target'] = (string) $remainingFromDb;
                 }
-                if (($ledState['text'] ?? '') === '' && $displayText !== '') {
+                $isOverriddenText = (bool) ($ledState['textOverride'] ?? false);
+                if (! $isOverriddenText && ($ledState['text'] ?? '') === '' && $displayText !== '') {
                     $ledState['text'] = $displayText;
                 }
             }
@@ -1512,6 +1547,7 @@ class ProductionMonitorController extends Controller
                     ],
                 ])
                 ->timeout(90)
+                ->asJson()
                 ->post($url, $payload);
 
             if ($response->failed()) {
