@@ -60,6 +60,56 @@ function plesk_clear_laravel_cache(): array
     return $done;
 }
 
+/**
+ * ล้าง cache ทุกอย่าง: bootstrap/cache + storage/framework/views + storage/framework/cache
+ * ใช้เมื่อ SSE 401 หรือเปลี่ยน middleware/config แล้ว reload ไม่ขึ้น
+ */
+function plesk_clear_all_cache(): array
+{
+    $base = dirname(__DIR__);
+    $removed = [];
+
+    // 1) Bootstrap cache files (config, routes, events, services, packages)
+    foreach ([
+        'config.php', 'routes-v7.php', 'events.php', 'services.php', 'packages.php',
+    ] as $f) {
+        $p = $base.'/bootstrap/cache/'.$f;
+        if (is_file($p) && @unlink($p)) {
+            $removed[] = 'bootstrap/cache/'.$f;
+        }
+    }
+
+    // 2) Compiled Blade views
+    $viewsDir = $base.'/storage/framework/views';
+    if (is_dir($viewsDir)) {
+        foreach (glob($viewsDir.'/*.php') ?: [] as $f) {
+            if (@unlink($f)) {
+                $removed[] = 'views/'.basename($f);
+            }
+        }
+    }
+
+    // 3) Storage/framework/cache/data (application cache)
+    $cacheData = $base.'/storage/framework/cache/data';
+    if (is_dir($cacheData)) {
+        $iter = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($cacheData, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        $count = 0;
+        foreach ($iter as $node) {
+            if ($node->isFile() && @unlink($node->getPathname())) {
+                $count++;
+            }
+        }
+        if ($count > 0) {
+            $removed[] = "cache/data ({$count} files)";
+        }
+    }
+
+    return $removed;
+}
+
 $expectedKey = plesk_read_diagnose_key();
 $provided = (string) ($_GET['key'] ?? '');
 $action = (string) ($_GET['action'] ?? 'help');
@@ -127,7 +177,7 @@ if ($action === 'queue') {
 
 if ($action === 'clear-cache') {
     $removed = plesk_clear_laravel_cache();
-    echo "ล้าง cache แล้ว (เทียบเท่า php artisan config:clear)\n\n";
+    echo "ล้าง bootstrap cache แล้ว (เทียบเท่า php artisan config:clear + route:clear)\n\n";
     if ($removed === []) {
         echo "ไม่พบไฟล์ cache — อาจล้างไปแล้ว หรือยังไม่เคย config:cache\n";
     } else {
@@ -137,6 +187,22 @@ if ($action === 'clear-cache') {
         }
     }
     echo "\nรีเฟรชเว็บหลักได้เลย\n";
+    exit;
+}
+
+if ($action === 'clear-all-cache') {
+    $removed = plesk_clear_all_cache();
+    echo "ล้าง cache ทั้งหมดแล้ว\n";
+    echo "(bootstrap/cache + Blade views + storage cache)\n\n";
+    if ($removed === []) {
+        echo "ไม่พบไฟล์ cache — สะอาดอยู่แล้ว\n";
+    } else {
+        echo "ลบแล้ว (" . count($removed) . " รายการ):\n";
+        foreach ($removed as $f) {
+            echo "  - {$f}\n";
+        }
+    }
+    echo "\nถ้า SSE ยัง 401 อยู่ ให้ logout แล้ว login ใหม่ หรือติดต่อผู้ดูแล\n";
     exit;
 }
 
@@ -178,11 +244,13 @@ if ($action === 'diagnose') {
 }
 
 echo "Plesk tools — ไม่ต้องใช้ SSH\n\n";
-echo "action=clear-cache  ล้าง config cache หลังแก้ .env\n";
-echo "action=diagnose     ทดสอบ Google Sheets (JSON)\n";
-echo "action=gas-warm     ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
-echo "action=queue        ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";
+echo "action=clear-cache      ล้าง bootstrap/cache (config, routes)\n";
+echo "action=clear-all-cache  ล้างทุกอย่าง: cache + views + storage  ← ใช้เมื่อ SSE 401\n";
+echo "action=diagnose         ทดสอบ Google Sheets (JSON)\n";
+echo "action=gas-warm         ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
+echo "action=queue            ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";
 echo "URL ตัวอย่าง:\n";
-echo "  ".(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http')
-    .'://'.($_SERVER['HTTP_HOST'] ?? 'your-domain')
-    .'/plesk-tools.php?key=***&action=clear-cache'."\n";
+$proto = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+$host  = $_SERVER['HTTP_HOST'] ?? 'your-domain';
+echo "  {$proto}://{$host}/plesk-tools.php?key=***&action=clear-cache\n";
+echo "  {$proto}://{$host}/plesk-tools.php?key=***&action=clear-all-cache\n";

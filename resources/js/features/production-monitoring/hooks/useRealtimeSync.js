@@ -50,18 +50,33 @@ const handleAuthFailure = () => {
 };
 
 /**
- * Returns true เมื่อ token ถูก reject จริงๆ (401/403 จาก /api/me เท่านั้น)
- * ใช้ /api/me เป็น source of truth — ถ้า /api/me ผ่าน token ยังดีอยู่
- * ไม่ probe SSE stream เพิ่มเติม เพราะ encoding mismatch อาจทำให้ false-positive
+ * Returns true เมื่อ token ถูก reject จริงๆ
+ *
+ * ตรวจสองเส้นทาง:
+ *  1) Bearer header  → /api/me           (standard auth)
+ *  2) ?t= query param → /api/production-monitor/get-settings  (same path as SSE)
+ *
+ * ถ้า Bearer ผ่านแต่ ?t= ไม่ผ่าน แสดงว่า sanctum.query middleware ไม่ทำงานบน server
+ * (เช่น route cache เก่า) → treat เป็น auth failure เพื่อหยุด retry loop
  */
 const isAuthRejected = async (token) => {
   if (!token) return true;
 
   try {
+    // 1) Bearer check — ถ้า 401/403 = token invalid จริงๆ
     const meRes = await fetch('/api/me', {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
     if (meRes.status === 401 || meRes.status === 403) return true;
+
+    // 2) ?t= check — ทดสอบ path เดียวกับ SSE stream
+    // ถ้า Bearer ผ่านแต่ ?t= fail = sanctum.query middleware ไม่ทำงาน
+    const tParam = sseAuthQuery(token);
+    const qRes = await fetch(`/api/production-monitor/get-settings?${tParam}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (qRes.status === 401 || qRes.status === 403) return true;
+
     return false;
   } catch {
     // network error — ไม่ใช่ auth failure ให้ retry ปกติ
@@ -126,16 +141,20 @@ export const useRealtimeSync = ({
   onReconnect,
   onStatusChange,
 } = {}) => {
-  const esRef             = useRef(null);
-  const reconnectTimerRef  = useRef(null);
-  const backoffRef         = useRef(MIN_BACKOFF);
-  const lastEventIdRef     = useRef(0);
-  const statusRef          = useRef('connecting');
-  const deadTimerRef       = useRef(null);
-  const mountedRef         = useRef(true);
-  const isFirstConnectRef  = useRef(true); // suppresses onReconnect on initial open
-  const authStoppedRef     = useRef(false);
-  const authCheckRef       = useRef(null);
+  const esRef                  = useRef(null);
+  const reconnectTimerRef       = useRef(null);
+  const backoffRef              = useRef(MIN_BACKOFF);
+  const lastEventIdRef          = useRef(0);
+  const statusRef               = useRef('connecting');
+  const deadTimerRef            = useRef(null);
+  const mountedRef              = useRef(true);
+  const isFirstConnectRef       = useRef(true); // suppresses onReconnect on initial open
+  const authStoppedRef          = useRef(false);
+  const authCheckRef            = useRef(null);
+  // จำนวนครั้งที่ SSE ล้มเหลวติดต่อกัน (reset เมื่อ connected สำเร็จ)
+  // ถ้าเกิน MAX_CONSECUTIVE_FAILURES → หยุด retry, redirect login
+  const consecutiveFailuresRef  = useRef(0);
+  const MAX_CONSECUTIVE_FAILURES = 4;
 
   // ── Stable refs for callbacks — avoids re-subscribing on every render ────
   const cbRefs = useRef({});
@@ -247,6 +266,7 @@ export const useRealtimeSync = ({
       if (!mountedRef.current) return;
       resetDeadTimer();
       backoffRef.current = MIN_BACKOFF; // reset on success
+      consecutiveFailuresRef.current = 0; // reset failure counter on success
 
       const wasFirst = isFirstConnectRef.current;
       isFirstConnectRef.current = false;
@@ -312,11 +332,16 @@ export const useRealtimeSync = ({
       es.close();
       esRef.current = null;
 
+      consecutiveFailuresRef.current += 1;
+      const failures = consecutiveFailuresRef.current;
+
       if (authCheckRef.current) return;
       authCheckRef.current = isAuthRejected(token).then((rejected) => {
         authCheckRef.current = null;
         if (!mountedRef.current) return;
-        if (rejected) {
+
+        if (rejected || failures >= MAX_CONSECUTIVE_FAILURES) {
+          // Token invalid หรือล้มเหลวซ้ำเกิน limit → หยุดและ redirect login
           authStoppedRef.current = true;
           if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
           handleAuthFailure();
@@ -332,6 +357,7 @@ export const useRealtimeSync = ({
     mountedRef.current = true;
     if (enabled) {
       authStoppedRef.current = false;
+      consecutiveFailuresRef.current = 0;
       connect();
     } else {
       esRef.current?.close();
