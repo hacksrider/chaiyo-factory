@@ -1107,7 +1107,12 @@ const ProductionMonitoring = () => {
   // re-queue LED command เพื่ออัปเดต target บนป้ายให้ถูกต้อง
   const ledRequeueRef = useRef({});
   useEffect(() => {
-    if (!isLedPage || !selectedMachineId) return;
+    // reset เมื่อออกจากหน้า LED เพื่อให้กลับมาใหม่แล้ว re-queue ทุกครั้ง
+    if (!isLedPage) {
+      ledRequeueRef.current = {};
+      return;
+    }
+    if (!selectedMachineId) return;
     const st = getMachineState(selectedMachineId);
     if (st?.mode !== 'live') return;
     const alreadyRequested = ledRequeueRef.current[selectedMachineId];

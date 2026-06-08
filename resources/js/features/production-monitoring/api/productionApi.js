@@ -458,7 +458,7 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
     text,
     r: 0,
     g: 255,
-    b: 255,
+    b: 0,
     fontSize: 1,
     speed: 50,
     textOverride: false,

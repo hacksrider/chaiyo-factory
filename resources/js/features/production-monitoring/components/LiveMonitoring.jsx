@@ -7,7 +7,7 @@ import {
   parseProductionInstant,
 } from '../utils/formatProductionBangkok';
 import StatCard from './StatCard';
-import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive } from '../api/productionApi';
+import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive, closeOrder } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 

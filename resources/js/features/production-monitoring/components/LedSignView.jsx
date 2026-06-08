@@ -1772,8 +1772,10 @@ const LedSignView = ({
     const liveText = getLiveProductText(sid);
     if (!liveText) return;
     const cfg = configs[sid] ?? DEFAULT_CONFIG;
-    const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
     const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+    // บังคับสีเขียวเสมอตอน restore ป้ายจากการรันงาน
+    const GREEN_HEX = '#00ff00';
+    const { r, g, b } = hexToRgb(GREEN_HEX);
     try {
       if (onRestoreProductionLed) {
         await Promise.resolve(onRestoreProductionLed(sid));
@@ -1792,11 +1794,15 @@ const LedSignView = ({
         [sid]: {
           ...(prev[sid] ?? {}),
           text: liveText,
+          r, g, b,
           textOverride: false,
           updatedAt: new Date().toISOString(),
         },
       }));
-      setConfigs((prev) => ({ ...prev, [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: liveText } }));
+      setConfigs((prev) => ({
+        ...prev,
+        [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: liveText, colorHex: GREEN_HEX },
+      }));
       setStatuses((prev) => ({ ...prev, [sid]: 'ok' }));
       setTimeout(() => setStatuses((prev) => ({ ...prev, [sid]: 'idle' })), 4000);
     } catch {
