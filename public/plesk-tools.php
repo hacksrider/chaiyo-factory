@@ -361,6 +361,44 @@ if ($action === 'daily-test') {
     exit;
 }
 
+// ─── daily-sample: เรียก getDailySample จาก GAS ดูค่า raw ใน Daily sheet ───
+if ($action === 'daily-sample') {
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php\n");
+    }
+    require $vendorAutoload;
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+    $gasUrl = env('GAS_PLAN_URL', '');
+    header('Content-Type: application/json; charset=utf-8');
+
+    if (empty($gasUrl)) {
+        echo json_encode(['error' => 'GAS_PLAN_URL is not set in .env'], JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    // ดึง raw sample จาก Daily sheet (15 แถวแรก) — ใช้ debug ดู format วันที่
+    $url = $gasUrl . '?action=getDailySample';
+    try {
+        $response = Illuminate\Support\Facades\Http::withoutVerifying()
+            ->withOptions(['allow_redirects' => ['max' => 10, 'strict' => false, 'protocols' => ['https', 'http']]])
+            ->timeout(60)
+            ->get($url);
+
+        echo json_encode([
+            'note'        => 'แถวที่ 1-15 ของ Daily sheet — ดู col0 (A=วันที่) ว่าเป็น DATE: หรือ string',
+            'http_status' => $response->status(),
+            'data'        => $response->json(),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        echo json_encode(['error' => $e->getMessage()], JSON_PRETTY_PRINT);
+    }
+    exit;
+}
+
 if ($action === 'diagnose') {
     $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
     $googleClientFile = dirname(__DIR__).'/vendor/google/apiclient/src/Client.php';
@@ -403,6 +441,8 @@ echo "action=clear-cache      ล้าง bootstrap/cache (config, routes)\n";
 echo "action=clear-all-cache  ล้างทุกอย่าง: cache + views + storage  ← ใช้เมื่อ SSE 401\n";
 echo "action=sse-test         ตรวจ SSE queue + sessions ทั้งหมด (JSON)\n";
 echo "action=sse-reset        ล้าง SSE queue/counter ที่ id=0 เสีย\n";
+echo "action=daily-test       ทดสอบ updateDailyProduced → GAS (JSON)\n";
+echo "action=daily-sample     ดู raw 15 แถวแรกของ Daily sheet (debug format วันที่)\n";
 echo "action=diagnose         ทดสอบ Google Sheets (JSON)\n";
 echo "action=gas-warm         ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
 echo "action=queue            ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";

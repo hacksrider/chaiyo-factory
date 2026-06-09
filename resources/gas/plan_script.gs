@@ -59,22 +59,65 @@ function doPost(e) {
 }
 
 // ─── updateDailyProduced ──────────────────────────────────────────────────────
-// หา row ใน Daily sheet ที่ตรงกับ machineId + jobNo + date
+// หา row ใน Daily sheet ที่ตรงกับ machineId + jobNo (+ date ถ้าใส่มา)
 // แล้ว update ช่องกะ A/B/C ด้วยจำนวนของดีที่ผลิตได้
 //
 // params: { machineId, jobNo, date (yyyy-MM-dd), shift ('A'|'B'|'C'), produced (number) }
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * แปลงวันที่ที่ GAS อ่านได้จาก Daily sheet → yyyy-MM-dd (CE)
+ * รองรับ:
+ *   1. Date object (อ่านจาก Google Sheets ปกติ)
+ *   2. string "d-M-YYYY" หรือ "d/M/YYYY" ที่ปีอาจเป็น BE (2500+) หรือ CE (1900-2099)
+ */
+function parseDailyDate_(raw) {
+  if (!raw) return '';
+
+  // กรณี Date object (ปกติที่สุด — Google Sheets เก็บ date เป็น Date)
+  if (raw instanceof Date) {
+    return Utilities.formatDate(raw, 'Asia/Bangkok', 'yyyy-MM-dd');
+  }
+
+  var s = String(raw).trim();
+  if (!s) return '';
+
+  // ป้องกัน header row ซ้ำ
+  if (s.match(/^วันที่/) || s.match(/^Monthly/) || s.match(/^Date/i)) return '';
+
+  // รูปแบบ d-M-YYYY หรือ d/M/YYYY (อาจเป็น BE หรือ CE)
+  var m = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
+  if (m) {
+    var day  = parseInt(m[1], 10);
+    var mon  = parseInt(m[2], 10);
+    var yr   = parseInt(m[3], 10);
+    // ถ้าปีดูเหมือน BE (พ.ศ.) ให้ลบ 543
+    if (yr > 2400) yr -= 543;
+    if (yr >= 1900 && yr <= 2100 && mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
+      return yr + '-' + (mon < 10 ? '0' + mon : '' + mon) + '-' + (day < 10 ? '0' + day : '' + day);
+    }
+  }
+
+  // รูปแบบ YYYY-MM-DD ตรง (CE)
+  if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
+
+  // fallback: ลอง parse ด้วย Date ปกติ
+  var d = new Date(s);
+  if (!isNaN(d)) return Utilities.formatDate(d, 'Asia/Bangkok', 'yyyy-MM-dd');
+
+  return s; // คืน raw string ถ้า parse ไม่ได้
+}
 
 function updateDailyProduced(params) {
   var ss    = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(DAILY_SHEET);
   if (!sheet) return { success: false, error: 'ไม่พบ Sheet: ' + DAILY_SHEET };
 
-  var targetMachine = String(params.machineId || '').trim();
-  var targetJobNo   = String(params.jobNo     || '').trim();
-  var targetDate    = String(params.date      || '').trim(); // yyyy-MM-dd
-  var shift         = String(params.shift     || '').toUpperCase().trim(); // A/B/C
-  var produced      = Number(params.produced  || 0);
+  var targetMachine = String(params.machineId || params.machine || '').trim();
+  var targetJobNo   = String(params.jobNo || params.orderId || '').trim();
+  var targetDate    = String(params.date || params.planDate || '').trim(); // yyyy-MM-dd CE
+  var shift         = String(params.shift || '').toUpperCase().trim(); // A/B/C
+  var produced      = Number(params.produced || params.goodCount || params.qty || 0);
 
   if (!targetMachine || !targetJobNo || !shift) {
     return { success: false, error: 'Missing required params: machineId, jobNo, shift' };
@@ -84,7 +127,7 @@ function updateDailyProduced(params) {
   var lastCol = Math.min(sheet.getLastColumn(), 22);
   if (lastRow < 2) return { success: false, error: 'Daily sheet is empty' };
 
-  // ── หา header row เพื่อระบุ column index ────────────────────────────────
+  // ── หา header row เพื่อระบุ column index (เฉพาะ 10 แถวแรก) ──────────────
   var H = {};
   for (var r = 1; r <= Math.min(10, lastRow); r++) {
     var rowVals = sheet.getRange(r, 1, 1, lastCol).getValues()[0];
@@ -109,11 +152,11 @@ function updateDailyProduced(params) {
   }
 
   var IDX_DATE    = ph('วันที่', 'Date')                         >= 0 ? ph('วันที่', 'Date')                         :  0;
-  var IDX_MACHINE = ph('Mc No.', 'MachineID', 'เครื่อง')         >= 0 ? ph('Mc No.', 'MachineID', 'เครื่อง')         :  3;
+  var IDX_MACHINE = ph('Mc No.', 'MachineID', 'เครื่อง', 'EM')   >= 0 ? ph('Mc No.', 'MachineID', 'เครื่อง', 'EM')   :  3;
   var IDX_JOBNO   = ph('เลขใบขอ', 'JobNo', 'Job No')             >= 0 ? ph('เลขใบขอ', 'JobNo', 'Job No')             :  4;
-  var IDX_SHIFT_A = ph('กะA', 'กะ A', 'ShiftA')                  >= 0 ? ph('กะA', 'กะ A', 'ShiftA')                  : 12;
-  var IDX_SHIFT_B = ph('กะB', 'กะ B', 'ShiftB')                  >= 0 ? ph('กะB', 'กะ B', 'ShiftB')                  : 13;
-  var IDX_SHIFT_C = ph('กะC', 'กะ C', 'ShiftC')                  >= 0 ? ph('กะC', 'กะ C', 'ShiftC')                  : 14;
+  var IDX_SHIFT_A = ph('กะA', 'กะ A', 'ShiftA', 'A')             >= 0 ? ph('กะA', 'กะ A', 'ShiftA', 'A')             : 12;
+  var IDX_SHIFT_B = ph('กะB', 'กะ B', 'ShiftB', 'B')             >= 0 ? ph('กะB', 'กะ B', 'ShiftB', 'B')             : 13;
+  var IDX_SHIFT_C = ph('กะC', 'กะ C', 'ShiftC', 'C')             >= 0 ? ph('กะC', 'กะ C', 'ShiftC', 'C')             : 14;
   var IDX_TOTAL   = ph('รวม', 'Total')                            >= 0 ? ph('รวม', 'Total')                            : 15;
 
   var shiftColIdx = shift === 'A' ? IDX_SHIFT_A : shift === 'B' ? IDX_SHIFT_B : IDX_SHIFT_C;
@@ -122,51 +165,66 @@ function updateDailyProduced(params) {
   // ── สแกน rows หา match ──────────────────────────────────────────────────
   var data     = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
   var lastDate = '';
-  var matched  = []; // เก็บ sheet row numbers ที่ match (1-indexed)
+  var matched  = []; // sheet row numbers (1-indexed) ที่ machine+jobNo+date ตรง
+  var noDateMatched = []; // machine+jobNo ตรงแต่ date ไม่ตรง (fallback)
+  var debugDates = []; // เก็บ date samples เพื่อ debug
 
   for (var i = 0; i < data.length; i++) {
     var row = data[i];
 
-    // Forward-fill date
+    // Forward-fill date — ใช้ parseDailyDate_ ที่รองรับทั้ง Date object และ string BE/CE
     var rawDate = row[IDX_DATE];
-    if (rawDate instanceof Date) {
-      lastDate = fmtDate(rawDate);
-    } else {
-      var ds = String(rawDate || '').trim();
-      if (ds && !ds.match(/^วันที่/) && !ds.match(/^Monthly/)) {
-        var parsed = new Date(ds);
-        lastDate = !isNaN(parsed) ? fmtDate(parsed) : ds;
-      }
-    }
+    var parsedDate = parseDailyDate_(rawDate);
+    if (parsedDate) lastDate = parsedDate;
 
     var rowMachine = String(row[IDX_MACHINE] || '').trim();
     var rowJobNo   = String(row[IDX_JOBNO]   || '').trim();
 
-    // match: machineId + jobNo ต้องตรง; date ตรงด้วยถ้าส่งมา
-    var dateMatch = !targetDate || lastDate === targetDate;
-    if (rowMachine === targetMachine && rowJobNo === targetJobNo && dateMatch) {
-      matched.push(i + 2); // +2: header row 1, data starts row 2
+    if (rowMachine === targetMachine && rowJobNo === targetJobNo) {
+      if (debugDates.length < 5) debugDates.push(lastDate);
+      var dateMatch = !targetDate || lastDate === targetDate;
+      if (dateMatch) {
+        matched.push(i + 2); // +2: row 1 = header, data starts row 2
+      } else {
+        noDateMatched.push(i + 2);
+      }
     }
   }
 
-  if (matched.length === 0) {
-    return { success: false, error: 'ไม่พบแถวที่ตรงกับ ' + targetMachine + ' / ' + targetJobNo + ' / ' + targetDate };
+  // Fallback: ถ้าไม่เจอด้วย date → ใช้ machine+jobNo อย่างเดียว (date อาจ format ต่างกัน)
+  var usedFallback = false;
+  if (matched.length === 0 && noDateMatched.length > 0) {
+    matched = noDateMatched;
+    usedFallback = true;
   }
 
-  // อัปเดตทุก row ที่ match (ปกติควรมีแถวเดียว)
+  if (matched.length === 0) {
+    return {
+      success:    false,
+      error:      'ไม่พบแถวที่ตรงกับ ' + targetMachine + ' / ' + targetJobNo + ' / ' + targetDate,
+      debug: {
+        idxDate:    IDX_DATE,
+        idxMachine: IDX_MACHINE,
+        idxJobNo:   IDX_JOBNO,
+        foundDatesForThisJob: debugDates,
+        targetDate: targetDate,
+        lastScannedDate: lastDate,
+        headerMap: H,
+      },
+    };
+  }
+
+  // อัปเดตทุก row ที่ match
   var updated = 0;
   for (var m = 0; m < matched.length; m++) {
     var sheetRow = matched[m];
-    // เขียนค่ากะที่เลือก
     sheet.getRange(sheetRow, shiftColIdx + 1).setValue(produced);
 
-    // คำนวณ total ใหม่ = กะ A + B + C
     if (IDX_TOTAL >= 0) {
       var rowData = sheet.getRange(sheetRow, 1, 1, lastCol).getValues()[0];
       var a   = Number(rowData[IDX_SHIFT_A]) || 0;
       var b   = Number(rowData[IDX_SHIFT_B]) || 0;
       var c_  = Number(rowData[IDX_SHIFT_C]) || 0;
-      // ใส่ค่าที่เพิ่งอัปเดตด้วย (rowData ยังเป็นค่าเก่า)
       if (shift === 'A') a   = produced;
       if (shift === 'B') b   = produced;
       if (shift === 'C') c_  = produced;
@@ -175,7 +233,7 @@ function updateDailyProduced(params) {
     updated++;
   }
 
-  return { success: true, updated: updated, rows: matched };
+  return { success: true, updated: updated, rows: matched, usedFallback: usedFallback };
 }
 
 // ─── updatePlanProduced ───────────────────────────────────────────────────────
