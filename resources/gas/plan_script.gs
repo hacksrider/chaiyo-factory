@@ -162,19 +162,36 @@ function updateDailyProduced(params) {
   var shiftColIdx = shift === 'A' ? IDX_SHIFT_A : shift === 'B' ? IDX_SHIFT_B : IDX_SHIFT_C;
   if (shiftColIdx < 0) return { success: false, error: 'ไม่พบ column กะ ' + shift };
 
-  // ── สแกน rows หา match ──────────────────────────────────────────────────
-  var data     = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  // ── Speed optimization: หา startDataRow โดยสแกน column A เพียงคอลัมน์เดียว ──
+  // Daily sheet มีหลาย 1,000+ แถว — ไม่อ่านทั้งหมด แต่หา cutoff ก่อน
+  var startDataRow = 2;
+  if (targetDate && lastRow > 200) {
+    var dateColOnly = sheet.getRange(2, IDX_DATE + 1, lastRow - 1, 1).getValues();
+    var lastKnownDate = '';
+    for (var di = dateColOnly.length - 1; di >= 0; di--) {
+      var dv = parseDailyDate_(dateColOnly[di][0]);
+      if (dv) lastKnownDate = dv;
+      // หยุดเมื่อเจอวันที่ก่อนหน้า targetDate → เริ่มอ่าน full data จากตรงนั้น
+      if (lastKnownDate && lastKnownDate < targetDate) {
+        startDataRow = Math.max(2, di + 2 - 3); // +2=1-indexed, -3=buffer 3 rows
+        break;
+      }
+    }
+  }
+
+  // ── อ่านเฉพาะ rows ตั้งแต่ startDataRow เป็นต้นไป ──────────────────────
+  var dataRows = lastRow - startDataRow;
+  var data     = dataRows > 0 ? sheet.getRange(startDataRow, 1, dataRows, lastCol).getValues() : [];
   var lastDate = '';
-  var matched  = []; // sheet row numbers (1-indexed) ที่ machine+jobNo+date ตรง
-  var noDateMatched = []; // machine+jobNo ตรงแต่ date ไม่ตรง (fallback)
-  var debugDates = []; // เก็บ date samples เพื่อ debug
+  var matched       = []; // sheet row numbers (1-indexed) ที่ machine+jobNo+date ตรง
+  var noDateMatched = []; // machine+jobNo ตรง แต่ date ไม่ตรง (fallback)
+  var debugDates    = []; // samples เพื่อ debug
 
   for (var i = 0; i < data.length; i++) {
     var row = data[i];
 
     // Forward-fill date — ใช้ parseDailyDate_ ที่รองรับทั้ง Date object และ string BE/CE
-    var rawDate = row[IDX_DATE];
-    var parsedDate = parseDailyDate_(rawDate);
+    var parsedDate = parseDailyDate_(row[IDX_DATE]);
     if (parsedDate) lastDate = parsedDate;
 
     var rowMachine = String(row[IDX_MACHINE] || '').trim();
@@ -184,9 +201,9 @@ function updateDailyProduced(params) {
       if (debugDates.length < 5) debugDates.push(lastDate);
       var dateMatch = !targetDate || lastDate === targetDate;
       if (dateMatch) {
-        matched.push(i + 2); // +2: row 1 = header, data starts row 2
+        matched.push(startDataRow + i); // 1-indexed sheet row
       } else {
-        noDateMatched.push(i + 2);
+        noDateMatched.push(startDataRow + i);
       }
     }
   }

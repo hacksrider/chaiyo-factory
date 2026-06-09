@@ -345,7 +345,7 @@ if ($action === 'daily-test') {
     try {
         $response = Illuminate\Support\Facades\Http::withoutVerifying()
             ->withOptions(['allow_redirects' => ['max' => 10, 'strict' => false, 'protocols' => ['https', 'http']]])
-            ->timeout(60)
+            ->timeout(120)
             ->asJson()
             ->post($gasUrl, $payload);
 
@@ -385,7 +385,7 @@ if ($action === 'daily-sample') {
     try {
         $response = Illuminate\Support\Facades\Http::withoutVerifying()
             ->withOptions(['allow_redirects' => ['max' => 10, 'strict' => false, 'protocols' => ['https', 'http']]])
-            ->timeout(60)
+            ->timeout(120)
             ->get($url);
 
         echo json_encode([
