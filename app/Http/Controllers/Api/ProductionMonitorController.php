@@ -1044,8 +1044,13 @@ class ProductionMonitorController extends Controller
                     $ledState['target'] = (string) $remainingFromDb;
                 }
                 $isOverriddenText = (bool) ($ledState['textOverride'] ?? false);
-                if (! $isOverriddenText && ($ledState['text'] ?? '') === '' && $displayText !== '') {
+                // อัปเดต text จาก session data เสมอ (ไม่ใช่แค่เมื่อ text ว่าง)
+                // เพื่อให้แสดงชื่อสินค้าแม้ led_state เดิมจะมี machine name เก่าอยู่
+                if (! $isOverriddenText && $displayText !== '') {
                     $ledState['text'] = $displayText;
+                    $ledState['r']    = 0;
+                    $ledState['g']    = 255;
+                    $ledState['b']    = 0;
                 }
             }
             $ledState['updatedAt'] = now()->toISOString();

@@ -7,7 +7,7 @@ import {
   parseProductionInstant,
 } from '../utils/formatProductionBangkok';
 import StatCard from './StatCard';
-import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive, closeOrder } from '../api/productionApi';
+import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive, closeOrder, dbGetSession } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 
@@ -395,6 +395,17 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
   const [shift,     setShift]     = useState(machineState.shift ?? '');
   const { language } = useLanguage();
   const { t } = useTranslation(language);
+
+  // Fetch shift from DB if SSE was down and machineState.shift is empty
+  useEffect(() => {
+    if (machineState.shift) return;  // already have shift from SSE
+    dbGetSession(machineId)
+      .then((res) => {
+        const s = res?.session?.shift ?? res?.shift ?? '';
+        if (s) setShift(s);
+      })
+      .catch(() => { /* non-critical */ });
+  }, [machineId, machineState.shift]);
   const goodCount       = machineState.pipeCounter   ?? 0;
   const ngCount         = machineState.ngCount        ?? 0;
   const totalGoodWeight = machineState.totalGoodWeight ?? 0;
@@ -520,30 +531,35 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
           </div>
         </div>
 
-        {/* Shift selector — แสดงเมื่อ shift ว่าง เพื่อให้บันทึก Daily sheet ได้ */}
-        {!machineState.shift && (
-          <div className="mx-6 mb-3 px-4 py-3 bg-yellow-500/10 border border-yellow-500/25 rounded-xl">
-            <p className="text-[11px] text-yellow-400 font-semibold mb-2">
-              เลือกกะ เพื่อบันทึกลง Daily Sheet
-            </p>
-            <div className="flex gap-2">
-              {['A', 'B', 'C'].map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => setShift(s)}
-                  className={`flex-1 py-1.5 rounded-lg text-sm font-bold border transition-all ${
-                    shift === s
-                      ? 'bg-yellow-500/30 border-yellow-400/60 text-yellow-200'
-                      : 'bg-gray-800/60 border-gray-700/50 text-gray-400 hover:border-yellow-500/40 hover:text-yellow-300'
-                  }`}
-                >
-                  กะ {s}
-                </button>
-              ))}
-            </div>
+        {/* Shift selector — แสดงเสมอ เพื่อให้บันทึก Daily Sheet ได้ถูกคอลัมน์ */}
+        <div className={`mx-6 mb-3 px-4 py-3 rounded-xl border ${
+          shift ? 'bg-blue-500/8 border-blue-500/20' : 'bg-yellow-500/10 border-yellow-500/25'
+        }`}>
+          <p className={`text-[11px] font-semibold mb-2 ${shift ? 'text-blue-400' : 'text-yellow-400'}`}>
+            {shift ? `กะ ${shift} · บันทึกลง Daily Sheet` : 'เลือกกะ เพื่อบันทึกลง Daily Sheet'}
+          </p>
+          <div className="flex gap-2">
+            {['A', 'B', 'C'].map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setShift(s)}
+                className={`flex-1 py-1.5 rounded-lg text-sm font-bold border transition-all ${
+                  shift === s
+                    ? 'bg-blue-500/30 border-blue-400/60 text-blue-200'
+                    : 'bg-gray-800/60 border-gray-700/50 text-gray-400 hover:border-blue-500/40 hover:text-blue-300'
+                }`}
+              >
+                กะ {s}
+              </button>
+            ))}
           </div>
-        )}
+          {!shift && (
+            <p className="text-[10px] text-yellow-500/70 mt-1.5">
+              ถ้าไม่เลือกกะ ระบบจะไม่บันทึกจำนวนลง Daily Sheet
+            </p>
+          )}
+        </div>
 
         {/* Error banner */}
         {closeErr && (

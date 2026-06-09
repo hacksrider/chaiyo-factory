@@ -912,6 +912,16 @@ const ProductionMonitoring = () => {
           });
         }
       }
+
+      // ── ส่ง LED command ทันทีเมื่อ session เป็น live ──────────────────────────
+      // กรณี QueueRow ถูก unmount ก่อนที่ polling จะตรวจเจอ scale confirm
+      // ทำให้ onStartProduction ไม่ถูกเรียก — ต้องส่ง LED จากที่นี่แทน
+      if (sess?.mode === 'live') {
+        const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
+        if (cmd) {
+          queueLedCommand(mid, cmd).catch(() => {});
+        }
+      }
     },
     [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState, hasScaleEventsHydrated],
   );
@@ -1852,6 +1862,12 @@ const ProductionMonitoring = () => {
                       const mid = selectedMachineId;
                       if (!mid || !sess) return;
                       applyDbSessionUpdate({ machineId: mid, session: sess });
+                      // ส่ง LED ทันทีเมื่อ session เป็น waiting_scale (scale รับคำสั่งแล้ว)
+                      // เพื่อให้ป้ายไฟแสดงชื่อสินค้าได้เร็วขึ้น
+                      if (sess?.mode === 'live') {
+                        const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
+                        if (cmd) queueLedCommand(mid, cmd).catch(() => {});
+                      }
                       try {
                         const res = await dbGetQueue(mid);
                         if (Array.isArray(res?.queue)) setQueueFromDb(mid, res.queue);
