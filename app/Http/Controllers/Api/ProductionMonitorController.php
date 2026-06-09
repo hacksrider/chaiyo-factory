@@ -1355,6 +1355,32 @@ class ProductionMonitorController extends Controller
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
+     * Allocate monotonic SSE event id (file/database cache safe).
+     *
+     * Cache::increment() often returns 0/false on file driver — clients then never
+     * receive events because stream filters with id > lastId.
+     */
+    private function nextSseEventId(): int
+    {
+        return (int) Cache::lock('sse_counter_lock', 5)->block(3, function () {
+            $current = (int) Cache::get('sse_counter', 0);
+
+            if ($current <= 0) {
+                $maxFromQueue = 0;
+                foreach (Cache::get('sse_queue', []) as $ev) {
+                    $maxFromQueue = max($maxFromQueue, (int) ($ev['id'] ?? 0));
+                }
+                $current = $maxFromQueue;
+            }
+
+            $next = $current + 1;
+            Cache::put('sse_counter', $next, now()->addHours(24));
+
+            return $next;
+        });
+    }
+
+    /**
      * Append an event to the SSE broadcast queue.
      *
      * ทุกครั้งที่ state เปลี่ยน (machine_session / led_state / scale_weight)
@@ -1363,7 +1389,7 @@ class ProductionMonitorController extends Controller
      */
     private function publishEvent(string $type, array $data): void
     {
-        $id     = (int) Cache::increment('sse_counter');
+        $id     = $this->nextSseEventId();
         $events = Cache::get('sse_queue', []);
 
         $events[] = [

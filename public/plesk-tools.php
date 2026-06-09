@@ -237,6 +237,16 @@ if ($action === 'sse-test') {
         $report['sse_counter'] = $counter;
         $report['sse_queue_size'] = count($queue);
         $report['sse_queue_latest_5'] = array_slice($queue, -5);
+
+        $allIdsZero = count($queue) > 0 && array_reduce($queue, fn ($ok, $ev) => $ok && ((int) ($ev['id'] ?? 0)) === 0, true);
+        $report['health'] = [
+            'counter_ok'   => (int) $counter > 0,
+            'all_ids_zero' => $allIdsZero,
+            'broken'       => $allIdsZero || ((int) $counter <= 0 && count($queue) > 0),
+            'hint'         => $allIdsZero
+                ? 'SSE queue มี event แต่ id=0 ทั้งหมด — browser รับไม่ได้ เรียก ?action=sse-reset แล้ว deploy fix ล่าสุด'
+                : null,
+        ];
     } catch (\Throwable $e) {
         $report['sse_queue_error'] = $e->getMessage();
     }
@@ -267,6 +277,29 @@ if ($action === 'sse-test') {
     }
 
     echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ─── sse-reset: ล้าง queue ที่ id=0 เสีย ───────────────────────────────────
+if ($action === 'sse-reset') {
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php\n");
+    }
+    require $vendorAutoload;
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+    Illuminate\Support\Facades\Cache::forget('sse_queue');
+    Illuminate\Support\Facades\Cache::forget('sse_counter');
+    Illuminate\Support\Facades\Cache::forget('sse_counter_lock');
+
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'ok'      => true,
+        'message' => 'SSE queue + counter reset แล้ว — event ใหม่จะได้ id ถูกต้องหลัง deploy fix',
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -311,6 +344,7 @@ echo "Plesk tools — ไม่ต้องใช้ SSH\n\n";
 echo "action=clear-cache      ล้าง bootstrap/cache (config, routes)\n";
 echo "action=clear-all-cache  ล้างทุกอย่าง: cache + views + storage  ← ใช้เมื่อ SSE 401\n";
 echo "action=sse-test         ตรวจ SSE queue + sessions ทั้งหมด (JSON)\n";
+echo "action=sse-reset        ล้าง SSE queue/counter ที่ id=0 เสีย\n";
 echo "action=diagnose         ทดสอบ Google Sheets (JSON)\n";
 echo "action=gas-warm         ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
 echo "action=queue            ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";
