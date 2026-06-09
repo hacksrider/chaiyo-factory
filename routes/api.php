@@ -25,6 +25,11 @@ Route::prefix('machine-log')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('production-monitor')->group(function () {
+    // SSE stream — auth ทำใน method โดยตรง เพื่อหลีกเลี่ยงปัญหา middleware cache บน server
+    // (EventSource ส่ง ?t= query token แทน Authorization header)
+    Route::get('/stream', [ProductionMonitorController::class, 'stream'])
+        ->withoutMiddleware(['throttle:api']);
+
     Route::post('/scale-command/{machineId}', [ProductionMonitorController::class, 'storeScaleCommand']);
     Route::get('/scale-command/{machineId}', [ProductionMonitorController::class, 'fetchScaleCommand']);
     Route::post('/scale-confirm/{machineId}', [ProductionMonitorController::class, 'storeScaleConfirm']);
@@ -62,8 +67,6 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
 
     Route::get('/machine-sessions', [ProductionMonitorController::class, 'fetchAllMachineSessions']);
     Route::get('/state-snapshot', [ProductionMonitorController::class, 'stateSnapshot']);
-    Route::get('/stream', [ProductionMonitorController::class, 'stream'])
-        ->withoutMiddleware(['throttle:api']);
 
     Route::get('/queue/{machineId}', [ProductionMonitorController::class, 'getQueue']);
     Route::get('/session/{machineId}', [ProductionMonitorController::class, 'getSession']);

@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use Laravel\Sanctum\PersonalAccessToken;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Collection;
@@ -102,7 +103,8 @@ class ProductionMonitorController extends Controller
             'weight'    => 'required|numeric|min:0',
         ]);
 
-        return $this->forwardPost('updateWeight', $request->all());
+        // GAS_PRODUCTION_URL ถูกถอดออกแล้ว — ไม่บันทึกลง Sheet รายรายการอีกต่อไป
+        return response()->json(['success' => true]);
     }
 
     /**
@@ -122,7 +124,8 @@ class ProductionMonitorController extends Controller
             'totalNgWeight'    => 'required|numeric|min:0',
         ]);
 
-        return $this->forwardPost('closeOrder', $request->all());
+        // GAS_PRODUCTION_URL ถูกถอดออกแล้ว — ไม่บันทึกลง Sheet อีกต่อไป
+        return response()->json(['success' => true]);
     }
 
     /**
@@ -1388,8 +1391,58 @@ class ProductionMonitorController extends Controller
      *   Nginx: proxy_buffering off;  proxy_read_timeout 60;
      *   PHP-FPM: pm.max_children ควรมากพอ (เพิ่ม 1 ต่อ browser tab)
      */
+    /**
+     * ตรวจสอบ auth สำหรับ SSE โดยตรง (ไม่พึ่ง sanctum.query middleware)
+     *
+     * EventSource ส่ง ?t= query param เพราะไม่สามารถ set custom headers ได้
+     * วิธีนี้ทำงานได้แน่นอนแม้ route cache / opcache จะเป็นรุ่นเก่า
+     */
+    private function authorizeStream(Request $request): bool
+    {
+        // 1) ถ้า middleware ทำงานสำเร็จแล้ว (session / Bearer header)
+        if (auth('sanctum')->check()) {
+            return true;
+        }
+
+        // 2) ?t= base64url-encoded Sanctum token
+        $raw = (string) $request->query('t', '');
+        if ($raw !== '') {
+            $b64    = strtr($raw, '-_', '+/');
+            $padLen = (4 - (strlen($b64) % 4)) % 4;
+            if ($padLen > 0) {
+                $b64 .= str_repeat('=', $padLen);
+            }
+            $decoded = base64_decode($b64, true);
+            if ($decoded !== false && $decoded !== '') {
+                $tokenModel = PersonalAccessToken::findToken($decoded);
+                if ($tokenModel !== null) {
+                    return true;
+                }
+            }
+        }
+
+        // 3) legacy ?token= plain token
+        $plain = (string) $request->query('token', '');
+        if ($plain !== '') {
+            if (PersonalAccessToken::findToken($plain) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public function stream(Request $request): void
     {
+        // Auth check แบบ in-method — ไม่พึ่ง sanctum.query middleware
+        // เพื่อให้ทำงานได้แน่นอนแม้ route cache บน server จะเก่า
+        if (!$this->authorizeStream($request)) {
+            http_response_code(401);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['message' => 'Unauthenticated.']);
+            return;
+        }
+
         // Disable all output buffering layers
         while (ob_get_level() > 0) {
             ob_end_clean();
