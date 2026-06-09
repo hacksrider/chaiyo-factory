@@ -1221,13 +1221,25 @@ class ProductionMonitorController extends Controller
         if (empty($this->gasPlanUrl)) {
             return response()->json(['success' => false, 'message' => 'GAS_PLAN_URL is not configured.'], 503);
         }
+        $machineId = (string) $request->input('machineId', '');
+        $jobNo = (string) $request->input('jobNo', '');
+        $date = (string) $request->input('date', '');
+        $shift = (string) $request->input('shift', '');
+        $produced = (int) $request->input('produced', 0);
         $payload = [
             'action'    => 'updateDailyProduced',
-            'machineId' => $request->input('machineId', ''),
-            'jobNo'     => $request->input('jobNo', ''),
-            'date'      => $request->input('date', ''),
-            'shift'     => $request->input('shift', ''),
-            'produced'  => (int) $request->input('produced', 0),
+            // canonical keys
+            'machineId' => $machineId,
+            'jobNo'     => $jobNo,
+            'date'      => $date,
+            'shift'     => $shift,
+            'produced'  => $produced,
+            // compatibility aliases for older GAS scripts
+            'machine'   => $machineId,
+            'orderId'   => $jobNo,
+            'planDate'  => $date,
+            'qty'       => $produced,
+            'goodCount' => $produced,
         ];
         $result = $this->fetchFromGasPost($payload, $this->gasPlanUrl);
         if (isset($result['_error'])) {
@@ -1947,6 +1959,7 @@ class ProductionMonitorController extends Controller
         Cache::forget("machine_session_{$machineId}");
         Cache::forget("session_confirm_{$machineId}");
         $this->finalizeScaleCachesForIdle($machineId);
+        $this->resetLedToWaitingState($machineId);
 
         $this->publishEvent('session_updated', [
             'machineId' => $machineId,
@@ -2110,6 +2123,37 @@ class ProductionMonitorController extends Controller
     }
 
     /**
+     * Force LED to waiting/idle state after finish/cancel.
+     * This is server-side safety-net when browser command is dropped.
+     */
+    private function resetLedToWaitingState(string $machineId): void
+    {
+        $ledState = Cache::get("led_state_{$machineId}");
+        $ledState = is_array($ledState) ? $ledState : [];
+
+        $next = array_merge($ledState, [
+            'text'         => 'ออเดอร์ครบ/รออเดอร์',
+            'r'            => 0,
+            'g'            => 220,
+            'b'            => 50,
+            'fontSize'     => 1,
+            'speed'        => 50,
+            'actual'       => '0',
+            'target'       => '0',
+            'textOverride' => false,
+            'showClock'    => false,
+            'updatedAt'    => now()->toISOString(),
+        ]);
+
+        Cache::put("led_cmd_{$machineId}", $next, now()->addMinutes(5));
+        Cache::put("led_state_{$machineId}", $next, now()->addDays(30));
+        $this->publishEvent('led_state', [
+            'machineId' => $machineId,
+            'state'     => $next,
+        ]);
+    }
+
+    /**
      * POST /api/production-monitor/finish/{machineId}
      *
      * จบงาน: status → finished, คัดลอกข้อมูลไป production_orders
@@ -2252,6 +2296,7 @@ class ProductionMonitorController extends Controller
         }
 
         $this->finalizeScaleCachesForIdle($machineId);
+        $this->resetLedToWaitingState($machineId);
 
         $state = $session->fresh()->toFrontendState();
 

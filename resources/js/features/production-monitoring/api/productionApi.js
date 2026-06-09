@@ -422,6 +422,8 @@ export const LED_PREP_PAYLOAD = {
   speed: 50,
   actual: '0',
   target: '0',
+  textOverride: false,
+  showClock: false,
 };
 
 /**

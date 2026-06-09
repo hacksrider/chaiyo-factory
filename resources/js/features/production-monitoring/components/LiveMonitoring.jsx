@@ -453,7 +453,7 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       return;
     }
 
-    // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต (fire-and-forget + retry)
+    // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต
     if (machineState.orderId) {
       // ใช้ planDate (วันที่ของแถว Plan ที่กดเพิ่มคิว) ก่อน
       // fallback → startedAt → วันนี้
@@ -463,25 +463,49 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
 
       // 2a) Daily sheet — กะ A/B/C (ต้องการ shift เพื่อรู้ว่าอัปเดตคอลัมน์ไหน)
       const effectiveShift = shift || machineState.shift || '';
-      if (effectiveShift) {
-        fireAndRetry(() => updateDailyProduced({
-          machineId,
-          jobNo:    machineState.orderId,
-          date:     prodDate,
-          shift:    effectiveShift,
-          produced: goodCount,
-        }));
+      if (!effectiveShift) {
+        setCloseErr('ไม่พบข้อมูลกะ (Shift) จึงยังอัปเดต Daily Sheet ไม่ได้');
+      } else {
+        try {
+          await updateDailyProduced({
+            machineId,
+            jobNo:    machineState.orderId,
+            date:     prodDate,
+            shift:    effectiveShift,
+            produced: goodCount,
+          });
+        } catch {
+          // retry in background if first attempt fails
+          fireAndRetry(() => updateDailyProduced({
+            machineId,
+            jobNo:    machineState.orderId,
+            date:     prodDate,
+            shift:    effectiveShift,
+            produced: goodCount,
+          }));
+        }
       }
 
       // 2b) แผนการผลิต sheet — ไม่ต้องการ shift, บวกสะสมจำนวน + น้ำหนัก + รหัสพนักงาน
-      fireAndRetry(() => updatePlanProduced({
-        jobNo:       machineState.orderId,
-        date:        prodDate,
-        goodCount:   goodCount,
-        goodWeight:  totalGoodWeight,
-        ngWeight:    totalNgWeight,
-        employeeId:  machineState.employeeId ?? '',
-      }));
+      try {
+        await updatePlanProduced({
+          jobNo:       machineState.orderId,
+          date:        prodDate,
+          goodCount:   goodCount,
+          goodWeight:  totalGoodWeight,
+          ngWeight:    totalNgWeight,
+          employeeId:  machineState.employeeId ?? '',
+        });
+      } catch {
+        fireAndRetry(() => updatePlanProduced({
+          jobNo:       machineState.orderId,
+          date:        prodDate,
+          goodCount:   goodCount,
+          goodWeight:  totalGoodWeight,
+          ngWeight:    totalNgWeight,
+          employeeId:  machineState.employeeId ?? '',
+        }));
+      }
     }
 
     onConfirm();
