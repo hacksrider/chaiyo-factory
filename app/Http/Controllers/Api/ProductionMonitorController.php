@@ -623,7 +623,11 @@ class ProductionMonitorController extends Controller
         Cache::forget("scale_cmd_{$machineId}");
 
         $fresh = $session->fresh();
-        $this->ensureActiveGasOrderForSession($fresh);
+        try {
+            $this->ensureActiveGasOrderForSession($fresh);
+        } catch (\Throwable $e) {
+            Log::warning("storeScaleConfirm ensureActiveGasOrder failed for {$machineId}: " . $e->getMessage());
+        }
         if ($fresh) {
             $state = $fresh->toFrontendState();
             $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
@@ -1404,34 +1408,39 @@ class ProductionMonitorController extends Controller
      */
     private function authorizeStream(Request $request): bool
     {
-        // 1) ถ้า middleware ทำงานสำเร็จแล้ว (session / Bearer header)
-        if (auth('sanctum')->check()) {
-            return true;
-        }
-
-        // 2) ?t= base64url-encoded Sanctum token
-        $raw = (string) $request->query('t', '');
-        if ($raw !== '') {
-            $b64    = strtr($raw, '-_', '+/');
-            $padLen = (4 - (strlen($b64) % 4)) % 4;
-            if ($padLen > 0) {
-                $b64 .= str_repeat('=', $padLen);
+        try {
+            // 1) ถ้า middleware ทำงานสำเร็จแล้ว (session / Bearer header)
+            if (auth('sanctum')->check()) {
+                return true;
             }
-            $decoded = base64_decode($b64, true);
-            if ($decoded !== false && $decoded !== '') {
-                $tokenModel = PersonalAccessToken::findToken($decoded);
-                if ($tokenModel !== null) {
+
+            // 2) ?t= base64url-encoded Sanctum token
+            $raw = (string) $request->query('t', '');
+            if ($raw !== '') {
+                $b64    = strtr($raw, '-_', '+/');
+                $padLen = (4 - (strlen($b64) % 4)) % 4;
+                if ($padLen > 0) {
+                    $b64 .= str_repeat('=', $padLen);
+                }
+                $decoded = base64_decode($b64, true);
+                if ($decoded !== false && $decoded !== '') {
+                    $tokenModel = PersonalAccessToken::findToken($decoded);
+                    if ($tokenModel !== null) {
+                        return true;
+                    }
+                }
+            }
+
+            // 3) legacy ?token= plain token
+            $plain = (string) $request->query('token', '');
+            if ($plain !== '') {
+                if (PersonalAccessToken::findToken($plain) !== null) {
                     return true;
                 }
             }
-        }
-
-        // 3) legacy ?token= plain token
-        $plain = (string) $request->query('token', '');
-        if ($plain !== '') {
-            if (PersonalAccessToken::findToken($plain) !== null) {
-                return true;
-            }
+        } catch (\Throwable $e) {
+            // ถ้า DB หรือ Sanctum model throw — log แล้ว deny (ดีกว่า 500 crash)
+            \Illuminate\Support\Facades\Log::warning('authorizeStream error: '.$e->getMessage());
         }
 
         return false;

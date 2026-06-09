@@ -215,6 +215,61 @@ if ($action === 'clear-all-cache') {
     exit;
 }
 
+// ─── sse-test: ทดสอบ auth + session state ─────────────────────────────────
+if ($action === 'sse-test') {
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php\n");
+    }
+    require $vendorAutoload;
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+    header('Content-Type: application/json; charset=utf-8');
+
+    $report = [];
+
+    // 1) Check SSE queue
+    try {
+        $counter = Illuminate\Support\Facades\Cache::get('sse_counter', 0);
+        $queue   = Illuminate\Support\Facades\Cache::get('sse_queue', []);
+        $report['sse_counter'] = $counter;
+        $report['sse_queue_size'] = count($queue);
+        $report['sse_queue_latest_5'] = array_slice($queue, -5);
+    } catch (\Throwable $e) {
+        $report['sse_queue_error'] = $e->getMessage();
+    }
+
+    // 2) Check all production sessions
+    try {
+        $sessions = \App\Models\ProductionSession::whereNotIn('status', ['finished', 'cancelled'])
+            ->get(['machine_id', 'status', 'order_id', 'shift', 'employee_id', 'ts'])
+            ->toArray();
+        $report['active_sessions'] = $sessions;
+    } catch (\Throwable $e) {
+        $report['active_sessions_error'] = $e->getMessage();
+    }
+
+    // 3) Test token auth (if ?token= provided)
+    $testToken = $_GET['token'] ?? '';
+    if ($testToken !== '') {
+        try {
+            $tokenModel = \Laravel\Sanctum\PersonalAccessToken::findToken($testToken);
+            $report['token_valid'] = $tokenModel !== null;
+            if ($tokenModel) {
+                $report['token_user_id'] = $tokenModel->tokenable_id;
+                $report['token_name']    = $tokenModel->name;
+            }
+        } catch (\Throwable $e) {
+            $report['token_error'] = $e->getMessage();
+        }
+    }
+
+    echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if ($action === 'diagnose') {
     $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
     $googleClientFile = dirname(__DIR__).'/vendor/google/apiclient/src/Client.php';
@@ -255,6 +310,7 @@ if ($action === 'diagnose') {
 echo "Plesk tools — ไม่ต้องใช้ SSH\n\n";
 echo "action=clear-cache      ล้าง bootstrap/cache (config, routes)\n";
 echo "action=clear-all-cache  ล้างทุกอย่าง: cache + views + storage  ← ใช้เมื่อ SSE 401\n";
+echo "action=sse-test         ตรวจ SSE queue + sessions ทั้งหมด (JSON)\n";
 echo "action=diagnose         ทดสอบ Google Sheets (JSON)\n";
 echo "action=gas-warm         ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
 echo "action=queue            ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";

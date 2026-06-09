@@ -415,6 +415,44 @@ const ProductionMonitoring = () => {
   const machineState = selectedMachineId ? getMachineState(selectedMachineId) : null;
   const isLive = machineState?.mode === 'live';
 
+  // ── Safety-net poll while waitingScale ──────────────────────────────────────
+  // QueueRow's built-in poll stops when the component unmounts (queue item removed).
+  // This independent effect keeps polling dbGetSession every 3 s while the selected
+  // machine is in awaiting_scale, so the page always transitions to live mode even
+  // when SSE is unavailable.
+  const awaitingScaleRef = useRef(false);
+  useEffect(() => {
+    const mid = selectedMachineId;
+    const isWaiting = Boolean(machineState?.waitingScale) && !isLive;
+    awaitingScaleRef.current = isWaiting;
+    if (!mid || !isWaiting) return undefined;
+
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled || awaitingScaleRef.current === false) return;
+      try {
+        const res = await dbGetSession(mid);
+        if (cancelled) return;
+        if (!res?.session) return;
+        const sess = res.session;
+        if (sess.mode === 'live' || sess.waitingScale === false) {
+          applyDbSessionUpdate({ machineId: mid, session: sess });
+          if (sess.mode === 'live') {
+            const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
+            if (cmd) queueLedCommand(mid, cmd).catch(() => {});
+          }
+        }
+      } catch { /* รอ tick ถัดไป */ }
+    };
+
+    const id = setInterval(() => void poll(), 3_000);
+    void poll();
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMachineId, Boolean(machineState?.waitingScale), isLive]);
 
   const liveScalePollResumeSinceId =
     selectedMachineId && machineState?.sessionRunUlid
@@ -732,7 +770,18 @@ const ProductionMonitoring = () => {
         detail: { machineId },
       }));
     }
-  }, [updateMachineState, selectedMachineId]);
+    // ดึง session ล่าสุดจาก DB เพื่อให้แน่ใจว่า mode เปลี่ยนเป็น live
+    // (ในกรณีที่ SSE session_updated ส่งไม่ถึงก่อน confirmed)
+    dbGetSession(machineId).then((res) => {
+      if (!res?.session) return;
+      const sess = res.session;
+      applyDbSessionUpdate({ machineId, session: sess });
+      if (sess.mode === 'live') {
+        const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
+        if (cmd) queueLedCommand(machineId, cmd).catch(() => {});
+      }
+    }).catch(() => {});
+  }, [updateMachineState, selectedMachineId, applyDbSessionUpdate]);
 
   /** อัปเดต pipeCounter/น้ำหนักจากตาชั่ง — ใช้ทั้ง Dashboard และ Live Monitor */
   const applyMachineWeightEvent = useCallback((machineId, type, weight, ev) => {
