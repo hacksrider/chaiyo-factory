@@ -303,6 +303,64 @@ if ($action === 'sse-reset') {
     exit;
 }
 
+// ─── daily-test: ส่ง updateDailyProduced ไป GAS แล้วดู raw response ──────────
+if ($action === 'daily-test') {
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php\n");
+    }
+    require $vendorAutoload;
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+    $gasUrl  = env('GAS_PLAN_URL', '');
+    $machineId = $_GET['machine']  ?? 'EM 08';
+    $jobNo     = $_GET['jobNo']    ?? '6905185';
+    $date      = $_GET['date']     ?? date('Y-m-d');
+    $shift     = $_GET['shift']    ?? 'A';
+    $produced  = (int) ($_GET['produced'] ?? 1);
+
+    header('Content-Type: application/json; charset=utf-8');
+
+    if (empty($gasUrl)) {
+        echo json_encode(['error' => 'GAS_PLAN_URL is not set in .env'], JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    $payload = [
+        'action'    => 'updateDailyProduced',
+        'machineId' => $machineId,
+        'jobNo'     => $jobNo,
+        'date'      => $date,
+        'shift'     => $shift,
+        'produced'  => $produced,
+        'machine'   => $machineId,
+        'orderId'   => $jobNo,
+        'planDate'  => $date,
+        'qty'       => $produced,
+        'goodCount' => $produced,
+    ];
+
+    try {
+        $response = Illuminate\Support\Facades\Http::withoutVerifying()
+            ->withOptions(['allow_redirects' => ['max' => 10, 'strict' => false, 'protocols' => ['https', 'http']]])
+            ->timeout(60)
+            ->asJson()
+            ->post($gasUrl, $payload);
+
+        echo json_encode([
+            'sent'         => $payload,
+            'http_status'  => $response->status(),
+            'raw_body'     => substr($response->body(), 0, 2000),
+            'parsed'       => $response->json(),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        echo json_encode(['error' => $e->getMessage()], JSON_PRETTY_PRINT);
+    }
+    exit;
+}
+
 if ($action === 'diagnose') {
     $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
     $googleClientFile = dirname(__DIR__).'/vendor/google/apiclient/src/Client.php';

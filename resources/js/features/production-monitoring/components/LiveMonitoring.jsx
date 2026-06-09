@@ -637,6 +637,7 @@ const LiveMonitoring = ({
   onCloseAndStart,
   onRemoveFromQueue, // optional: ลบรายการคิวออกจาก DB เมื่อ Live
   onCancelOrder,
+  sseHandledScaleEventsRef, // Set<dedupKey> — events ที่ index.jsx ประมวลแล้ว (ไม่ต้องเรียก onWeightUpdate ซ้ำ)
 }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
@@ -690,14 +691,19 @@ const LiveMonitoring = ({
   // (pace indicator ถูกลบออก — ไม่เหมาะสำหรับงานหลายประเภทที่ความเร็วต่างกัน)
 
   // ── Process a single scale weight event (dedup + dispatch) ──────────────
-  const processScaleEvent = useCallback((ev) => {
+  // skipStateUpdate = true เมื่อ index.jsx ประมวล event นี้ผ่าน SSE ไปแล้ว
+  // (ป้องกัน double-count: index + LiveMonitoring เรียก applyMachineWeightEvent ซ้ำกัน)
+  const processScaleEvent = useCallback((ev, { skipStateUpdate = false } = {}) => {
     const dedupKey = scaleEventDedupKey(ev);
     if (!dedupKey || seenEventsRef.current.has(dedupKey)) return;
     seenEventsRef.current.add(dedupKey);
 
     const weight = parseFloat(ev.weight) || 0;
     const type   = ev.type === 'good' ? 'good' : 'ng';
-    onWeightUpdateRef.current(type, weight, ev);
+
+    if (!skipStateUpdate) {
+      onWeightUpdateRef.current(type, weight, ev);
+    }
     if (type === 'good') {
       showToast('success', `ของดี ✓  ${weight} kg`);
     } else {
@@ -712,11 +718,15 @@ const LiveMonitoring = ({
     const handler = (e) => {
       if (e.detail?.machineId !== machineId) return;
       const ev = e.detail?.event;
-      if (ev) processScaleEvent(ev);
+      if (!ev) return;
+      // ถ้า index.jsx เรียก applyMachineWeightEvent ไปแล้ว (SSE path) → แค่แสดง toast
+      const alreadyHandled = e.detail?._handled
+        || sseHandledScaleEventsRef?.current?.has(scaleEventDedupKey(ev));
+      processScaleEvent(ev, { skipStateUpdate: alreadyHandled });
     };
     window.addEventListener('sse:scale_weight', handler);
     return () => window.removeEventListener('sse:scale_weight', handler);
-  }, [machineId, processScaleEvent]);
+  }, [machineId, processScaleEvent, sseHandledScaleEventsRef]);
 
   // ── Listen for production_updated (GAS write confirmed) ──────────────────
   // index.jsx broadcasts this after the backend emits the SSE event.

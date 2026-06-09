@@ -562,6 +562,14 @@ const ProductionMonitoring = () => {
   const seenScaleEventsRef = useRef(new Map());
   const seenScaleEventsPruneTickRef = useRef(0);
 
+  // Ref ที่ LiveMonitoring ใช้เพื่อรู้ว่า index.jsx ประมวล event นี้ไปแล้ว
+  // → LiveMonitoring จะแสดง toast เท่านั้น ไม่เรียก onWeightUpdate ซ้ำ
+  const sseHandledScaleEventsRef = useRef(new Set());
+
+  // Keep a ref to the currently selected machineId for use inside callbacks
+  const selectedMachineIdRef = useRef(selectedMachineId);
+  useEffect(() => { selectedMachineIdRef.current = selectedMachineId; }, [selectedMachineId]);
+
   /**
    * โหลดรายการ production_weight_events ใส่ goodEvents/ngEvents (ไม่ใช้ +1 pipeCounter — เก็บตรง DB แล้ว)
    * + เก็บ sinceId เพื่อ poll อย่ามาอ่านย้อนของเก่ารอบเดียวกัน
@@ -894,10 +902,18 @@ const ProductionMonitoring = () => {
 
     const weight = parseFloat(ev.weight) || 0;
     const type = ev.type === 'good' ? 'good' : 'ng';
+
+    // อัป state ใน index.jsx เสมอ (ใช้สำหรับ Dashboard และเครื่องที่ไม่ได้เปิด LiveMonitoring)
     applyMachineWeightEvent(machineId, type, weight, ev);
 
+    // แจ้ง LiveMonitoring ว่า index.jsx ได้ประมวลแล้ว → ไม่ต้องเรียก onWeightUpdate ซ้ำ
+    // แต่ยังต้องการ toast ใน LiveMonitoring อยู่
+    sseHandledScaleEventsRef.current.add(dedupKey);
+    // ล้าง key เก่าเกิน 5 วินาทีเพื่อไม่ให้ Set โต
+    setTimeout(() => sseHandledScaleEventsRef.current.delete(dedupKey), 5_000);
+
     window.dispatchEvent(new CustomEvent('sse:scale_weight', {
-      detail: { machineId, event: ev },
+      detail: { machineId, event: ev, _handled: true },
     }));
   }, [applyMachineWeightEvent]);
 
@@ -1783,6 +1799,7 @@ const ProductionMonitoring = () => {
                     machineState={machineState}
                     resumeScalePollSinceId={liveScalePollResumeSinceId}
                     canManageProduction={canManageProduction}
+                    sseHandledScaleEventsRef={sseHandledScaleEventsRef}
                     onWeightUpdate={(type, weight, ev) => {
                       applyMachineWeightEvent(selectedMachineId, type, weight, ev);
                     }}
