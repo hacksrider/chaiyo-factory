@@ -45,36 +45,24 @@ struct LedCmd {
 // ประกาศฟังก์ชันล่วงหน้าเพื่อให้คอมไพเลอร์รู้จักก่อนเรียกใช้งาน
 void updateTextProperties();
 void pollTask(void* pv);
-bool connectBestWifi();
+bool connectWifi();
 void processSerialCommand();
 void drawAndScrollText();
 String buildFingerprintFromLedCmd(const LedCmd& c);
-void handleTemp(); // ฟังก์ชันสำหรับส่งค่าอุณหภูมิออกหน้าเว็บ
+void handleTemp();
+void handleRoot();
 
 // ======================================================================
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
-#define MACHINE_ID  "EM 06"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
+#define MACHINE_ID  "EM 20"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
 
-// ── รายการ WiFi ที่รู้จัก ─────────────────────────────────────────────
-struct WifiProfile {
-  const char* ssid;
-  const char* pass;
-  const char* serverUrl;
-};
-
-const WifiProfile WIFI_PROFILES[] = {
-  { "AP-Office", "Info2024",  "https://www.chaiyo-factory.com" },
-  { "KANOK-AP",  "kanok2564", "https://www.chaiyo-factory.com" },
-};
-const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
-
-// Static IP config ตาม AP
-const IPAddress STATIC_GW_AP_OFFICE(192, 168, 3,   1);
-const IPAddress STATIC_GW_KANOK_AP (192, 168, 103, 1);
-const IPAddress STATIC_SUBNET      (255, 255, 255, 0);
-const IPAddress STATIC_DNS1        (8, 8, 8, 8);
-const IPAddress STATIC_DNS2        (8, 8, 4, 4);
+// ── WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น) ──────────
+// IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
+// บอร์ดใช้ DHCP ปกติ — ถ้า IT ผูก MAC แล้วจะได้ IP คงที่อัตโนมัติ
+#define WIFI_SSID   "KANOK-AP"
+#define WIFI_PASS   "kanok2564"
+#define WIFI_SERVER "https://www.chaiyo-factory.com"
 
 const char* MACHINE_ID_LIST[] = {
   "EM 01","EM 02","EM 03","EM 04","EM 05","EM 06","EM 07","EM 08",
@@ -521,6 +509,7 @@ void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString()
+              + "\",\"mac\":\"" + WiFi.macAddress()
               + "\",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -542,13 +531,44 @@ void handleMeasure() {
   server.send(200, "application/json", resp);
 }
 
-// ─── ➕ ฟังก์ชันหน้าเว็บส่งค่าอุณหภูมิ ───
+// ─── ฟังก์ชันหน้าเว็บส่งค่าอุณหภูมิ ───
 void handleTemp() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString()
+              + "\",\"mac\":\"" + WiFi.macAddress()
               + "\",\"cpu_temperature_c\":" + String(g_internalTempC, 1) + "}";
   server.send(200, "application/json", resp);
+}
+
+// ─── หน้าเว็บหลัก (/) แสดงข้อมูลบอร์ด: IP, MAC Address ──────────────
+void handleRoot() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String ip  = WiFi.localIP().toString();
+  String mac = WiFi.macAddress();
+  String html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>LED Panel " + String(MACHINE_ID) + "</title>"
+    "<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px;}"
+    "h2{color:#333}table{border-collapse:collapse;width:100%}"
+    "td{padding:8px 12px;border:1px solid #ddd}td:first-child{font-weight:bold;background:#f5f5f5}"
+    "a{color:#0066cc}hr{margin:20px 0}</style></head><body>"
+    "<h2>&#128204; LED Panel: " + String(MACHINE_ID) + "</h2>"
+    "<table>"
+    "<tr><td>Machine ID</td><td>" + String(MACHINE_ID) + "</td></tr>"
+    "<tr><td>IP Address</td><td>" + ip + "</td></tr>"
+    "<tr><td>MAC Address</td><td><b>" + mac + "</b></td></tr>"
+    "<tr><td>WiFi</td><td>KANOK-AP</td></tr>"
+    "<tr><td>Text บนป้าย</td><td>" + currentText + "</td></tr>"
+    "</table>"
+    "<hr>"
+    "<p><a href='/status'>&#128200; Status JSON</a> &nbsp;|&nbsp; "
+    "<a href='/temp'>&#127777;&#65039; Temperature</a> &nbsp;|&nbsp; "
+    "<a href='/update'>&#128640; OTA Update</a></p>"
+    "</body></html>";
+  server.send(200, "text/html", html);
 }
 
 void applyDefaultLedVisual() {
@@ -622,93 +642,67 @@ bool syncLedDisplayFromServer() {
   return true;
 }
 
-bool connectBestWifi() {
-  WiFi.persistent(false);       
-  WiFi.disconnect(true);        
+bool connectWifi() {
+  WiFi.persistent(false);
+  WiFi.disconnect(true);
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);         
-  WiFi.setAutoReconnect(true);  
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  vTaskDelay(pdMS_TO_TICKS(300)); 
+  vTaskDelay(pdMS_TO_TICKS(300));
 
-  Serial.println("[WiFi] Scanning...");
-  int found = WiFi.scanNetworks();
-  Serial.printf("[WiFi] พบ %d เครือข่าย\n", found);
-
-  int bestProfileIdx = -1;
-  int bestRssi       = -9999;
-
-  for (int s = 0; s < found; s++) {
-    String ssid = WiFi.SSID(s);
-    int    rssi = WiFi.RSSI(s);
-    bool   known = false;
-    for (int p = 0; p < WIFI_PROFILE_COUNT; p++) {
-      if (ssid == WIFI_PROFILES[p].ssid) {
-        known = true;
-        if (rssi > bestRssi) { bestRssi = rssi; bestProfileIdx = p; }
-      }
-    }
-    if (known) Serial.printf("  ✓ %-22s  RSSI=%d\n", ssid.c_str(), rssi);
-  }
-  WiFi.scanDelete(); 
-  vTaskDelay(pdMS_TO_TICKS(300)); 
-
-  if (bestProfileIdx < 0) {
-    Serial.println("[WiFi] ไม่พบ WiFi ที่รู้จักในรายการ!");
-    return false;
-  }
-
-  const WifiProfile& net = WIFI_PROFILES[bestProfileIdx];
-  Serial.printf("[WiFi] เลือก \"%s\"  RSSI=%d\n", net.ssid, bestRssi);
-
-  int midx = getMachineIndex();
-  if (midx >= 0) {
-    uint8_t lastOctet = (uint8_t)(101 + midx); 
-    bool isKanok = (strcmp(net.ssid, "KANOK-AP") == 0);
-    IPAddress staticIp(192, 168, isKanok ? 103 : 3, lastOctet);
-    IPAddress gw = isKanok ? STATIC_GW_KANOK_AP : STATIC_GW_AP_OFFICE;
-    WiFi.config(staticIp, gw, STATIC_SUBNET, STATIC_DNS1, STATIC_DNS2);
-    Serial.printf("[WiFi] Static IP: %s\n", staticIp.toString().c_str());
-  }
+  // ใช้ DHCP — IT สามารถ fix IP ได้ผ่าน DHCP Reservation ที่ Router โดยใช้ MAC Address
+  // บอร์ดนี้เชื่อมเฉพาะ KANOK-AP เท่านั้น
+  Serial.printf("[WiFi] Connecting to \"%s\" ...\n", WIFI_SSID);
+  Serial.printf("[WiFi] MAC Address: %s\n", WiFi.macAddress().c_str());
 
   if (dma_display) {
     currentText     = "กำลังเชื่อมต่อ..";
     currentFontSize = 1;
-    currentColor    = dma_display->color565(255, 140, 0); 
+    currentColor    = dma_display->color565(255, 140, 0);
     updateTextProperties();
   }
 
-  WiFi.begin(net.ssid, net.pass);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("[WiFi] Connecting");
 
   int tries = 0;
   int failedCount = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 60) { 
-    vTaskDelay(pdMS_TO_TICKS(500)); 
+  while (WiFi.status() != WL_CONNECTED && tries < 60) {
+    vTaskDelay(pdMS_TO_TICKS(500));
     Serial.print(".");
     tries++;
     if (WiFi.status() == WL_CONNECT_FAILED) {
       failedCount++;
       if (failedCount >= 5) return false;
       WiFi.disconnect(false);
-      vTaskDelay(pdMS_TO_TICKS(1000)); 
-      WiFi.begin(net.ssid, net.pass);
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
     }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    g_serverUrl = net.serverUrl;
-    vTaskDelay(pdMS_TO_TICKS(1500)); 
+    g_serverUrl = WIFI_SERVER;
+    Serial.printf("\n[WiFi] ✓ Connected! IP: %s  MAC: %s\n",
+                  WiFi.localIP().toString().c_str(),
+                  WiFi.macAddress().c_str());
+    vTaskDelay(pdMS_TO_TICKS(1500));
     syncNtpIfNeeded();
     syncLedDisplayFromServer();
     return true;
   }
+  Serial.println("\n[WiFi] Connection failed");
   return false;
 }
 
 void setup() {
   Serial.begin(115200);
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  // แสดง MAC Address ทันทีตอนเปิดเครื่อง (ก่อน WiFi เชื่อม) — ให้ IT นำไป fix IP ที่ Router
+  WiFi.mode(WIFI_STA);
+  Serial.printf("[BOOT] Machine ID : %s\n", MACHINE_ID);
+  Serial.printf("[BOOT] MAC Address: %s\n", WiFi.macAddress().c_str());
 
   HUB75_I2S_CFG mxconfig(PANEL_RES_X, PANEL_RES_Y, PANEL_CHAIN);
   dma_display = new MatrixPanel_I2S_DMA(mxconfig);
@@ -726,8 +720,8 @@ void setup() {
 
   bool wifiOk = false;
   for (int bootTry = 0; bootTry < 10 && !wifiOk; bootTry++) {
-    if (bootTry > 0) delay(3000); 
-    wifiOk = connectBestWifi();
+    if (bootTry > 0) delay(3000);
+    wifiOk = connectWifi();
   }
   if (wifiOk) syncNtpIfNeeded(true);
 
@@ -739,10 +733,11 @@ void setup() {
   }
 
   // ลงทะเบียนหน้าเว็บ Endpoint ต่างๆ
+  server.on("/",        HTTP_ANY, handleRoot);   // หน้าหลัก — แสดง IP + MAC Address
   server.on("/led",     HTTP_ANY, handleLed);
   server.on("/status",  HTTP_ANY, handleStatus);
   server.on("/measure", HTTP_ANY, handleMeasure);
-  server.on("/temp",    HTTP_ANY, handleTemp); // ─── ➕ เพิ่มลิงก์ดูอุณหภูมิบนเว็บ ───
+  server.on("/temp",    HTTP_ANY, handleTemp);
   
   ElegantOTA.begin(&server);
   server.begin();
@@ -822,7 +817,7 @@ void pollTask(void* pv) {
           WiFi.reconnect();
           for (int i = 0; i < 16 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(500));
         }
-        if (WiFi.status() != WL_CONNECTED) connectBestWifi();
+        if (WiFi.status() != WL_CONNECTED) connectWifi();
         if (WiFi.status() != WL_CONNECTED) {
           uint32_t next = min(wifiBackoffMs * 2, WIFI_BACKOFF_MAX_MS);
           int32_t jitter = (int32_t)(next * 0.2f) * (random(0, 200) - 100) / 100;

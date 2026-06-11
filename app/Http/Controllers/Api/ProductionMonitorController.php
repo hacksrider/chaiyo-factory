@@ -1221,25 +1221,27 @@ class ProductionMonitorController extends Controller
         if (empty($this->gasPlanUrl)) {
             return response()->json(['success' => false, 'message' => 'GAS_PLAN_URL is not configured.'], 503);
         }
-        $machineId = (string) $request->input('machineId', '');
-        $jobNo = (string) $request->input('jobNo', '');
-        $date = (string) $request->input('date', '');
-        $shift = (string) $request->input('shift', '');
-        $produced = (int) $request->input('produced', 0);
+        $machineId   = (string) $request->input('machineId', '');
+        $jobNo       = (string) $request->input('jobNo', '');
+        $date        = (string) $request->input('date', '');
+        $shift       = (string) $request->input('shift', '');
+        $produced    = (int)    $request->input('produced', 0);
+        $productCode = (string) $request->input('productCode', '');
         $payload = [
-            'action'    => 'updateDailyProduced',
+            'action'      => 'updateDailyProduced',
             // canonical keys
-            'machineId' => $machineId,
-            'jobNo'     => $jobNo,
-            'date'      => $date,
-            'shift'     => $shift,
-            'produced'  => $produced,
+            'machineId'   => $machineId,
+            'jobNo'       => $jobNo,
+            'date'        => $date,
+            'shift'       => $shift,
+            'produced'    => $produced,
+            'productCode' => $productCode,
             // compatibility aliases for older GAS scripts
-            'machine'   => $machineId,
-            'orderId'   => $jobNo,
-            'planDate'  => $date,
-            'qty'       => $produced,
-            'goodCount' => $produced,
+            'machine'     => $machineId,
+            'orderId'     => $jobNo,
+            'planDate'    => $date,
+            'qty'         => $produced,
+            'goodCount'   => $produced,
         ];
         $result = $this->fetchFromGasPost($payload, $this->gasPlanUrl);
         if (isset($result['_error'])) {

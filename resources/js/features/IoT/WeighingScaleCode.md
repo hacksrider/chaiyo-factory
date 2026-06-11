@@ -72,18 +72,12 @@
 // ======================================================================
 #define MACHINE_ID  "EM 21"   // รหัสเครื่อง (ต้องตรงกับ Machine ID ในชีต Settings)
 
-struct WifiProfile {
-  const char* ssid;
-  const char* pass;
-  const char* serverUrl;  // https://www.chaiyo-factory.com — server หลัก (เดียวกันทุก network)
-};
-
-// AP-Office และ KANOK-AP route ถึงกันได้ → ใช้ server URL เดียวกันทุก network
-const WifiProfile WIFI_PROFILES[] = {
-  { "AP-Office", "Info2024",   "https://www.chaiyo-factory.com" },
-  { "KANOK-AP",  "kanok2564",  "https://www.chaiyo-factory.com" },
-};
-const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
+// WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น)
+// IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
+// บอร์ดใช้ DHCP ปกติ — ถ้า IT ผูก MAC แล้วจะได้ IP คงที่อัตโนมัติ
+#define WIFI_SSID   "KANOK-AP"
+#define WIFI_PASS   "kanok2564"
+#define WIFI_SERVER "https://www.chaiyo-factory.com"
 // ======================================================================
 
 // ─── Hardware ──────────────────────────────────────────────────────────
@@ -200,43 +194,22 @@ bool loadProductionSessionFromNVS();
 bool syncWithScaleLive();
 void pollScaleLiveFromServer();
 String getIsoTime();
+void handleScaleStatus(); // หน้าเว็บแสดง IP + MAC Address
 
 // ======================================================================
-//  WiFi — สแกนแล้วเลือก SSID ที่ RSSI ดีที่สุด
+//  WiFi — เชื่อม KANOK-AP เท่านั้น (ใช้ DHCP รองรับ DHCP Reservation)
 // ======================================================================
 void connectWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(300);
 
-  Serial.println("[WiFi] Scanning...");
-  int n = WiFi.scanNetworks();
-  int bestProfile = -1;
-  int bestRssi    = -9999;
+  // ใช้ DHCP — IT สามารถ fix IP ได้โดยผูก MAC กับ IP ที่ Router (DHCP Reservation)
+  g_serverUrl = WIFI_SERVER;
+  Serial.printf("[WiFi] กำลังเชื่อม \"%s\" ...\n", WIFI_SSID);
+  Serial.printf("[WiFi] MAC Address: %s\n", WiFi.macAddress().c_str());
 
-  for (int i = 0; i < n; i++) {
-    String ssid = WiFi.SSID(i);
-    int    rssi = WiFi.RSSI(i);
-    for (int p = 0; p < WIFI_PROFILE_COUNT; p++) {
-      if (ssid == WIFI_PROFILES[p].ssid && rssi > bestRssi) {
-        bestProfile = p;
-        bestRssi    = rssi;
-      }
-    }
-  }
-  WiFi.scanDelete();
-
-  if (bestProfile < 0) {
-    Serial.println("[WiFi] ไม่พบ WiFi ที่รู้จัก");
-    g_wifiOk = false;
-    return;
-  }
-
-  const WifiProfile& prof = WIFI_PROFILES[bestProfile];
-  g_serverUrl = String(prof.serverUrl);
-  WiFi.begin(prof.ssid, prof.pass);
-
-  Serial.printf("[WiFi] กำลังเชื่อม %s ...\n", prof.ssid);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
   int tries = 0;
   while (WiFi.status() != WL_CONNECTED && tries < 24) {
     delay(500);
@@ -247,11 +220,11 @@ void connectWifi() {
 
   g_wifiOk = (WiFi.status() == WL_CONNECTED);
   if (g_wifiOk) {
-    Serial.println("[WiFi] ✓ " + WiFi.localIP().toString());
+    Serial.printf("[WiFi] ✓ IP: %s  MAC: %s\n",
+                  WiFi.localIP().toString().c_str(),
+                  WiFi.macAddress().c_str());
     Serial.println("[WiFi] Server: " + g_serverUrl);
-    // ซิงค์เวลาจาก NTP (UTC+7 Bangkok)
     configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
-    // รอให้เวลาตั้งค่าเสร็จ (สูงสุด 3 วินาที)
     struct tm timeinfo;
     int ntpRetry = 0;
     while (!getLocalTime(&timeinfo, 500) && ntpRetry < 6) { ntpRetry++; }
@@ -265,6 +238,36 @@ void connectWifi() {
   } else {
     Serial.println("[WiFi] FAILED");
   }
+}
+
+// ======================================================================
+//  handleScaleStatus — หน้าเว็บแสดงข้อมูลบอร์ด: Machine ID, IP, MAC
+//  เปิดได้ที่ http://<IP>/status
+// ======================================================================
+void handleScaleStatus() {
+  String ip  = g_wifiOk ? WiFi.localIP().toString() : "---";
+  String mac = WiFi.macAddress();
+  String html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Scale " + String(MACHINE_ID) + "</title>"
+    "<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px;}"
+    "h2{color:#333}table{border-collapse:collapse;width:100%}"
+    "td{padding:8px 12px;border:1px solid #ddd}td:first-child{font-weight:bold;background:#f5f5f5}"
+    "a{color:#0066cc}hr{margin:20px 0}</style></head><body>"
+    "<h2>&#9878;&#65039; Weighing Scale: " + String(MACHINE_ID) + "</h2>"
+    "<table>"
+    "<tr><td>Machine ID</td><td>" + String(MACHINE_ID) + "</td></tr>"
+    "<tr><td>IP Address</td><td>" + ip + "</td></tr>"
+    "<tr><td>MAC Address</td><td><b>" + mac + "</b></td></tr>"
+    "<tr><td>WiFi</td><td>KANOK-AP</td></tr>"
+    "<tr><td>WiFi Status</td><td>" + String(g_wifiOk ? "Connected" : "Disconnected") + "</td></tr>"
+    "</table>"
+    "<hr>"
+    "<p><a href='/update'>&#128640; OTA Firmware Update</a></p>"
+    "</body></html>";
+  otaServer.send(200, "text/html", html);
 }
 
 // ======================================================================
@@ -481,20 +484,36 @@ void setup() {
   lcd.init();
   lcd.backlight();
 
+  // แสดง MAC Address ทันทีตอนเปิดเครื่อง — ให้ IT นำไป fix IP ที่ Router
+  WiFi.mode(WIFI_STA);
+  Serial.printf("[BOOT] Machine ID : %s\n", MACHINE_ID);
+  Serial.printf("[BOOT] MAC Address: %s\n", WiFi.macAddress().c_str());
+
   // ── 1. ลอง restore จาก NVS ก่อน (เร็วสุด — ไม่ต้องรอ WiFi) ──────────────
   bool nvsRestored = loadProductionSessionFromNVS();
 
   // ── 2. ต่อ WiFi + NTP ─────────────────────────────────────────────────────
   if (nvsRestored) {
-    // แสดง LCD ก่อนรอ WiFi ทันที ไม่ต้องให้ผู้ใช้รอนาน
     renderLcd();
     lcd.setCursor(0, 3); lcd.print("WiFi connecting...  ");
   }
   connectWifi();
+
+  // แสดง MAC Address บน LCD บรรทัดที่ 4 ชั่วคราว (~4 วินาที) ก่อนแสดง IP ปกติ
+  // เพื่อให้ผู้ดูแลระบบจดบันทึก MAC ได้ (ก่อนที่ IT จะผูก IP ที่ Router)
+  {
+    String macLine = "M:" + WiFi.macAddress();  // "M:AA:BB:CC:DD:EE:FF" = 19 chars
+    while (macLine.length() < 20) macLine += ' ';
+    lcd.setCursor(0, 3);
+    lcd.print(macLine.substring(0, 20));
+    delay(4000);
+  }
+
   // OTA firmware update ผ่านหน้าเว็บ: http://<ESP_IP>/update
+  otaServer.on("/status", HTTP_ANY, handleScaleStatus); // หน้าแสดง IP + MAC
   ElegantOTA.begin(&otaServer);
   otaServer.begin();
-  Serial.println("[OTA] ready at /update");
+  Serial.println("[OTA] ready — http://<IP>/update  |  http://<IP>/status");
 
   // ── 3. sync กับ /scale-live เสมอ (ทั้ง NVS restored และไม่ restored)
   //    เว็บเป็น source of truth — ถ้าเว็บบอก live=false → clear NVS → IDLE

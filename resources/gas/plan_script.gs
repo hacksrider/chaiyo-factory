@@ -113,14 +113,15 @@ function updateDailyProduced(params) {
   var sheet = ss.getSheetByName(DAILY_SHEET);
   if (!sheet) return { success: false, error: 'ไม่พบ Sheet: ' + DAILY_SHEET };
 
-  var targetMachine = String(params.machineId || params.machine || '').trim();
-  var targetJobNo   = String(params.jobNo || params.orderId || '').trim();
-  var targetDate    = String(params.date || params.planDate || '').trim(); // yyyy-MM-dd CE
-  var shift         = String(params.shift || '').toUpperCase().trim(); // A/B/C
-  var produced      = Number(params.produced || params.goodCount || params.qty || 0);
+  var targetMachine  = String(params.machineId || params.machine || '').trim();
+  var targetJobNo    = String(params.jobNo || params.orderId || '').trim();
+  var targetDate     = String(params.date || params.planDate || '').trim(); // yyyy-MM-dd CE — บังคับ
+  var targetProdCode = String(params.productCode || params.prodCode || '').trim(); // รหัสสินค้า — บังคับถ้าส่งมา
+  var shift          = String(params.shift || '').toUpperCase().trim(); // A/B/C
+  var produced       = Number(params.produced || params.goodCount || params.qty || 0);
 
-  if (!targetMachine || !targetJobNo || !shift) {
-    return { success: false, error: 'Missing required params: machineId, jobNo, shift' };
+  if (!targetMachine || !targetJobNo || !targetDate || !shift) {
+    return { success: false, error: 'Missing required params: machineId, jobNo, date, shift' };
   }
 
   var lastRow = sheet.getLastRow();
@@ -151,13 +152,14 @@ function updateDailyProduced(params) {
     return -1;
   }
 
-  var IDX_DATE    = ph('วันที่', 'Date')                         >= 0 ? ph('วันที่', 'Date')                         :  0;
-  var IDX_MACHINE = ph('Mc No.', 'MachineID', 'เครื่อง', 'EM')   >= 0 ? ph('Mc No.', 'MachineID', 'เครื่อง', 'EM')   :  3;
-  var IDX_JOBNO   = ph('เลขใบขอ', 'JobNo', 'Job No')             >= 0 ? ph('เลขใบขอ', 'JobNo', 'Job No')             :  4;
-  var IDX_SHIFT_A = ph('กะA', 'กะ A', 'ShiftA', 'A')             >= 0 ? ph('กะA', 'กะ A', 'ShiftA', 'A')             : 12;
-  var IDX_SHIFT_B = ph('กะB', 'กะ B', 'ShiftB', 'B')             >= 0 ? ph('กะB', 'กะ B', 'ShiftB', 'B')             : 13;
-  var IDX_SHIFT_C = ph('กะC', 'กะ C', 'ShiftC', 'C')             >= 0 ? ph('กะC', 'กะ C', 'ShiftC', 'C')             : 14;
-  var IDX_TOTAL   = ph('รวม', 'Total')                            >= 0 ? ph('รวม', 'Total')                            : 15;
+  var IDX_DATE     = ph('วันที่', 'Date')                          >= 0 ? ph('วันที่', 'Date')                          :  0;
+  var IDX_MACHINE  = ph('Mc No.', 'MachineID', 'เครื่อง', 'EM')   >= 0 ? ph('Mc No.', 'MachineID', 'เครื่อง', 'EM')   :  3;
+  var IDX_JOBNO    = ph('เลขใบขอ', 'JobNo', 'Job No')              >= 0 ? ph('เลขใบขอ', 'JobNo', 'Job No')              :  4;
+  var IDX_PRODCODE = ph('รหัสสินค้า', 'Product', 'ProductCode')    >= 0 ? ph('รหัสสินค้า', 'Product', 'ProductCode')    :  5;
+  var IDX_SHIFT_A  = ph('กะA', 'กะ A', 'ShiftA', 'A')              >= 0 ? ph('กะA', 'กะ A', 'ShiftA', 'A')              : 12;
+  var IDX_SHIFT_B  = ph('กะB', 'กะ B', 'ShiftB', 'B')              >= 0 ? ph('กะB', 'กะ B', 'ShiftB', 'B')              : 13;
+  var IDX_SHIFT_C  = ph('กะC', 'กะ C', 'ShiftC', 'C')              >= 0 ? ph('กะC', 'กะ C', 'ShiftC', 'C')              : 14;
+  var IDX_TOTAL    = ph('รวม', 'Total')                             >= 0 ? ph('รวม', 'Total')                             : 15;
 
   var shiftColIdx = shift === 'A' ? IDX_SHIFT_A : shift === 'B' ? IDX_SHIFT_B : IDX_SHIFT_C;
   if (shiftColIdx < 0) return { success: false, error: 'ไม่พบ column กะ ' + shift };
@@ -183,50 +185,39 @@ function updateDailyProduced(params) {
   var dataRows = lastRow - startDataRow;
   var data     = dataRows > 0 ? sheet.getRange(startDataRow, 1, dataRows, lastCol).getValues() : [];
   var lastDate = '';
-  var matched       = []; // sheet row numbers (1-indexed) ที่ machine+jobNo+date ตรง
-  var noDateMatched = []; // machine+jobNo ตรง แต่ date ไม่ตรง (fallback)
-  var debugDates    = []; // samples เพื่อ debug
+  var matched  = []; // sheet row numbers (1-indexed) ที่ตรงครบทุกเงื่อนไข
 
   for (var i = 0; i < data.length; i++) {
     var row = data[i];
 
-    // Forward-fill date — ใช้ parseDailyDate_ ที่รองรับทั้ง Date object และ string BE/CE
+    // Forward-fill date — รองรับทั้ง Date object และ string BE/CE
     var parsedDate = parseDailyDate_(row[IDX_DATE]);
     if (parsedDate) lastDate = parsedDate;
 
-    var rowMachine = String(row[IDX_MACHINE] || '').trim();
-    var rowJobNo   = String(row[IDX_JOBNO]   || '').trim();
+    // บังคับตรงครบ 4 อย่าง: วันที่ + Mc No. + เลขใบขอ + รหัสสินค้า
+    if (lastDate !== targetDate) continue;
+    if (String(row[IDX_MACHINE]  || '').trim() !== targetMachine)  continue;
+    if (String(row[IDX_JOBNO]    || '').trim() !== targetJobNo)    continue;
+    // รหัสสินค้า: ตรวจเฉพาะเมื่อ frontend ส่งมา (ป้องกัน legacy call ที่ไม่มี field นี้)
+    if (targetProdCode && String(row[IDX_PRODCODE] || '').trim() !== targetProdCode) continue;
 
-    if (rowMachine === targetMachine && rowJobNo === targetJobNo) {
-      if (debugDates.length < 5) debugDates.push(lastDate);
-      var dateMatch = !targetDate || lastDate === targetDate;
-      if (dateMatch) {
-        matched.push(startDataRow + i); // 1-indexed sheet row
-      } else {
-        noDateMatched.push(startDataRow + i);
-      }
-    }
-  }
-
-  // Fallback: ถ้าไม่เจอด้วย date → ใช้ machine+jobNo อย่างเดียว (date อาจ format ต่างกัน)
-  var usedFallback = false;
-  if (matched.length === 0 && noDateMatched.length > 0) {
-    matched = noDateMatched;
-    usedFallback = true;
+    matched.push(startDataRow + i); // 1-indexed sheet row
   }
 
   if (matched.length === 0) {
     return {
-      success:    false,
-      error:      'ไม่พบแถวที่ตรงกับ ' + targetMachine + ' / ' + targetJobNo + ' / ' + targetDate,
+      success: false,
+      error:   'ไม่พบแถวที่ตรงกับ ' + targetMachine + ' / ' + targetJobNo
+               + ' / ' + targetDate + ' / ' + (targetProdCode || '-'),
       debug: {
-        idxDate:    IDX_DATE,
-        idxMachine: IDX_MACHINE,
-        idxJobNo:   IDX_JOBNO,
-        foundDatesForThisJob: debugDates,
-        targetDate: targetDate,
+        idxDate:      IDX_DATE,
+        idxMachine:   IDX_MACHINE,
+        idxJobNo:     IDX_JOBNO,
+        idxProdCode:  IDX_PRODCODE,
+        targetDate:   targetDate,
+        targetProdCode: targetProdCode,
         lastScannedDate: lastDate,
-        headerMap: H,
+        headerMap:    H,
       },
     };
   }
@@ -256,7 +247,7 @@ function updateDailyProduced(params) {
     updated++;
   }
 
-  return { success: true, updated: updated, rows: matched, usedFallback: usedFallback };
+  return { success: true, updated: updated, rows: matched };
 }
 
 // ─── updatePlanProduced ───────────────────────────────────────────────────────

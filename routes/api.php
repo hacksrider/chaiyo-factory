@@ -21,12 +21,11 @@ Route::prefix('machine-log')->group(function () {
 
 /*
 |--------------------------------------------------------------------------
-| Production Monitor — อุปกรณ์/ตาชั่งไม่มี token (เหมือนเดิม)
+| Production Monitor — อุปกรณ์/ตาชั่ง (ไม่ต้อง login)
 |--------------------------------------------------------------------------
 */
 Route::prefix('production-monitor')->group(function () {
-    // SSE stream — auth ทำใน method โดยตรง เพื่อหลีกเลี่ยงปัญหา middleware cache บน server
-    // (EventSource ส่ง ?t= query token แทน Authorization header)
+    // SSE stream — auth ทำใน method โดยตรง
     Route::get('/stream', [ProductionMonitorController::class, 'stream'])
         ->withoutMiddleware(['throttle:api']);
 

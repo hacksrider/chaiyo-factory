@@ -7,7 +7,7 @@ import {
   parseProductionInstant,
 } from '../utils/formatProductionBangkok';
 import StatCard from './StatCard';
-import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive, closeOrder, dbGetSession } from '../api/productionApi';
+import { fetchScaleWeights, updateDailyProduced, updatePlanProduced, dbFinishSession, storeScaleLive, closeOrder, dbGetSession, queueLedCommand, LED_PREP_PAYLOAD } from '../api/productionApi';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 
@@ -446,6 +446,9 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         skipGasDispatch: true,
       });
       await storeScaleLive(machineId, { live: false });
+      // Reset ป้ายไฟทันทีหลัง session จบ — ก่อน GAS calls ที่อาจช้า 30-90s
+      // server ก็ resetLedToWaitingState แล้ว แต่ถ้า ESP32 miss ช่วงนั้น frontend ส่งซ้ำเป็น backup
+      queueLedCommand(machineId, LED_PREP_PAYLOAD).catch(() => {});
     } catch (err) {
       setCloseErr(t('production.finishDbSessionFailed', { msg: err?.message ?? '' }));
       setClosing(false);
@@ -473,19 +476,21 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         try {
           await updateDailyProduced({
             machineId,
-            jobNo:    machineState.orderId,
-            date:     prodDate,
-            shift:    effectiveShift,
-            produced: goodCount,
+            jobNo:        machineState.orderId,
+            date:         prodDate,
+            shift:        effectiveShift,
+            produced:     goodCount,
+            productCode:  machineState.productCode ?? '',
           });
         } catch {
           // retry in background if first attempt fails
           fireAndRetry(() => updateDailyProduced({
             machineId,
-            jobNo:    machineState.orderId,
-            date:     prodDate,
-            shift:    effectiveShift,
-            produced: goodCount,
+            jobNo:        machineState.orderId,
+            date:         prodDate,
+            shift:        effectiveShift,
+            produced:     goodCount,
+            productCode:  machineState.productCode ?? '',
           }));
         }
       }
