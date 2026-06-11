@@ -1247,6 +1247,18 @@ class ProductionMonitorController extends Controller
         if (isset($result['_error'])) {
             return response()->json(['success' => false, 'message' => $result['_error']], $result['_status'] ?? 502);
         }
+        // GAS คืน success:false (HTTP 200) → log warning เพื่อ debug
+        if (isset($result['success']) && $result['success'] === false) {
+            Log::warning('updateDailyProduced: GAS row not found', [
+                'machineId'   => $machineId,
+                'jobNo'       => $jobNo,
+                'date'        => $date,
+                'shift'       => $shift,
+                'productCode' => $productCode,
+                'gasError'    => $result['error']  ?? null,
+                'gasDebug'    => $result['debug']  ?? null,
+            ]);
+        }
         return response()->json($result);
     }
 

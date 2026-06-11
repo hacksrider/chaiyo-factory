@@ -459,13 +459,15 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
     // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต
     if (machineState.orderId) {
       // ใช้ planDate (วันที่ของแถว Plan ที่กดเพิ่มคิว) ก่อน
-      // fallback → startedAt → วันนี้ (Bangkok timezone — ป้องกันผิดวันตอนเที่ยงคืน)
-      const _bangkokToday = () => {
-        const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      // fallback → startedAt (แปลงเป็น Bangkok timezone ป้องกัน UTC vs ICT ผิดวัน) → วันนี้
+      const _toBangkokDate = (iso) => {
+        try {
+          return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+        } catch { return ''; }
       };
+      const _bangkokToday = () => _toBangkokDate(new Date().toISOString());
       const prodDate = machineState.planDate
-        || (machineState.startedAt ? machineState.startedAt.slice(0, 10) : '')
+        || (machineState.startedAt ? _toBangkokDate(machineState.startedAt) : '')
         || _bangkokToday();
 
       // 2a) Daily sheet — กะ A/B/C (ต้องการ shift เพื่อรู้ว่าอัปเดตคอลัมน์ไหน)
@@ -473,25 +475,23 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       if (!effectiveShift) {
         setCloseErr('ไม่พบข้อมูลกะ (Shift) จึงยังอัปเดต Daily Sheet ไม่ได้');
       } else {
+        const _dailyPayload = {
+          machineId,
+          jobNo:        machineState.orderId,
+          date:         prodDate,
+          shift:        effectiveShift,
+          produced:     goodCount,
+          productCode:  machineState.productCode ?? '',
+        };
         try {
-          await updateDailyProduced({
-            machineId,
-            jobNo:        machineState.orderId,
-            date:         prodDate,
-            shift:        effectiveShift,
-            produced:     goodCount,
-            productCode:  machineState.productCode ?? '',
-          });
+          const dailyRes = await updateDailyProduced(_dailyPayload);
+          // GAS อาจ return { success: false } พร้อม HTTP 200 — log ให้เห็นใน console
+          if (dailyRes && dailyRes.success === false) {
+            console.warn('[Daily] updateDailyProduced ไม่พบแถว:', dailyRes.error, dailyRes.debug ?? '');
+          }
         } catch {
           // retry in background if first attempt fails
-          fireAndRetry(() => updateDailyProduced({
-            machineId,
-            jobNo:        machineState.orderId,
-            date:         prodDate,
-            shift:        effectiveShift,
-            produced:     goodCount,
-            productCode:  machineState.productCode ?? '',
-          }));
+          fireAndRetry(() => updateDailyProduced(_dailyPayload));
         }
       }
 

@@ -205,19 +205,43 @@ function updateDailyProduced(params) {
   }
 
   if (matched.length === 0) {
+    // รวบรวม sample rows ที่ jobNo ตรงแต่ field อื่นไม่ตรง เพื่อช่วย debug
+    var sampleNearMatch = [];
+    for (var si = 0; si < data.length && sampleNearMatch.length < 5; si++) {
+      var sRow = data[si];
+      if (String(sRow[IDX_JOBNO] || '').trim() === targetJobNo) {
+        var sDate = '';
+        var sParsed = parseDailyDate_(sRow[IDX_DATE]);
+        if (sParsed) sDate = sParsed;
+        sampleNearMatch.push({
+          sheetRow:   startDataRow + si,
+          dateCell:   String(sRow[IDX_DATE] || ''),
+          parsedDate: sDate,
+          machine:    String(sRow[IDX_MACHINE]  || '').trim(),
+          jobNo:      String(sRow[IDX_JOBNO]    || '').trim(),
+          prodCode:   String(sRow[IDX_PRODCODE] || '').trim(),
+        });
+      }
+    }
     return {
       success: false,
       error:   'ไม่พบแถวที่ตรงกับ ' + targetMachine + ' / ' + targetJobNo
                + ' / ' + targetDate + ' / ' + (targetProdCode || '-'),
       debug: {
-        idxDate:      IDX_DATE,
-        idxMachine:   IDX_MACHINE,
-        idxJobNo:     IDX_JOBNO,
-        idxProdCode:  IDX_PRODCODE,
-        targetDate:   targetDate,
-        targetProdCode: targetProdCode,
+        idxDate:         IDX_DATE,
+        idxMachine:      IDX_MACHINE,
+        idxJobNo:        IDX_JOBNO,
+        idxProdCode:     IDX_PRODCODE,
+        targetMachine:   targetMachine,
+        targetJobNo:     targetJobNo,
+        targetDate:      targetDate,
+        targetProdCode:  targetProdCode,
         lastScannedDate: lastDate,
-        headerMap:    H,
+        startDataRow:    startDataRow,
+        totalDataRows:   data.length,
+        headerMap:       H,
+        // แถวที่ jobNo ตรงแต่ field อื่นอาจไม่ตรง — ดูว่า date/machine/prodCode ใน sheet เป็นอะไร
+        sampleNearMatch: sampleNearMatch,
       },
     };
   }
