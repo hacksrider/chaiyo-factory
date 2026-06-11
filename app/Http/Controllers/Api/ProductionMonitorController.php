@@ -1416,7 +1416,7 @@ class ProductionMonitorController extends Controller
             $events = array_slice($events, -1000);
         }
 
-        Cache::put('sse_queue', $events, now()->addMinutes(5));
+        Cache::put('sse_queue', $events, now()->addMinutes(30));
     }
 
     /**

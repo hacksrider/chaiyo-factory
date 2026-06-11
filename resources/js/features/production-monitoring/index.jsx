@@ -1869,6 +1869,11 @@ const ProductionMonitoring = () => {
                         ledIp:        item.ledIp     ?? selectedMachine.ledIp,
                       });
                       if (item.queueId) handleDbRemoveFromQueue(mid, item.queueId);
+
+                      // ดึง state จริงจาก DB หลัง startSession — ไม่ force mode:'live'
+                      // เพราะ backend อาจตั้งเป็น awaiting_scale ถ้ายังไม่มี shift/employee
+                      const freshSess = await dbGetSession(mid).catch(() => null);
+                      const freshMode = freshSess?.session?.mode ?? freshSess?.mode ?? 'awaiting_scale';
                       updateMachineState(mid, {
                         orderId:      item.orderId,
                         productCode:  item.productCode || '',
@@ -1878,14 +1883,18 @@ const ProductionMonitoring = () => {
                         planDate:     item.planDate     ?? '',
                         sheetName:    item.sheetName ?? selectedMachine.sheetName,
                         ledIp:        item.ledIp     ?? selectedMachine.ledIp,
-                        mode:         'live',
+                        mode:         freshMode,
+                        waitingScale: freshMode === 'awaiting_scale',
                         pipeCounter:  0,
                         lastWeight:   null,
                         lastWeightAt: null,
                         startedAt:    new Date().toISOString(),
                         pausedOrder:  null,
                       });
-                      queueProductionLedForMachine(mid, { ...item }, 0).catch(() => {});
+                      // ส่งคำสั่ง LED เฉพาะตอนที่ live จริงๆ (มีกะ+พนักงาน)
+                      if (freshMode === 'live') {
+                        queueProductionLedForMachine(mid, { ...item }, 0).catch(() => {});
+                      }
                       logStartNow({
                         machineId:    mid,
                         machineLabel: selectedMachine.label,

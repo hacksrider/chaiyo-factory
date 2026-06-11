@@ -111,17 +111,23 @@ function plesk_clear_all_cache(): array
 }
 
 $expectedKey = plesk_read_diagnose_key();
-$provided = (string) ($_GET['key'] ?? '');
-$action = (string) ($_GET['action'] ?? 'help');
+$provided    = (string) ($_GET['key'] ?? '');
+$action      = (string) ($_GET['action'] ?? 'help');
 
 if ($expectedKey === '' || $provided === '' || ! hash_equals($expectedKey, $provided)) {
     http_response_code(403);
-    exit("Forbidden\n\nตั้ง MAINTENANCE_DIAGNOSE_KEY ใน .env ก่อน\n".
-        "ตัวอย่าง: MAINTENANCE_DIAGNOSE_KEY=mySecretKey2026\n\n".
-        "แล้วเปิด:\n  plesk-tools.php?key=mySecretKey2026&action=clear-cache\n".
-        "  plesk-tools.php?key=mySecretKey2026&action=diagnose\n".
-        "  plesk-tools.php?key=mySecretKey2026&action=gas-warm\n".
-        "  plesk-tools.php?key=mySecretKey2026&action=queue\n");
+    exit("Forbidden\n\nตั้ง MAINTENANCE_DIAGNOSE_KEY ใน .env ก่อน\n");
+}
+
+// Actions ที่เป็น write/destructive ต้องใส่ ?confirm=yes กันกด Error
+$writeActions = ['clear-cache', 'clear-all-cache', 'sse-reset', 'daily-test', 'queue'];
+if (in_array($action, $writeActions, true) && ($_GET['confirm'] ?? '') !== 'yes') {
+    http_response_code(400);
+    header('Content-Type: application/json; charset=utf-8');
+    exit(json_encode([
+        'error'   => "action '{$action}' เป็น write/destructive — ต้องใส่ &confirm=yes ด้วย",
+        'example' => "?key=...&action={$action}&confirm=yes",
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
 
 if ($action === 'gas-warm') {
@@ -399,6 +405,52 @@ if ($action === 'daily-sample') {
     exit;
 }
 
+// ─── housekeeping-test: รัน production:housekeeping ผ่าน Laravel (debug cron error) ─
+if ($action === 'housekeeping-test') {
+    $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
+    if (! is_file($vendorAutoload)) {
+        http_response_code(500);
+        exit("ไม่พบ vendor/autoload.php\n");
+    }
+    require $vendorAutoload;
+    $app = require dirname(__DIR__).'/bootstrap/app.php';
+    $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+    $kernel->bootstrap();
+
+    header('Content-Type: application/json; charset=utf-8');
+
+    $cmdFile = dirname(__DIR__).'/app/Console/Commands/ProductionHousekeeping.php';
+    $dryRun  = ($_GET['dry'] ?? 'yes') !== 'no';
+
+    try {
+        $exitCode = Illuminate\Support\Facades\Artisan::call('production:housekeeping', array_filter([
+            '--dry-run'       => $dryRun,
+            '--stuck-minutes' => $_GET['stuck-minutes'] ?? null,
+            '--retain-days'   => $_GET['retain-days'] ?? null,
+        ]));
+
+        echo json_encode([
+            'ok'                  => $exitCode === 0,
+            'exit_code'           => $exitCode,
+            'dry_run'             => $dryRun,
+            'command_file_exists' => is_file($cmdFile),
+            'command_file'        => $cmdFile,
+            'php_binary'          => PHP_BINARY,
+            'base_path'           => base_path(),
+            'output'              => Illuminate\Support\Facades\Artisan::output(),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'ok'                  => false,
+            'command_file_exists' => is_file($cmdFile),
+            'error'               => $e->getMessage(),
+            'trace'               => $e->getTraceAsString(),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
 if ($action === 'diagnose') {
     $vendorAutoload = dirname(__DIR__).'/vendor/autoload.php';
     $googleClientFile = dirname(__DIR__).'/vendor/google/apiclient/src/Client.php';
@@ -443,6 +495,7 @@ echo "action=sse-test         ตรวจ SSE queue + sessions ทั้งห�
 echo "action=sse-reset        ล้าง SSE queue/counter ที่ id=0 เสีย\n";
 echo "action=daily-test       ทดสอบ updateDailyProduced → GAS (JSON)\n";
 echo "action=daily-sample     ดู raw 15 แถวแรกของ Daily sheet (debug format วันที่)\n";
+echo "action=housekeeping-test ทดสอบ production:housekeeping (debug cron error)\n";
 echo "action=diagnose         ทดสอบ Google Sheets (JSON)\n";
 echo "action=gas-warm         ปิง GAS ให้อุ่น (ลดความช้าตอนกดเสร็จสิ้น — ตั้ง Cron ทุก 10 นาที)\n";
 echo "action=queue            ประมวลผล Laravel queue (ถ้าใช้ background job)\n\n";

@@ -456,10 +456,14 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
     // 2) อัปเดตช่องกะใน Daily sheet + แผนการผลิต
     if (machineState.orderId) {
       // ใช้ planDate (วันที่ของแถว Plan ที่กดเพิ่มคิว) ก่อน
-      // fallback → startedAt → วันนี้
+      // fallback → startedAt → วันนี้ (Bangkok timezone — ป้องกันผิดวันตอนเที่ยงคืน)
+      const _bangkokToday = () => {
+        const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      };
       const prodDate = machineState.planDate
         || (machineState.startedAt ? machineState.startedAt.slice(0, 10) : '')
-        || new Date().toISOString().slice(0, 10);
+        || _bangkokToday();
 
       // 2a) Daily sheet — กะ A/B/C (ต้องการ shift เพื่อรู้ว่าอัปเดตคอลัมน์ไหน)
       const effectiveShift = shift || machineState.shift || '';

@@ -231,20 +231,26 @@ function updateDailyProduced(params) {
     };
   }
 
-  // อัปเดตทุก row ที่ match
+  // อัปเดตทุก row ที่ match — สะสม (accumulate) ไม่ใช่ทับ (overwrite)
+  // เพราะออเดอร์เดียวกันอาจผลิตหลายรอบในกะเดียวกัน
   var updated = 0;
   for (var m = 0; m < matched.length; m++) {
     var sheetRow = matched[m];
-    sheet.getRange(sheetRow, shiftColIdx + 1).setValue(produced);
+    var rowData  = sheet.getRange(sheetRow, 1, 1, lastCol).getValues()[0];
 
+    // บวกสะสมค่ากะที่เลือก (ไม่ทับค่าเดิม)
+    var prevShiftVal = Number(rowData[shiftColIdx]) || 0;
+    var newShiftVal  = prevShiftVal + produced;
+    sheet.getRange(sheetRow, shiftColIdx + 1).setValue(newShiftVal);
+
+    // คำนวณ total ใหม่ = กะ A + B + C (ใช้ค่าที่เพิ่งอัปเดต)
     if (IDX_TOTAL >= 0) {
-      var rowData = sheet.getRange(sheetRow, 1, 1, lastCol).getValues()[0];
-      var a   = Number(rowData[IDX_SHIFT_A]) || 0;
-      var b   = Number(rowData[IDX_SHIFT_B]) || 0;
-      var c_  = Number(rowData[IDX_SHIFT_C]) || 0;
-      if (shift === 'A') a   = produced;
-      if (shift === 'B') b   = produced;
-      if (shift === 'C') c_  = produced;
+      var a  = Number(rowData[IDX_SHIFT_A]) || 0;
+      var b  = Number(rowData[IDX_SHIFT_B]) || 0;
+      var c_ = Number(rowData[IDX_SHIFT_C]) || 0;
+      if (shift === 'A') a  = newShiftVal;
+      if (shift === 'B') b  = newShiftVal;
+      if (shift === 'C') c_ = newShiftVal;
       sheet.getRange(sheetRow, IDX_TOTAL + 1).setValue(a + b + c_);
     }
     updated++;
