@@ -261,8 +261,17 @@ export const useProductionStates = () => {
         const localGood  = Array.isArray(localState?.goodEvents) ? localState.goodEvents  : [];
         const serverNg   = Array.isArray(serverState.ngEvents)   ? serverState.ngEvents   : [];
         const localNg    = Array.isArray(localState?.ngEvents)   ? localState.ngEvents    : [];
-        const mergedGood = serverGood.length >= localGood.length ? serverGood : localGood;
-        const mergedNg   = serverNg.length   >= localNg.length   ? serverNg   : localNg;
+        // ถ้า sessionRunUlid เปลี่ยน → รอบใหม่ ห้ามนำ goodEvents/ngEvents จากรอบเก่ามาต่อ
+        const sessionChanged =
+          serverState.sessionRunUlid &&
+          localState?.sessionRunUlid &&
+          serverState.sessionRunUlid !== localState.sessionRunUlid;
+        const mergedGood = sessionChanged
+          ? serverGood
+          : (serverGood.length >= localGood.length ? serverGood : localGood);
+        const mergedNg = sessionChanged
+          ? serverNg
+          : (serverNg.length >= localNg.length ? serverNg : localNg);
 
         // ── Rule 1: server ปิด/pause งาน → รับทันทีโดยไม่ดู _ts ────────────────
         // ป้องกัน browser อื่นที่ยัง 'live' push ทับ state ที่ปิดแล้ว
@@ -371,15 +380,21 @@ export const useProductionStates = () => {
     if (!session || typeof session !== 'object') return;
     setAllStates((prev) => {
       const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
+      // ถ้า sessionRunUlid เปลี่ยน แสดงว่าเป็นรอบผลิตใหม่ — ล้าง goodEvents/ngEvents จากรอบก่อน
+      // ป้องกันการสะสมยอดนับข้ามรอบ (เช่น รอบก่อน 3 ม้วน + รอบนี้ 4 ม้วน = 7 แสดงผิด)
+      const sessionChanged =
+        session.sessionRunUlid &&
+        current.sessionRunUlid &&
+        current.sessionRunUlid !== session.sessionRunUlid;
       // Always trust DB session — it's authoritative
       return {
         ...prev,
         [machineId]: {
           ...current,
           ...session,
-          // Preserve in-memory events (not persisted in DB state snapshot)
-          goodEvents: current.goodEvents ?? [],
-          ngEvents:   current.ngEvents   ?? [],
+          // Preserve in-memory events only if same session; clear on new session
+          goodEvents: sessionChanged ? [] : (current.goodEvents ?? []),
+          ngEvents:   sessionChanged ? [] : (current.ngEvents   ?? []),
           // ...session มี pipeCounter/ng/น้ำหนักจาก DB — ห้าม Math.max เลข UI (GAS พอง) มีชนะ
           // ค้างผลิตจากแผน — ไม่ลดเมื่อผลิดี; ค่าใน DB เป็นหลักเมื่อ sync มา
           remainingQty:

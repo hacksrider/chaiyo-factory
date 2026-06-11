@@ -222,32 +222,39 @@ function updateDailyProduced(params) {
     };
   }
 
-  // อัปเดตทุก row ที่ match — สะสม (accumulate) ไม่ใช่ทับ (overwrite)
-  // เพราะออเดอร์เดียวกันอาจผลิตหลายรอบในกะเดียวกัน
+  // อัปเดต row ที่ match — เขียนครั้งเดียว (write-once):
+  // ถ้าช่องกะนั้นยังว่าง (0 หรือ empty) ให้บันทึก produced ลงไป
+  // ถ้าช่องมีตัวเลขอยู่แล้ว ให้ข้าม — ป้องกันบันทึกซ้ำจากการทดลองหลายรอบ
   var updated = 0;
+  var skipped = 0;
   for (var m = 0; m < matched.length; m++) {
     var sheetRow = matched[m];
     var rowData  = sheet.getRange(sheetRow, 1, 1, lastCol).getValues()[0];
 
-    // บวกสะสมค่ากะที่เลือก (ไม่ทับค่าเดิม)
     var prevShiftVal = Number(rowData[shiftColIdx]) || 0;
-    var newShiftVal  = prevShiftVal + produced;
-    sheet.getRange(sheetRow, shiftColIdx + 1).setValue(newShiftVal);
+    if (prevShiftVal !== 0) {
+      // ช่องมีค่าอยู่แล้ว — ไม่บันทึกซ้ำ
+      skipped++;
+      continue;
+    }
 
-    // คำนวณ total ใหม่ = กะ A + B + C (ใช้ค่าที่เพิ่งอัปเดต)
+    // ช่องว่าง → บันทึก produced
+    sheet.getRange(sheetRow, shiftColIdx + 1).setValue(produced);
+
+    // คำนวณ total ใหม่ = กะ A + B + C
     if (IDX_TOTAL >= 0) {
       var a  = Number(rowData[IDX_SHIFT_A]) || 0;
       var b  = Number(rowData[IDX_SHIFT_B]) || 0;
       var c_ = Number(rowData[IDX_SHIFT_C]) || 0;
-      if (shift === 'A') a  = newShiftVal;
-      if (shift === 'B') b  = newShiftVal;
-      if (shift === 'C') c_ = newShiftVal;
+      if (shift === 'A') a  = produced;
+      if (shift === 'B') b  = produced;
+      if (shift === 'C') c_ = produced;
       sheet.getRange(sheetRow, IDX_TOTAL + 1).setValue(a + b + c_);
     }
     updated++;
   }
 
-  return { success: true, updated: updated, rows: matched };
+  return { success: true, updated: updated, skipped: skipped, rows: matched };
 }
 
 // ─── updatePlanProduced ───────────────────────────────────────────────────────
