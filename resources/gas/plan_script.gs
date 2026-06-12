@@ -684,7 +684,7 @@ function getDailyPlan(machine, jobNo, sinceDate) {
     startDataRow = Math.max(2, cutoff - 5); // buffer 5 rows for safety (merged cells)
   }
 
-  var dataRows = lastRow - startDataRow;
+  var dataRows = lastRow - startDataRow + 1; // +1 เพื่อรวม lastRow (ป้องกัน off-by-one)
   var data     = dataRows > 0 ? sheet.getRange(startDataRow, 1, dataRows, lastCol).getValues() : [];
   var result   = [];
   var lastDate = '';

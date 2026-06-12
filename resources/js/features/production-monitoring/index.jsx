@@ -875,6 +875,14 @@ const ProductionMonitoring = () => {
         weightRetryQueueRef.current.push({ params: evParams, attempts: 1 });
       });
     }
+
+    // ── อัปเดตป้ายไฟทันทีเมื่อนับของดี (ไม่รอ SSE machine_state) ──────────
+    // SSE อาจ drop ทำให้ LED ไม่อัปเดต — ส่ง LED command หลังทุก good event
+    if (type === 'good' && snapBefore?.mode === 'live') {
+      const newCount = Math.max((snapBefore.pipeCounter ?? 0) + 1, (snapBefore.goodEvents?.length ?? 0) + 1);
+      const cmd = buildProductionLedCommand(snapBefore, newCount);
+      if (cmd) queueLedCommand(machineId, cmd).catch(() => {});
+    }
   }, [updateMachineState, canManageProduction]);
 
   // SSE handler for scale_weight events (real-time weight from scale ESP32)
