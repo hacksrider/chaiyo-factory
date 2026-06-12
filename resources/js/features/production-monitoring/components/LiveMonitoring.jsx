@@ -496,24 +496,22 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
       }
 
       // 2b) แผนการผลิต sheet — ไม่ต้องการ shift, บวกสะสมจำนวน + น้ำหนัก + รหัสพนักงาน
+      const _planPayload = {
+        jobNo:       machineState.orderId,
+        date:        prodDate,
+        goodCount:   goodCount,
+        goodWeight:  totalGoodWeight,
+        ngWeight:    totalNgWeight,
+        employeeId:  machineState.employeeId ?? '',
+      };
       try {
-        await updatePlanProduced({
-          jobNo:       machineState.orderId,
-          date:        prodDate,
-          goodCount:   goodCount,
-          goodWeight:  totalGoodWeight,
-          ngWeight:    totalNgWeight,
-          employeeId:  machineState.employeeId ?? '',
-        });
+        const planRes = await updatePlanProduced(_planPayload);
+        // dateColFound: false = ไม่พบคอลัมวันที่ ใน Sheet แผนการผลิต → goodCount ไม่ถูกบันทึก
+        if (planRes && planRes.dateColFound === false) {
+          console.warn('[Plan] updatePlanProduced: ไม่พบคอลัมวันที่', prodDate, 'ใน Sheet แผนการผลิต — goodCount ไม่ถูกบันทึก');
+        }
       } catch {
-        fireAndRetry(() => updatePlanProduced({
-          jobNo:       machineState.orderId,
-          date:        prodDate,
-          goodCount:   goodCount,
-          goodWeight:  totalGoodWeight,
-          ngWeight:    totalNgWeight,
-          employeeId:  machineState.employeeId ?? '',
-        }));
+        fireAndRetry(() => updatePlanProduced(_planPayload));
       }
     }
 

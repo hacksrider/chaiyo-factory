@@ -182,7 +182,8 @@ function updateDailyProduced(params) {
   }
 
   // ── อ่านเฉพาะ rows ตั้งแต่ startDataRow เป็นต้นไป ──────────────────────
-  var dataRows = lastRow - startDataRow;
+  // +1 เพื่อรวม lastRow ด้วย (ไม่งั้น lastRow จะถูก exclude เสมอ → วันล่าสุดหาย)
+  var dataRows = lastRow - startDataRow + 1;
   var data     = dataRows > 0 ? sheet.getRange(startDataRow, 1, dataRows, lastCol).getValues() : [];
   var lastDate = '';
   var matched  = []; // sheet row numbers (1-indexed) ที่ตรงครบทุกเงื่อนไข
