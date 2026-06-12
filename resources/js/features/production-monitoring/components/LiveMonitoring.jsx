@@ -472,6 +472,18 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
 
       // 2a) Daily sheet — กะ A/B/C (ต้องการ shift เพื่อรู้ว่าอัปเดตคอลัมน์ไหน)
       const effectiveShift = shift || machineState.shift || '';
+      // ── DIAGNOSTIC LOG — ลบออกได้หลัง debug เสร็จ ──────────────────────────
+      console.log('[Daily payload]', {
+        machineId,
+        jobNo:       machineState.orderId,
+        date:        prodDate,
+        shift:       effectiveShift,
+        produced:    goodCount,
+        productCode: machineState.productCode ?? '',
+        planDate:    machineState.planDate,
+        startedAt:   machineState.startedAt,
+      });
+      // ────────────────────────────────────────────────────────────────────────
       if (!effectiveShift) {
         setCloseErr('ไม่พบข้อมูลกะ (Shift) จึงยังอัปเดต Daily Sheet ไม่ได้');
       } else {
@@ -485,11 +497,16 @@ const FinishedOrderModal = ({ machineState, machineId, onConfirm, onCancel }) =>
         };
         try {
           const dailyRes = await updateDailyProduced(_dailyPayload);
-          // GAS อาจ return { success: false } พร้อม HTTP 200 — log ให้เห็นใน console
+          // GAS อาจ return { success: false, skipped } พร้อม HTTP 200 — log ให้เห็นใน console
           if (dailyRes && dailyRes.success === false) {
-            console.warn('[Daily] updateDailyProduced ไม่พบแถว:', dailyRes.error, dailyRes.debug ?? '');
+            console.warn('[Daily] GAS ไม่พบแถว:', dailyRes.error, dailyRes.debug ?? '');
+          } else if (dailyRes && dailyRes.success === true && dailyRes.updated === 0 && dailyRes.skipped > 0) {
+            console.warn('[Daily] write-once: ช่องกะมีค่าอยู่แล้ว — ข้ามการบันทึก', { skipped: dailyRes.skipped, rows: dailyRes.rows });
+          } else if (dailyRes) {
+            console.log('[Daily] GAS result:', dailyRes);
           }
-        } catch {
+        } catch (err) {
+          console.warn('[Daily] network/timeout error — retry in background:', err?.message);
           // retry in background if first attempt fails
           fireAndRetry(() => updateDailyProduced(_dailyPayload));
         }
