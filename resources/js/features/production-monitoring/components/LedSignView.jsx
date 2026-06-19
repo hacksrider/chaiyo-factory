@@ -866,8 +866,48 @@ const StatusBadge = ({ status }) => {
   );
 };
 
+/** ขยาย preview 96×16 ให้เต็มความกว้าง container (คงสัดส่วนป้ายจริง) */
+const LedPreviewScaled = (props) => {
+  const wrapRef = useRef(null);
+  const [scale, setScale] = useState(3);
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => {
+      const w = el.clientWidth;
+      if (w <= 0) return;
+      setScale(Math.max(1.5, Math.min(20, w / LED_NAME_ZONE_PX)));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={wrapRef}
+      className="w-full overflow-hidden rounded-xl bg-[#050505] shadow-[inset_0_0_24px_rgba(0,0,0,0.8)]"
+      style={{ height: Math.ceil(LED_PANEL_H_PX * scale) }}
+    >
+      <div
+        style={{
+          transform:         `scale(${scale})`,
+          transformOrigin:     'top left',
+          width:             LED_NAME_ZONE_PX,
+          height:            LED_PANEL_H_PX,
+          imageRendering:    'pixelated',
+        }}
+      >
+        <LedPreview {...props} bare />
+      </div>
+    </div>
+  );
+};
+
 // ─── LedPreview ───────────────────────────────────────────────────────────────
-const LedPreview = ({ text, colorHex, speed = 10, showClock = false }) => {
+const LedPreview = ({ text, colorHex, speed = 10, showClock = false, bare = false }) => {
   const textRef = useRef(null);
   const [textW, setTextW] = useState(0);
   const [clockText, setClockText] = useState(() => formatPreviewClock());
@@ -924,11 +964,11 @@ const LedPreview = ({ text, colorHex, speed = 10, showClock = false }) => {
         `}</style>
       )}
       <div
-        className="rounded border border-gray-700/50 shrink-0"
+        className={bare ? 'h-full w-full' : 'shrink-0 rounded border border-gray-700/50'}
         style={{
           background:     '#080808',
-          width:          LED_NAME_ZONE_PX,
-          height:         LED_PANEL_H_PX,
+          width:          bare ? '100%' : LED_NAME_ZONE_PX,
+          height:         bare ? '100%' : LED_PANEL_H_PX,
           overflow:       'hidden',
           position:       'relative',
           imageRendering: 'pixelated',
@@ -1035,10 +1075,10 @@ const WiFiBadge = ({ status, onReboot, rebooting = false, canReboot = false, com
 };
 
 const DeviceStat = ({ label, value, valueClass = 'text-white', hint = null }) => (
-  <div className="min-w-0 px-4 py-3">
-    <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
-    <p className={`break-all font-mono text-sm font-semibold leading-snug ${valueClass}`}>{value}</p>
-    {hint && <p className="mt-1 text-[10px] text-gray-600">{hint}</p>}
+  <div className="min-w-0 px-2 py-2 sm:px-4 sm:py-3">
+    <p className="mb-0.5 text-[9px] uppercase tracking-wide text-gray-500 sm:text-[10px]">{label}</p>
+    <p className={`break-all font-mono text-[11px] font-semibold leading-snug sm:text-sm ${valueClass}`}>{value}</p>
+    {hint && <p className="mt-0.5 hidden text-[9px] text-gray-600 sm:block">{hint}</p>}
   </div>
 );
 
@@ -1095,21 +1135,21 @@ const ControlPanel = ({
         : 'border-indigo-500/25 bg-indigo-500/10 text-indigo-300 hover:border-indigo-400/40 hover:bg-indigo-500/20';
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3 sm:gap-4 lg:gap-5">
 
-      {/* ── Device overview (header + telemetry) ── */}
-      <div className={`overflow-hidden rounded-2xl border ${cardTone}`}>
-        <div className="flex flex-col gap-3 border-b border-white/5 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+      {/* ── Device overview ── */}
+      <div className={`overflow-hidden rounded-xl border lg:rounded-2xl ${cardTone}`}>
+        <div className="flex flex-col gap-2 border-b border-white/5 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-4 sm:py-3">
           <div className="min-w-0 flex-1">
-            <p className="mb-0.5 text-[10px] uppercase tracking-widest text-gray-500">{machine?.id}</p>
-            <h3 className="truncate text-xl font-bold leading-tight text-white sm:text-2xl">
+            <p className="text-[10px] uppercase tracking-widest text-gray-500">{machine?.id}</p>
+            <h3 className="truncate text-lg font-bold leading-tight text-white sm:text-xl lg:text-2xl">
               {machine?.label || machine?.id}
             </h3>
             {machine?.zone && (
-              <p className="mt-0.5 truncate text-[11px] text-gray-500">{machine.zone}</p>
+              <p className="truncate text-[11px] text-gray-500">{machine.zone}</p>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          <div className="flex flex-wrap items-center gap-2">
             <WiFiBadge
               status={wifiStatus}
               onReboot={onReboot}
@@ -1134,7 +1174,7 @@ const ControlPanel = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 divide-y divide-white/5 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <div className="grid grid-cols-3 divide-x divide-white/5">
           <DeviceStat
             label={t('production.ledWifiIpLabel')}
             value={deviceLocalIp ?? t('production.ledWifiIpUnknown')}
@@ -1158,13 +1198,13 @@ const ControlPanel = ({
         </div>
 
         {otaUrl && (
-          <div className="flex flex-col gap-2 border-t border-white/5 bg-black/20 px-4 py-2.5 sm:flex-row sm:items-center">
+          <div className="flex flex-col gap-2 border-t border-white/5 bg-black/20 px-3 py-2 sm:flex-row sm:items-center sm:px-4">
             <div className="flex flex-wrap gap-2">
               <a
                 href={otaUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/25"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/25 sm:px-3 sm:py-1.5 sm:text-xs"
               >
                 {t('production.ledOtaOpen')} → /update
               </a>
@@ -1173,13 +1213,13 @@ const ControlPanel = ({
                   href={statusUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-600/50 bg-gray-800/60 px-3 py-1.5 text-xs font-semibold text-gray-300 transition-colors hover:bg-gray-700/60"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-600/50 bg-gray-800/60 px-2.5 py-1 text-[11px] font-semibold text-gray-300 transition-colors hover:bg-gray-700/60 sm:px-3 sm:py-1.5 sm:text-xs"
                 >
                   {t('production.ledDeviceStatusOpen')}
                 </a>
               )}
             </div>
-            <span className="text-[10px] text-gray-500 sm:ml-auto">{t('production.ledOtaHint')}</span>
+            <span className="hidden text-[10px] text-gray-500 sm:ml-auto lg:inline">{t('production.ledOtaHint')}</span>
           </div>
         )}
       </div>
@@ -1194,191 +1234,199 @@ const ControlPanel = ({
         </div>
       )}
 
-      {/* ── แสดงนาฬิกา (ปุ่มบนสุด) ── */}
-      <button
-        type="button"
-        onClick={onClearLed}
-        disabled={!hasIp || clearStatus === 'clearing'}
-        className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
-          !hasIp
-            ? 'bg-gray-700/30 text-gray-600 cursor-not-allowed'
-            : clearStatus === 'clearing'
-            ? 'bg-emerald-500/30 text-emerald-400 cursor-wait'
-            : clearStatus === 'ok'
-            ? 'bg-green-500/20 border border-green-500/40 text-green-300'
-            : clearStatus === 'error'
-            ? 'bg-red-500/20 border border-red-500/40 text-red-300'
-            : showClock
-            ? 'bg-emerald-500/25 border border-emerald-400/50 text-emerald-100 ring-1 ring-emerald-400/30'
-            : 'bg-emerald-500/15 border border-emerald-500/35 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-400/55'
-        }`}
-      >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        {clearStatus === 'clearing'
-          ? t('production.ledClearSending')
-          : clearStatus === 'ok'
-          ? t('production.ledClearOk')
-          : t('production.ledClearBtn')}
-      </button>
+      {/* ── Main: Preview (ใหญ่) + Controls ── */}
+      <div className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-12 lg:gap-5 xl:gap-6">
 
-      {/* ── Color Picker ── */}
-      <div>
-        <label className="text-xs text-gray-400 mb-2 block font-medium">
-          {showClock ? t('production.ledClockColor') : t('production.ledTextColor')}
-        </label>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-          <label className="cursor-pointer flex-shrink-0">
-            <input type="color" value={colorHex} onChange={(e) => onChange('colorHex', e.target.value)} className="sr-only" />
-            <div
-              className="w-10 h-10 rounded-lg border-2 border-white/20 shadow-lg"
-              style={{ background: colorHex, boxShadow: `0 0 10px ${colorHex}66` }}
-            />
-          </label>
-          <div className="flex gap-1.5 flex-wrap flex-1">
-            {COLOR_PRESETS.map(({ hex, label }) => (
-              <button
-                key={hex}
-                type="button"
-                title={label}
-                onClick={() => onChange('colorHex', hex)}
-                className={`w-7 h-7 rounded-md border-2 transition-all ${
-                  colorHex === hex ? 'border-white scale-110 shadow-lg' : 'border-transparent hover:border-white/50'
-                }`}
-                style={{ background: hex, boxShadow: colorHex === hex ? `0 0 8px ${hex}cc` : undefined }}
-              />
-            ))}
+        {/* Preview hero */}
+        <section className="order-1 flex min-w-0 flex-col lg:col-span-7 xl:col-span-8">
+          <div
+            className="overflow-hidden rounded-xl border border-gray-700/50 bg-gradient-to-b from-gray-900/90 to-black/70 shadow-lg lg:rounded-2xl"
+            style={{ boxShadow: `0 4px 24px ${colorHex}18, inset 0 1px 0 rgba(255,255,255,0.04)` }}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-gray-800/80 bg-gray-900/60 px-3 py-2 sm:px-4 sm:py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="h-3 w-3 flex-shrink-0 rounded-sm border border-white/20"
+                  style={{ background: colorHex, boxShadow: `0 0 10px ${colorHex}aa` }}
+                />
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 sm:text-[11px]">
+                  {showClock ? t('production.ledPreviewClockLabel') : t('production.ledPreviewLabel')}
+                </span>
+              </div>
+              {(showClock || text) && (
+                <span className="min-w-0 max-w-[55%] truncate font-mono text-[10px] text-gray-500 sm:max-w-none" title={showClock ? headerClock : text}>
+                  {showClock ? headerClock : text}
+                </span>
+              )}
+            </div>
+            <div className="p-2 sm:p-3 md:p-4 lg:p-5">
+              <LedPreviewScaled text={text} colorHex={colorHex} speed={scrollSpeed} showClock={showClock} />
+              <p className="mt-2 text-center text-[9px] text-gray-600 sm:text-[10px]">
+                96×16 px · 3 panels
+              </p>
+            </div>
           </div>
-          <span className="w-full text-left text-[11px] font-mono text-gray-600 sm:w-auto sm:self-center sm:text-right">
-            {r},{g},{b}
-          </span>
-        </div>
-      </div>
+        </section>
 
-      {/* ── Preview ── */}
-      <div className="overflow-hidden rounded-2xl border border-gray-700/50 bg-gray-900/50">
-        <div className="flex items-center justify-between gap-3 border-b border-gray-800/80 bg-gray-900/70 px-3 py-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className="h-3 w-3 flex-shrink-0 rounded-sm border border-white/20 shadow-sm"
-              style={{ background: colorHex, boxShadow: `0 0 8px ${colorHex}88` }}
-            />
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-              {showClock ? t('production.ledPreviewClockLabel') : t('production.ledPreviewLabel')}
-            </span>
-          </div>
-          {(showClock || text) && (
-            <span className="min-w-0 truncate font-mono text-[10px] text-gray-500" title={showClock ? headerClock : text}>
-              {showClock ? headerClock : text}
-            </span>
-          )}
-        </div>
-        <div className="flex justify-center p-3">
-          <LedPreview text={text} colorHex={colorHex} speed={scrollSpeed} showClock={showClock} />
-        </div>
-      </div>
+        {/* Controls sidebar */}
+        <aside className="order-2 flex min-w-0 flex-col gap-3 lg:col-span-5 xl:col-span-4">
 
-      {/* ── Scroll Speed (ไม่ใช้ตอนโหมดนาฬิกา) ── */}
-      {!showClock && (
-      <div className="rounded-xl bg-gray-800/40 border border-gray-700/40 px-3 py-2.5">
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-xs text-gray-400 font-medium">{t('production.ledScrollSpeed')}</label>
-          <label className="flex items-center gap-1.5 cursor-pointer select-none">
-            <div
-              onClick={() => onSpeedForAllChange(!speedForAll)}
-              className={`relative w-8 h-4 rounded-full transition-colors flex-shrink-0 ${
-                speedForAll ? 'bg-indigo-500' : 'bg-gray-600'
+          <button
+            type="button"
+            onClick={onClearLed}
+            disabled={!hasIp || clearStatus === 'clearing'}
+            className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition-all sm:py-2.5 ${
+              !hasIp
+                ? 'cursor-not-allowed bg-gray-700/30 text-gray-600'
+                : clearStatus === 'clearing'
+                ? 'cursor-wait bg-emerald-500/30 text-emerald-400'
+                : clearStatus === 'ok'
+                ? 'border border-green-500/40 bg-green-500/20 text-green-300'
+                : clearStatus === 'error'
+                ? 'border border-red-500/40 bg-red-500/20 text-red-300'
+                : showClock
+                ? 'border border-emerald-400/50 bg-emerald-500/25 text-emerald-100 ring-1 ring-emerald-400/30'
+                : 'border border-emerald-500/35 bg-emerald-500/15 text-emerald-200 hover:border-emerald-400/55 hover:bg-emerald-500/25'
+            }`}
+          >
+            <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {clearStatus === 'clearing'
+              ? t('production.ledClearSending')
+              : clearStatus === 'ok'
+              ? t('production.ledClearOk')
+              : t('production.ledClearBtn')}
+          </button>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+            <button
+              onClick={onOpenQuick}
+              disabled={!hasIp || sendStatus === 'pinging'}
+              className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition-all sm:py-2.5 ${
+                !hasIp
+                  ? 'cursor-not-allowed bg-gray-700/30 text-gray-600'
+                  : sendStatus === 'pinging'
+                  ? 'cursor-wait bg-cyan-500/30 text-cyan-400'
+                  : sendStatus === 'ok'
+                  ? 'border border-green-500/40 bg-green-500/20 text-green-300'
+                  : sendStatus === 'error'
+                  ? 'border border-red-500/40 bg-red-500/20 text-red-300'
+                  : 'border border-cyan-500/35 bg-cyan-500/15 text-cyan-200 hover:border-cyan-400/55 hover:bg-cyan-500/25'
               }`}
             >
-              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
-                speedForAll ? 'translate-x-4' : 'translate-x-0.5'
-              }`} />
+              <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+              </svg>
+              <span className="truncate">เปลี่ยนข้อความด่วน</span>
+            </button>
+
+            <button
+              onClick={onOpenPopup}
+              disabled={!hasIp || sendStatus === 'pinging'}
+              className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition-all sm:py-2.5 ${
+                !hasIp
+                  ? 'cursor-not-allowed bg-gray-700/30 text-gray-600'
+                  : sendStatus === 'pinging'
+                  ? 'cursor-wait bg-indigo-500/30 text-indigo-400'
+                  : sendStatus === 'ok'
+                  ? 'border border-green-500/40 bg-green-500/20 text-green-300'
+                  : sendStatus === 'error'
+                  ? 'border border-red-500/40 bg-red-500/20 text-red-300'
+                  : 'border border-indigo-500/40 bg-indigo-500/20 text-indigo-200 hover:border-indigo-400/60 hover:bg-indigo-500/30'
+              }`}
+            >
+              {sendStatus === 'pinging' ? (
+                <>
+                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                  </svg>
+                  {t('production.ledSendSending')}
+                </>
+              ) : sendStatus === 'ok' ? (
+                t('production.ledSendOk')
+              ) : sendStatus === 'error' ? (
+                t('production.ledSendError')
+              ) : (
+                <>
+                  <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  <span className="truncate">{t('production.ledSendBtn')}</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-gray-700/40 bg-gray-800/30 px-3 py-3 sm:px-4">
+            <label className="mb-2 block text-xs font-medium text-gray-400">
+              {showClock ? t('production.ledClockColor') : t('production.ledTextColor')}
+            </label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <label className="flex-shrink-0 cursor-pointer">
+                <input type="color" value={colorHex} onChange={(e) => onChange('colorHex', e.target.value)} className="sr-only" />
+                <div
+                  className="h-10 w-10 rounded-lg border-2 border-white/20 shadow-lg sm:h-11 sm:w-11"
+                  style={{ background: colorHex, boxShadow: `0 0 12px ${colorHex}66` }}
+                />
+              </label>
+              <div className="flex flex-1 flex-wrap gap-1.5">
+                {COLOR_PRESETS.map(({ hex, label }) => (
+                  <button
+                    key={hex}
+                    type="button"
+                    title={label}
+                    onClick={() => onChange('colorHex', hex)}
+                    className={`h-7 w-7 rounded-md border-2 transition-all sm:h-8 sm:w-8 ${
+                      colorHex === hex ? 'scale-110 border-white shadow-lg' : 'border-transparent hover:border-white/50'
+                    }`}
+                    style={{ background: hex, boxShadow: colorHex === hex ? `0 0 8px ${hex}cc` : undefined }}
+                  />
+                ))}
+              </div>
+              <span className="font-mono text-[11px] text-gray-600 sm:text-right">
+                {r},{g},{b}
+              </span>
             </div>
-            <span className="text-[11px] text-gray-400">{t('production.ledSpeedApplyAll')}</span>
-          </label>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-gray-600 w-6 text-right">{t('production.ledSpeedSlow')}</span>
-          <input
-            type="range"
-            min={1} max={15} step={1}
-            value={scrollSpeed}
-            onChange={(e) => onSpeedChange(Number(e.target.value))}
-            className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-indigo-500"
-            style={{ accentColor: '#6366f1' }}
-          />
-          <span className="text-[10px] text-gray-600 w-6">{t('production.ledSpeedFast')}</span>
-          <span className="text-[11px] text-indigo-400 font-mono w-14 text-right flex-shrink-0">
-            {SPEED_MS[(scrollSpeed ?? 10) - 1]} ms/px
-          </span>
-        </div>
-      </div>
-      )}
+          </div>
 
-      {/* ── Action buttons ── */}
-      <div className="flex flex-col gap-2">
-        {/* Quick text change — ไม่บันทึก Machine Log */}
-        <button
-          onClick={onOpenQuick}
-          disabled={!hasIp || sendStatus === 'pinging'}
-          className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
-            !hasIp
-              ? 'bg-gray-700/30 text-gray-600 cursor-not-allowed'
-              : sendStatus === 'pinging'
-              ? 'bg-cyan-500/30 text-cyan-400 cursor-wait'
-              : sendStatus === 'ok'
-              ? 'bg-green-500/20 border border-green-500/40 text-green-300'
-              : sendStatus === 'error'
-              ? 'bg-red-500/20 border border-red-500/40 text-red-300'
-              : 'bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-400/55'
-          }`}
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-          </svg>
-          เปลี่ยนข้อความด่วน
-          <span className="text-[10px] font-normal opacity-60"></span>
-        </button>
-
-        {/* Full change — บันทึก Machine Log */}
-        <button
-          onClick={onOpenPopup}
-          disabled={!hasIp || sendStatus === 'pinging'}
-          className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
-            !hasIp
-              ? 'bg-gray-700/30 text-gray-600 cursor-not-allowed'
-              : sendStatus === 'pinging'
-              ? 'bg-indigo-500/30 text-indigo-400 cursor-wait'
-              : sendStatus === 'ok'
-              ? 'bg-green-500/20 border border-green-500/40 text-green-300'
-              : sendStatus === 'error'
-              ? 'bg-red-500/20 border border-red-500/40 text-red-300'
-              : 'bg-indigo-500/20 border border-indigo-500/40 text-indigo-200 hover:bg-indigo-500/30 hover:border-indigo-400/60'
-          }`}
-        >
-          {sendStatus === 'pinging' ? (
-            <>
-              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-              </svg>
-              {t('production.ledSendSending')}
-            </>
-          ) : sendStatus === 'ok' ? (
-            t('production.ledSendOk')
-          ) : sendStatus === 'error' ? (
-            t('production.ledSendError')
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-              {t('production.ledSendBtn')}
-              <span className="text-[10px] font-normal opacity-60"></span>
-            </>
+          {!showClock && (
+            <div className="rounded-xl border border-gray-700/40 bg-gray-800/30 px-3 py-2.5 sm:px-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <label className="text-xs font-medium text-gray-400">{t('production.ledScrollSpeed')}</label>
+                <label className="flex cursor-pointer select-none items-center gap-1.5">
+                  <div
+                    onClick={() => onSpeedForAllChange(!speedForAll)}
+                    className={`relative h-4 w-8 flex-shrink-0 rounded-full transition-colors ${
+                      speedForAll ? 'bg-indigo-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                      speedForAll ? 'translate-x-4' : 'translate-x-0.5'
+                    }`} />
+                  </div>
+                  <span className="text-[11px] text-gray-400">{t('production.ledSpeedApplyAll')}</span>
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-5 text-right text-[10px] text-gray-600">{t('production.ledSpeedSlow')}</span>
+                <input
+                  type="range"
+                  min={1} max={15} step={1}
+                  value={scrollSpeed}
+                  onChange={(e) => onSpeedChange(Number(e.target.value))}
+                  className="h-2 flex-1 cursor-pointer appearance-none rounded-full accent-indigo-500"
+                  style={{ accentColor: '#6366f1' }}
+                />
+                <span className="w-5 text-[10px] text-gray-600">{t('production.ledSpeedFast')}</span>
+                <span className="w-14 flex-shrink-0 text-right font-mono text-[11px] text-indigo-400">
+                  {SPEED_MS[(scrollSpeed ?? 10) - 1]} ms/px
+                </span>
+              </div>
+            </div>
           )}
-        </button>
+        </aside>
       </div>
     </div>
   );
@@ -2199,7 +2247,8 @@ const LedSignView = ({
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 sm:p-6 max-w-3xl mx-auto w-full">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="mx-auto w-full max-w-[2400px] px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5 lg:px-8 lg:py-6">
         {/* ── Resume banner ── */}
         {(() => {
           const mState = allMachineStates[sid];
@@ -2287,6 +2336,7 @@ const LedSignView = ({
             {t('production.ledNoMachineHint')}
           </div>
         )}
+        </div>
       </div>
 
       {/* <div className="flex-shrink-0 px-4 sm:px-6 py-3 border-t border-gray-800 bg-gray-900/50">
