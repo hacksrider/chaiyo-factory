@@ -75,37 +75,57 @@ function parseDailyDate_(raw) {
   if (!raw) return '';
 
   // กรณี Date object (ปกติที่สุด — Google Sheets เก็บ date เป็น Date)
+  // *** ห้ามใช้ Utilities.formatDate('yyyy') — ถ้า locale ไทย จะคืนปี พ.ศ. (2569) ไม่ใช่ ค.ศ. (2026) ***
+  // ใช้ getFullYear() แทน เพราะ JavaScript Date.getFullYear() คืน ค.ศ. เสมอ
   if (raw instanceof Date) {
-    return Utilities.formatDate(raw, 'Asia/Bangkok', 'yyyy-MM-dd');
+    var yr  = raw.getFullYear();
+    if (yr > 2400) yr -= 543; // ป้องกัน runtime บางรุ่นที่คืน BE
+    var mon = raw.getMonth() + 1;
+    var day = raw.getDate();
+    return yr + '-'
+      + (mon < 10 ? '0' + mon : '' + mon) + '-'
+      + (day < 10 ? '0' + day : '' + day);
   }
 
   var s = String(raw).trim();
   if (!s) return '';
 
-  // ป้องกัน header row ซ้ำ
+  // ป้องกัน header / summary row (ขึ้นต้นด้วย Thai หรือ keyword)
   if (s.match(/^วันที่/) || s.match(/^Monthly/) || s.match(/^Date/i)) return '';
+  // กัน garbage เช่น "แผนก :" หรือ cell text อื่นที่ไม่ใช่ date
+  if (!s.match(/^\d/) && !s.match(/^[A-Za-z]{3}/)) return '';
 
   // รูปแบบ d-M-YYYY หรือ d/M/YYYY (อาจเป็น BE หรือ CE)
   var m = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
   if (m) {
-    var day  = parseInt(m[1], 10);
-    var mon  = parseInt(m[2], 10);
-    var yr   = parseInt(m[3], 10);
-    // ถ้าปีดูเหมือน BE (พ.ศ.) ให้ลบ 543
-    if (yr > 2400) yr -= 543;
-    if (yr >= 1900 && yr <= 2100 && mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
-      return yr + '-' + (mon < 10 ? '0' + mon : '' + mon) + '-' + (day < 10 ? '0' + day : '' + day);
+    var day2 = parseInt(m[1], 10);
+    var mon2 = parseInt(m[2], 10);
+    var yr2  = parseInt(m[3], 10);
+    if (yr2 > 2400) yr2 -= 543;
+    if (yr2 >= 1900 && yr2 <= 2100 && mon2 >= 1 && mon2 <= 12 && day2 >= 1 && day2 <= 31) {
+      return yr2 + '-' + (mon2 < 10 ? '0' + mon2 : '' + mon2) + '-' + (day2 < 10 ? '0' + day2 : '' + day2);
     }
   }
 
-  // รูปแบบ YYYY-MM-DD ตรง (CE)
-  if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
+  // รูปแบบ YYYY-MM-DD ตรง
+  var mISO = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (mISO) {
+    var yr3 = parseInt(mISO[1], 10);
+    if (yr3 > 2400) yr3 -= 543;
+    return yr3 + '-' + mISO[2] + '-' + mISO[3];
+  }
 
-  // fallback: ลอง parse ด้วย Date ปกติ
+  // fallback: ลอง parse ด้วย Date (เฉพาะ string ที่เริ่มด้วยตัวเลขหรืออักษรภาษาอังกฤษ)
   var d = new Date(s);
-  if (!isNaN(d)) return Utilities.formatDate(d, 'Asia/Bangkok', 'yyyy-MM-dd');
+  if (!isNaN(d)) {
+    var yr4 = d.getFullYear();
+    if (yr4 > 2400) yr4 -= 543;
+    var mon4 = d.getMonth() + 1;
+    var day4 = d.getDate();
+    return yr4 + '-' + (mon4 < 10 ? '0' + mon4 : '' + mon4) + '-' + (day4 < 10 ? '0' + day4 : '' + day4);
+  }
 
-  return s; // คืน raw string ถ้า parse ไม่ได้
+  return ''; // ไม่ใช่ date format ที่รู้จัก — return empty (ไม่คืน raw string)
 }
 
 function updateDailyProduced(params) {

@@ -67,6 +67,10 @@
 #include <time.h>
 #include <ElegantOTA.h>
 
+// ป้องกัน brownout reset จากไฟตกชั่วขณะ (เช่น ตอนมอเตอร์เครื่องจักรสตาร์ท)
+#include "soc/rtc_cntl_reg.h"
+#include "soc/soc.h"
+
 // ======================================================================
 //  ⚙️  ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
@@ -195,13 +199,20 @@ bool syncWithScaleLive();
 void pollScaleLiveFromServer();
 String getIsoTime();
 void handleScaleStatus(); // หน้าเว็บแสดง IP + MAC Address
+String formatUptimeSec(unsigned long sec);
+String rssiQualityLabel(int rssi);
+String buildHeartbeatQuery();
 
 // ======================================================================
 //  WiFi — เชื่อม KANOK-AP เท่านั้น (ใช้ DHCP รองรับ DHCP Reservation)
 // ======================================================================
 void connectWifi() {
-  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);    // ไม่บันทึก config ลง flash ทุกครั้ง (ลด flash wear)
   WiFi.disconnect(true);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);          // ปิด Modem Sleep — ป้องกัน radio ดับเองแล้วหลุด AP
+  WiFi.setAutoReconnect(true);   // ให้ driver reconnect อัตโนมัติเมื่อ signal กลับมา
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // TX power เต็ม 19.5 dBm
   delay(300);
 
   // ใช้ DHCP — IT สามารถ fix IP ได้โดยผูก MAC กับ IP ที่ Router (DHCP Reservation)
@@ -211,7 +222,7 @@ void connectWifi() {
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 24) {
+  while (WiFi.status() != WL_CONNECTED && tries < 40) {  // รอนานขึ้นเป็น 20 วิ
     delay(500);
     Serial.print(".");
     tries++;
@@ -220,9 +231,11 @@ void connectWifi() {
 
   g_wifiOk = (WiFi.status() == WL_CONNECTED);
   if (g_wifiOk) {
-    Serial.printf("[WiFi] ✓ IP: %s  MAC: %s\n",
+    Serial.printf("[WiFi] ✓ IP: %s  MAC: %s  RSSI: %d dBm\n",
                   WiFi.localIP().toString().c_str(),
-                  WiFi.macAddress().c_str());
+                  WiFi.macAddress().c_str(),
+                  WiFi.RSSI());
+    // RSSI guide: > -60 dBm = ดีมาก, -60~-75 = พอใช้, < -75 = อ่อน (เสี่ยงหลุด)
     Serial.println("[WiFi] Server: " + g_serverUrl);
     configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
     struct tm timeinfo;
@@ -241,12 +254,39 @@ void connectWifi() {
 }
 
 // ======================================================================
-//  handleScaleStatus — หน้าเว็บแสดงข้อมูลบอร์ด: Machine ID, IP, MAC
+//  WiFi diagnostics helpers — ใช้บน /status และส่ง heartbeat ไป server
+// ======================================================================
+String formatUptimeSec(unsigned long sec) {
+  unsigned long h = sec / 3600;
+  unsigned long m = (sec % 3600) / 60;
+  unsigned long s = sec % 60;
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", h, m, s);
+  return String(buf);
+}
+
+String rssiQualityLabel(int rssi) {
+  if (rssi >= -60) return "ดีมาก";
+  if (rssi >= -75) return "พอใช้";
+  return "อ่อน — เสี่ยงหลุด";
+}
+
+String buildHeartbeatQuery() {
+  if (!g_wifiOk || WiFi.status() != WL_CONNECTED) return "";
+  return "?localIp=" + WiFi.localIP().toString()
+       + "&rssi=" + String(WiFi.RSSI())
+       + "&uptime=" + String(millis() / 1000UL);
+}
+
+// ======================================================================
+//  handleScaleStatus — หน้าเว็บแสดงข้อมูลบอร์ด: Machine ID, IP, MAC, RSSI
 //  เปิดได้ที่ http://<IP>/status
 // ======================================================================
 void handleScaleStatus() {
   String ip  = g_wifiOk ? WiFi.localIP().toString() : "---";
   String mac = WiFi.macAddress();
+  int rssi   = g_wifiOk ? WiFi.RSSI() : 0;
+  String up  = formatUptimeSec(millis() / 1000UL);
   String html =
     "<!DOCTYPE html><html><head>"
     "<meta charset='utf-8'>"
@@ -263,6 +303,8 @@ void handleScaleStatus() {
     "<tr><td>MAC Address</td><td><b>" + mac + "</b></td></tr>"
     "<tr><td>WiFi</td><td>KANOK-AP</td></tr>"
     "<tr><td>WiFi Status</td><td>" + String(g_wifiOk ? "Connected" : "Disconnected") + "</td></tr>"
+    "<tr><td>WiFi RSSI</td><td><b>" + String(rssi) + " dBm</b> (" + rssiQualityLabel(rssi) + ")</td></tr>"
+    "<tr><td>Uptime</td><td>" + up + "</td></tr>"
     "</table>"
     "<hr>"
     "<p><a href='/update'>&#128640; OTA Firmware Update</a></p>"
@@ -377,7 +419,7 @@ bool syncWithScaleLive() {
   HTTPClient http;
   String mid = String(MACHINE_ID);
   mid.replace(" ", "%20");
-  String url = g_serverUrl + "/api/production-monitor/scale-live/" + mid;
+  String url = g_serverUrl + "/api/production-monitor/scale-live/" + mid + buildHeartbeatQuery();
   http.begin(url);
   http.setTimeout(5000);
   int code = http.GET();
@@ -474,6 +516,9 @@ void pollScaleLiveFromServer() { syncWithScaleLive(); }
 //  setup
 // ======================================================================
 void setup() {
+  // ปิด brownout detector — ป้องกัน reset จากไฟตกชั่วขณะ (มอเตอร์เครื่องจักรสตาร์ท)
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
   Serial.begin(115200);
   Serial2.begin(2400, SERIAL_8N1, RXD2, TXD2);
   Serial2.setTimeout(20);
@@ -725,7 +770,7 @@ void pollJobFromServer() {
   HTTPClient http;
   String mid = String(MACHINE_ID);
   mid.replace(" ", "%20");
-  String url = g_serverUrl + "/api/production-monitor/scale-command/" + mid;
+  String url = g_serverUrl + "/api/production-monitor/scale-command/" + mid + buildHeartbeatQuery();
 
   http.begin(url);
   http.setTimeout(4000);
@@ -784,7 +829,7 @@ void sendConfirmToServer() {
   doc["shift"]        = String(g_shift);
   doc["employeeId"]   = g_employeeId;  // legacy field
   doc["employee_id"]  = g_employeeId;  // new field (SSE payload)
-  doc["confirmed_at"] = (unsigned long)millis(); // epoch ms fallback (server uses NTP)
+  doc["confirmed_at"] = (unsigned long)millis();
   String body;
   serializeJson(doc, body);
 
@@ -800,30 +845,41 @@ void sendConfirmToServer() {
   }
 
   // ── 2. New session-confirm (broadcasts SSE to all browsers) ────────────
-  {
+  // ใช้ loop แทน recursion — ป้องกัน WDT reset เมื่อ server ไม่ตอบหลายรอบ
+  const int MAX_CONFIRM_TRIES = 3;
+  for (int attempt = 1; attempt <= MAX_CONFIRM_TRIES; attempt++) {
     HTTPClient http;
     http.begin(g_serverUrl + "/api/production-monitor/session-confirm/" + mid);
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(5000);
     int code = http.POST(body);
-    Serial.printf("[Scale] session-confirm POST → %d  (shift=%c emp=%s)\n",
-      code, g_shift, g_employeeId.c_str());
+    Serial.printf("[Scale] session-confirm POST → %d  (shift=%c emp=%s attempt=%d/%d)\n",
+      code, g_shift, g_employeeId.c_str(), attempt, MAX_CONFIRM_TRIES);
     http.end();
 
     if (code >= 200 && code < 300) {
-      // Server รับข้อมูลครบ — เริ่มผลิตได้
       enterProductionFresh();
       return;
     }
+
+    if (attempt < MAX_CONFIRM_TRIES) {
+      Serial.printf("[Scale] Confirm failed — retry %d/%d in 5s\n", attempt, MAX_CONFIRM_TRIES);
+      lcd.clear();
+      lcd.setCursor(0, 0); lcd.print("Confirm failed!");
+      lcd.setCursor(0, 2);
+      String msg = "Retry " + String(attempt) + "/" + String(MAX_CONFIRM_TRIES) + " in 5s...";
+      lcd.print(msg.substring(0, 20));
+      delay(5000);
+    }
   }
 
-  // ── Retry on failure ───────────────────────────────────────────────────
-  Serial.println("[Scale] Confirm failed — retry in 5s");
+  // ส่งไม่สำเร็จทุกรอบ — เริ่มผลิต offline และ flush ทีหลัง
+  Serial.println("[Scale] Confirm failed all attempts — starting offline");
   lcd.clear();
-  lcd.setCursor(0, 0); lcd.print("Confirm failed!");
-  lcd.setCursor(0, 2); lcd.print("Retrying in 5s...");
-  delay(5000);
-  sendConfirmToServer();  // recursive retry (max stack ~3 deep before WDT reset)
+  lcd.setCursor(0, 0); lcd.print("Server unreachable");
+  lcd.setCursor(0, 1); lcd.print("Starting offline...");
+  delay(2000);
+  enterProductionFresh();
 }
 
 // ======================================================================
@@ -1197,6 +1253,15 @@ void loop() {
     }
 
     g_wifiOk = true; // ยืนยันว่า connected
+
+    // ─── Log RSSI ทุก 30 วินาที เพื่อ diagnose signal ──────────────────
+    static unsigned long s_lastRssiLogMs = 0;
+    if (now - s_lastRssiLogMs >= 30000UL || s_lastRssiLogMs == 0) {
+      s_lastRssiLogMs = now;
+      int rssi = WiFi.RSSI();
+      Serial.printf("[WiFi] RSSI: %d dBm%s\n", rssi,
+        rssi < -75 ? " ⚠️ WEAK — อาจหลุด" : (rssi < -60 ? " OK" : " GOOD"));
+    }
 
     // WiFi มี pending events → flush ก่อน
     if (g_pendingCount > 0) flushPendingEvents();

@@ -44,13 +44,19 @@ struct LedCmd {
 
 // ประกาศฟังก์ชันล่วงหน้าเพื่อให้คอมไพเลอร์รู้จักก่อนเรียกใช้งาน
 void updateTextProperties();
+void showSyncWaitingVisual();
+bool syncLedDisplayFromServer();
+bool bootSyncFromServerWithRetry();
 void pollTask(void* pv);
-bool connectWifi();
+bool connectWifi(bool hardReset = true);
 void processSerialCommand();
 void drawAndScrollText();
 String buildFingerprintFromLedCmd(const LedCmd& c);
 void handleTemp();
 void handleRoot();
+String formatUptimeSec(unsigned long sec);
+String rssiQualityLabel(int rssi);
+String buildHeartbeatQuery();
 
 // ======================================================================
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
@@ -100,6 +106,7 @@ WebServer server(80);
 
 // ---------------- โหมดนาฬิกา ----------------
 bool g_clockMode = false;
+bool g_awaitingBootSync = true;
 bool g_ntpSynced = false;
 unsigned long g_lastClockTickMs = 0;
 unsigned long g_lastNtpAttemptMs = 0;
@@ -121,14 +128,22 @@ int scrollSpeed     = 50;
 QueueHandle_t cmdQueue = nullptr; 
 
 static String s_ledStateFingerprint;
+static const int         BOOT_SYNC_MAX_ATTEMPTS         = 8;
+static const uint32_t    BOOT_SYNC_RETRY_MS             = 1500;
 static const int         RECONCILE_EVERY_N_POLLS        = 2;
 static const uint32_t    WIFI_BACKOFF_MIN_MS            = 2000;
 static const uint32_t    WIFI_BACKOFF_MAX_MS            = 60000;
 static const uint32_t    WIFI_RECONNECT_INTERVAL_MS     = 5000;
+static const uint32_t    WIFI_HARD_RESET_AFTER_MS       = 120000;
+static const uint32_t    WIFI_SCAN_CACHE_MS             = 180000;
 static const uint32_t    NTP_RETRY_GAP_MS               = 10000;
 static const uint32_t    NTP_RESYNC_INTERVAL_MS         = 3600000;
 static const long        NTP_GMT_OFFSET_SEC             = 7 * 3600;  // Bangkok UTC+7
 static bool              g_ntpClockConfigured           = false;
+static bool              g_hasPreferredBssid            = false;
+static uint8_t           g_preferredBssid[6]            = {0};
+static int32_t           g_preferredChannel             = 0;
+static uint32_t          g_lastWifiScanMs               = 0;
 
 void ensureBangkokClockConfig() {
   if (g_ntpClockConfigured) return;
@@ -192,6 +207,18 @@ void updateClockTextProperties() {
   u8g2_for_gfx.setFont(u8g2_font_helvB08_tf);
   textWidth = u8g2_for_gfx.getUTF8Width(currentText.c_str());
   cursor_x  = max(0, (NAME_ZONE_PX - textWidth) / 2);
+}
+
+void showSyncWaitingVisual() {
+  if (!dma_display) return;
+  g_clockMode     = false;
+  currentText     = "กำลังซิงก์..";
+  currentFontSize = 1;
+  scrollSpeed     = 50;
+  currentColor    = dma_display->color565(255, 140, 0);
+  actualCount     = "0";
+  targetCount     = "0";
+  updateTextProperties();
 }
 
 void applyClockVisual() {
@@ -505,12 +532,42 @@ void handleLed() {
   server.send(200, "application/json", resp);
 }
 
+String formatUptimeSec(unsigned long sec) {
+  unsigned long h = sec / 3600;
+  unsigned long m = (sec % 3600) / 60;
+  unsigned long s = sec % 60;
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", h, m, s);
+  return String(buf);
+}
+
+String rssiQualityLabel(int rssi) {
+  if (rssi >= -60) return "ดีมาก";
+  if (rssi >= -75) return "พอใช้";
+  return "อ่อน — เสี่ยงหลุด";
+}
+
+String buildHeartbeatQuery() {
+  if (WiFi.status() != WL_CONNECTED) return "";
+  return "?localIp=" + WiFi.localIP().toString()
+       + "&rssi=" + String(WiFi.RSSI())
+       + "&uptime=" + String(millis() / 1000UL)
+       + "&temp=" + String(g_internalTempC, 1);
+}
+
 void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString()
               + "\",\"mac\":\"" + WiFi.macAddress()
-              + "\",\"text\":\"" + currentText + "\"}";
+              + "\",\"wifiConnected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false")
+              + ",\"rssi\":" + String(rssi)
+              + ",\"rssiLabel\":\"" + rssiQualityLabel(rssi) + "\""
+              + ",\"uptimeSec\":" + String(millis() / 1000UL)
+              + ",\"uptime\":\"" + formatUptimeSec(millis() / 1000UL) + "\""
+              + ",\"cpuTemperatureC\":" + String(g_internalTempC, 1)
+              + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
 
@@ -534,10 +591,14 @@ void handleMeasure() {
 // ─── ฟังก์ชันหน้าเว็บส่งค่าอุณหภูมิ ───
 void handleTemp() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString()
               + "\",\"mac\":\"" + WiFi.macAddress()
-              + "\",\"cpu_temperature_c\":" + String(g_internalTempC, 1) + "}";
+              + "\",\"rssi\":" + String(rssi)
+              + ",\"rssiLabel\":\"" + rssiQualityLabel(rssi) + "\""
+              + ",\"uptimeSec\":" + String(millis() / 1000UL)
+              + ",\"cpu_temperature_c\":" + String(g_internalTempC, 1) + "}";
   server.send(200, "application/json", resp);
 }
 
@@ -546,6 +607,8 @@ void handleRoot() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   String ip  = WiFi.localIP().toString();
   String mac = WiFi.macAddress();
+  int rssi   = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  String up  = formatUptimeSec(millis() / 1000UL);
   String html =
     "<!DOCTYPE html><html><head>"
     "<meta charset='utf-8'>"
@@ -561,6 +624,9 @@ void handleRoot() {
     "<tr><td>IP Address</td><td>" + ip + "</td></tr>"
     "<tr><td>MAC Address</td><td><b>" + mac + "</b></td></tr>"
     "<tr><td>WiFi</td><td>KANOK-AP</td></tr>"
+    "<tr><td>WiFi RSSI</td><td><b>" + String(rssi) + " dBm</b> (" + rssiQualityLabel(rssi) + ")</td></tr>"
+    "<tr><td>Uptime</td><td>" + up + "</td></tr>"
+    "<tr><td>CPU Temp</td><td>" + String(g_internalTempC, 1) + " &deg;C</td></tr>"
     "<tr><td>Text บนป้าย</td><td>" + currentText + "</td></tr>"
     "</table>"
     "<hr>"
@@ -569,10 +635,6 @@ void handleRoot() {
     "<a href='/update'>&#128640; OTA Update</a></p>"
     "</body></html>";
   server.send(200, "text/html", html);
-}
-
-void applyDefaultLedVisual() {
-  applyClockVisual();
 }
 
 bool syncLedDisplayFromServer() {
@@ -584,39 +646,41 @@ bool syncLedDisplayFromServer() {
   String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
   Serial.println("[Sync] GET " + url);
   http.begin(url);
-  http.setTimeout(5000); 
+  http.setTimeout(8000);
   int code = http.GET();
 
   if (code != 200) {
-    Serial.printf("[Sync] HTTP %d — fallback default text\n", code);
-    applyDefaultLedVisual();
+    Serial.printf("[Sync] HTTP %d — รอ retry (ไม่แสดงนาฬิกา)\n", code);
     http.end();
+    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
 
   String body = http.getString();
   http.end();
-  Serial.println("[Sync] Response: " + body.substring(0, 120)); 
+  Serial.println("[Sync] Response: " + body.substring(0, 120));
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, body)) {
-    Serial.println("[Sync] JSON parse error — fallback default text");
-    applyDefaultLedVisual();
+    Serial.println("[Sync] JSON parse error — รอ retry");
+    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
 
   if (!doc["success"].as<bool>() || !doc["hasState"].as<bool>()) {
-    Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — default text");
-    applyDefaultLedVisual();
+    Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — รอ retry");
+    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
 
   JsonObject st = doc["state"];
   if (st.isNull()) {
-    Serial.println("[Sync] state เป็น null — fallback default text");
-    applyDefaultLedVisual();
+    Serial.println("[Sync] state เป็น null — รอ retry");
+    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
+
+  g_awaitingBootSync = false;
 
   if (jsonWantsClockMode(st)) {
     Serial.println("[Sync] เว็บล้างป้าย / ไม่มีข้อความ — แสดงนาฬิกา");
@@ -633,7 +697,7 @@ bool syncLedDisplayFromServer() {
   scrollSpeed     = max(20, sp);
   int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
   currentColor    = dma_display->color565(r, g, b);
-  
+
   if (st.containsKey("actual")) actualCount = st["actual"].as<String>();
   if (st.containsKey("target")) targetCount = st["target"].as<String>();
   updateTextProperties();
@@ -642,28 +706,103 @@ bool syncLedDisplayFromServer() {
   return true;
 }
 
-bool connectWifi() {
+bool bootSyncFromServerWithRetry() {
+  for (int attempt = 1; attempt <= BOOT_SYNC_MAX_ATTEMPTS; attempt++) {
+    Serial.printf("[BootSync] attempt %d/%d\n", attempt, BOOT_SYNC_MAX_ATTEMPTS);
+    if (syncLedDisplayFromServer()) return true;
+    if (attempt < BOOT_SYNC_MAX_ATTEMPTS) vTaskDelay(pdMS_TO_TICKS(BOOT_SYNC_RETRY_MS));
+  }
+  showSyncWaitingVisual();
+  Serial.println("[BootSync] ยังซิงก์ไม่ได้ — รอ poll/reconcile รอบถัดไป");
+  return false;
+}
+
+bool refreshPreferredAp() {
+  uint32_t now = millis();
+  if (g_hasPreferredBssid && (now - g_lastWifiScanMs) < WIFI_SCAN_CACHE_MS) return true;
+
+  int n = WiFi.scanNetworks(false, true);
+  g_lastWifiScanMs = now;
+  if (n <= 0) {
+    g_hasPreferredBssid = false;
+    return false;
+  }
+
+  int bestIndex = -1;
+  int bestRssi = -127;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) != WIFI_SSID) continue;
+    int rssi = WiFi.RSSI(i);
+    if (bestIndex < 0 || rssi > bestRssi) {
+      bestIndex = i;
+      bestRssi = rssi;
+    }
+  }
+
+  if (bestIndex < 0) {
+    g_hasPreferredBssid = false;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  uint8_t* bssid = WiFi.BSSID(bestIndex);
+  if (!bssid) {
+    g_hasPreferredBssid = false;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  memcpy(g_preferredBssid, bssid, sizeof(g_preferredBssid));
+  g_preferredChannel = WiFi.channel(bestIndex);
+  g_hasPreferredBssid = true;
+
+  Serial.printf("[WiFi] Lock AP BSSID=%02X:%02X:%02X:%02X:%02X:%02X ch=%d RSSI=%d\n",
+                g_preferredBssid[0], g_preferredBssid[1], g_preferredBssid[2],
+                g_preferredBssid[3], g_preferredBssid[4], g_preferredBssid[5],
+                (int)g_preferredChannel, bestRssi);
+  WiFi.scanDelete();
+  return true;
+}
+
+void beginWifiWithBestAp() {
+  bool hasPreferred = refreshPreferredAp();
+  if (hasPreferred && g_preferredChannel > 0) {
+    WiFi.begin(WIFI_SSID, WIFI_PASS, g_preferredChannel, g_preferredBssid, true);
+    return;
+  }
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+bool connectWifi(bool hardReset) {
   WiFi.persistent(false);
-  WiFi.disconnect(true);
+  if (hardReset) {
+    WiFi.disconnect(true);
+    vTaskDelay(pdMS_TO_TICKS(300));
+  }
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  vTaskDelay(pdMS_TO_TICKS(300));
+  WiFi.setHostname(MACHINE_ID);
 
   // ใช้ DHCP — IT สามารถ fix IP ได้ผ่าน DHCP Reservation ที่ Router โดยใช้ MAC Address
   // บอร์ดนี้เชื่อมเฉพาะ KANOK-AP เท่านั้น
-  Serial.printf("[WiFi] Connecting to \"%s\" ...\n", WIFI_SSID);
+  Serial.printf("[WiFi] %s connect to \"%s\" ...\n", hardReset ? "Hard" : "Soft", WIFI_SSID);
   Serial.printf("[WiFi] MAC Address: %s\n", WiFi.macAddress().c_str());
 
   if (dma_display) {
+    g_clockMode     = false;
     currentText     = "กำลังเชื่อมต่อ..";
     currentFontSize = 1;
+    scrollSpeed     = 50;
     currentColor    = dma_display->color565(255, 140, 0);
+    actualCount     = "0";
+    targetCount     = "0";
     updateTextProperties();
+    drawAndScrollText();
   }
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  beginWifiWithBestAp();
   Serial.print("[WiFi] Connecting");
 
   int tries = 0;
@@ -677,7 +816,7 @@ bool connectWifi() {
       if (failedCount >= 5) return false;
       WiFi.disconnect(false);
       vTaskDelay(pdMS_TO_TICKS(1000));
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      beginWifiWithBestAp();
     }
   }
 
@@ -688,7 +827,8 @@ bool connectWifi() {
                   WiFi.macAddress().c_str());
     vTaskDelay(pdMS_TO_TICKS(1500));
     syncNtpIfNeeded();
-    syncLedDisplayFromServer();
+    bootSyncFromServerWithRetry();
+    drawAndScrollText();
     return true;
   }
   Serial.println("\n[WiFi] Connection failed");
@@ -701,6 +841,25 @@ void setup() {
 
   // แสดง MAC Address ทันทีตอนเปิดเครื่อง (ก่อน WiFi เชื่อม) — ให้ IT นำไป fix IP ที่ Router
   WiFi.mode(WIFI_STA);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+#if defined(ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      Serial.printf("[WiFi] Event: STA_DISCONNECTED reason=%d\n", info.wifi_sta_disconnected.reason);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+      Serial.println("[WiFi] Event: STA_CONNECTED");
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      Serial.printf("[WiFi] Event: GOT_IP %s\n", WiFi.localIP().toString().c_str());
+    }
+#elif defined(SYSTEM_EVENT_STA_DISCONNECTED)
+    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+      Serial.printf("[WiFi] Event: STA_DISCONNECTED reason=%d\n", info.disconnected.reason);
+    } else if (event == SYSTEM_EVENT_STA_CONNECTED) {
+      Serial.println("[WiFi] Event: STA_CONNECTED");
+    } else if (event == SYSTEM_EVENT_STA_GOT_IP) {
+      Serial.printf("[WiFi] Event: GOT_IP %s\n", WiFi.localIP().toString().c_str());
+    }
+#endif
+  });
   Serial.printf("[BOOT] Machine ID : %s\n", MACHINE_ID);
   Serial.printf("[BOOT] MAC Address: %s\n", WiFi.macAddress().c_str());
 
@@ -715,8 +874,8 @@ void setup() {
   u8g2_for_gfx.setFontMode(0);
   u8g2_for_gfx.setFontDirection(0);
 
-  currentColor = dma_display->color565(0, 255, 0);
-  updateTextProperties();
+  g_awaitingBootSync = true;
+  showSyncWaitingVisual();
 
   bool wifiOk = false;
   for (int bootTry = 0; bootTry < 10 && !wifiOk; bootTry++) {
@@ -774,13 +933,11 @@ void pollTask(void* pv) {
   // ─── ➕ ตัวแปรจับเวลาล็อกอุณหภูมิ ───
   static uint32_t lastTempLogMs            = 0; 
 
-  auto sendConnectingMsg = []() {
+  // ตอน WiFi หลุด → แสดงนาฬิกา HH:MM:SS ทันที
+  auto sendOfflineClock = []() {
     if (!cmdQueue) return;
     LedCmd cmd = {};
-    strncpy(cmd.text, "กำลังเชื่อมต่อ..", sizeof(cmd.text) - 1);
-    cmd.text[sizeof(cmd.text) - 1] = '\0';
-    cmd.r = 255; cmd.g = 140; cmd.b = 0; 
-    cmd.fontSize = 1; cmd.speed = 50;
+    cmd.showClock = true;
     xQueueSend(cmdQueue, &cmd, 0);
   };
 
@@ -800,8 +957,13 @@ void pollTask(void* pv) {
       if (disconnectedSince == 0) {
         disconnectedSince = now;
         g_ntpSynced = false;
+        g_awaitingBootSync = true;   // ต้อง re-sync เมื่อกลับมาออนไลน์
+        s_ledStateFingerprint = "";  // ล้าง fingerprint ให้ reconcile ทำงานซ้ำได้
       }
-      if (!showingConnecting) { showingConnecting = true; sendConnectingMsg(); }
+      if (!showingConnecting) {
+        showingConnecting = true;
+        sendOfflineClock();          // แสดงนาฬิกาทันทีที่ WiFi หลุด
+      }
 
       if (!wifiImmediateRecoverTried) {
         wifiImmediateRecoverTried = true;
@@ -817,7 +979,13 @@ void pollTask(void* pv) {
           WiFi.reconnect();
           for (int i = 0; i < 16 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(500));
         }
-        if (WiFi.status() != WL_CONNECTED) connectWifi();
+        if (WiFi.status() != WL_CONNECTED) {
+          bool hardReset = (disconnectedFor >= WIFI_HARD_RESET_AFTER_MS);
+          connectWifi(hardReset);
+          if (WiFi.status() != WL_CONNECTED && !hardReset && disconnectedFor >= 60000) {
+            connectWifi(true);
+          }
+        }
         if (WiFi.status() != WL_CONNECTED) {
           uint32_t next = min(wifiBackoffMs * 2, WIFI_BACKOFF_MAX_MS);
           int32_t jitter = (int32_t)(next * 0.2f) * (random(0, 200) - 100) / 100;
@@ -831,13 +999,25 @@ void pollTask(void* pv) {
     disconnectedSince = 0; lastReconnectMs = 0; wifiBackoffMs = WIFI_BACKOFF_MIN_MS;
     showingConnecting = false; wifiImmediateRecoverTried = false;
 
+    // ─── Log RSSI ทุก 30 วินาที เพื่อ diagnose signal ──────────────────
+    static uint32_t s_lastRssiLogMs = 0;
+    if (currentMs - s_lastRssiLogMs >= 30000UL || s_lastRssiLogMs == 0) {
+      s_lastRssiLogMs = currentMs;
+      int rssi = WiFi.RSSI();
+      Serial.printf("[WiFi] RSSI: %d dBm%s\n", rssi,
+        rssi < -75 ? " ⚠️ WEAK" : (rssi < -60 ? " OK" : " GOOD"));
+    }
+
     if (justReconnected) {
-      vTaskDelay(pdMS_TO_TICKS(2000));
+      g_awaitingBootSync = true;
+      vTaskDelay(pdMS_TO_TICKS(1500));
       syncNtpIfNeeded(true);
       s_ledStateFingerprint = "";
-      reconcileLedStateWithWeb();
-      vTaskDelay(pdMS_TO_TICKS(1500));
-      reconcileLedStateWithWeb();
+      bootSyncFromServerWithRetry();
+    }
+
+    if (g_awaitingBootSync) {
+      syncLedDisplayFromServer();
     }
 
     if (g_serverUrl.isEmpty()) continue;
@@ -849,13 +1029,10 @@ void pollTask(void* pv) {
     String mid = String(MACHINE_ID);
     mid.replace(" ", "%20");
     
-    // 💡 ทริกเพิ่มเติม: ส่งค่าอุณหภูมิพ่วงกลับไปที่ Server Dashboard ได้ผ่าน query string ตัวนี้เลยครับ
-    String url = g_serverUrl + "/api/production-monitor/led-command/" + mid
-               + "?localIp=" + WiFi.localIP().toString()
-               + "&temp=" + String(g_internalTempC, 1);
+    String url = g_serverUrl + "/api/production-monitor/led-command/" + mid + buildHeartbeatQuery();
                
     http.begin(url);
-    http.setTimeout(1800); 
+    http.setTimeout(5000);  // HTTPS ต้องทำ TLS handshake ~1-3 วิ บน ESP32 — 1800ms สั้นเกินไป
     int code = http.GET();
 
     if (code == 200) {

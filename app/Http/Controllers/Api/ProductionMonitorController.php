@@ -340,21 +340,26 @@ class ProductionMonitorController extends Controller
      */
     public function fetchLedCommand(Request $request, string $machineId): JsonResponse
     {
-        // Heartbeat: บันทึกเวลา + localIp (WiFi DHCP บน LAN) + public IP ที่ server เห็น
-        $localIp = trim((string) $request->query('localIp', ''));
-        if ($localIp !== '' && ! filter_var($localIp, FILTER_VALIDATE_IP)) {
-            $localIp = '';
-        }
-        Cache::put("led_heartbeat_{$machineId}", [
-            'time'    => now()->toISOString(),
-            'localIp' => $localIp,
-            'ip'      => $request->ip(),
-        ], now()->addSeconds(30));
+        $this->recordEspHeartbeat($request, $machineId, 'led');
 
         $command = Cache::pull("led_cmd_{$machineId}");
 
         if ($command) {
             return response()->json(array_merge(['pending' => true], $command));
+        }
+
+        // ป้ายเพิ่งเปิด (uptime ต่ำ) — ส่ง led_state ล่าสุดให้ซิงก์กับหน้าเว็บทันที
+        $uptime = $request->query('uptime');
+        if (is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120) {
+            $bootKey = "led_esp_boot_synced_{$machineId}";
+            if (! Cache::get($bootKey)) {
+                $state = Cache::get("led_state_{$machineId}");
+                if (is_array($state)) {
+                    Cache::put($bootKey, true, now()->addMinutes(10));
+
+                    return response()->json(array_merge(['pending' => true], $state));
+                }
+            }
         }
 
         return response()->json(['pending' => false]);
@@ -372,43 +377,107 @@ class ProductionMonitorController extends Controller
      */
     public function getLedHeartbeat(string $machineId): JsonResponse
     {
-        $raw            = Cache::get("led_heartbeat_{$machineId}");
-        $online         = false;
-        $secondsAgo     = null;
-        $deviceIp       = null;
-        $deviceLocalIp  = null;
-        $lastSeenAt     = null;
+        return response()->json(array_merge(
+            ['success' => true, 'machineId' => $machineId],
+            $this->parseEspHeartbeat(Cache::get("led_heartbeat_{$machineId}"))
+        ));
+    }
+
+    /**
+     * GET /api/production-monitor/scale-heartbeat/{machineId}
+     *
+     * เว็บเช็คสถานะ WiFi ของตาชั่งจาก heartbeat ล่าสุด (poll scale-live / scale-command)
+     */
+    public function getScaleHeartbeat(string $machineId): JsonResponse
+    {
+        return response()->json(array_merge(
+            ['success' => true, 'machineId' => $machineId],
+            $this->parseEspHeartbeat(Cache::get("scale_heartbeat_{$machineId}"))
+        ));
+    }
+
+    /**
+     * @return array{
+     *   online: bool,
+     *   lastSeenAt: ?string,
+     *   secondsAgo: ?int,
+     *   deviceIp: ?string,
+     *   deviceLocalIp: ?string,
+     *   rssi: ?int,
+     *   temp: ?float,
+     *   uptimeSec: ?int
+     * }
+     */
+    private function parseEspHeartbeat(mixed $raw): array
+    {
+        $online        = false;
+        $secondsAgo    = null;
+        $deviceIp      = null;
+        $deviceLocalIp = null;
+        $lastSeenAt    = null;
+        $rssi          = null;
+        $temp          = null;
+        $uptimeSec     = null;
 
         if ($raw !== null) {
-            // รองรับ 2 format: เก่า = string ISO, ใหม่ = array { time, localIp, ip }
             if (is_array($raw)) {
                 $lastSeenAt    = $raw['time'] ?? null;
                 $deviceLocalIp = $raw['localIp'] ?? null;
                 $deviceIp      = $raw['ip'] ?? null;
+                $rssi          = isset($raw['rssi']) && is_numeric($raw['rssi']) ? (int) $raw['rssi'] : null;
+                $temp          = isset($raw['temp']) && is_numeric($raw['temp']) ? (float) $raw['temp'] : null;
+                $uptimeSec     = isset($raw['uptime']) && is_numeric($raw['uptime']) ? (int) $raw['uptime'] : null;
             } else {
                 $lastSeenAt = $raw; // format เก่า (string)
             }
 
             if ($lastSeenAt) {
                 try {
-                    $dt         = \Carbon\Carbon::parse($lastSeenAt);
+                    $dt         = Carbon::parse($lastSeenAt);
                     $secondsAgo = (int) $dt->diffInSeconds(now());
-                    $online     = $secondsAgo <= 15; // online ถ้า poll ล่าสุดไม่เกิน 15 วินาที
+                    $online     = $secondsAgo <= 15;
                 } catch (\Throwable $e) {
                     // parse ไม่ได้ → offline
                 }
             }
         }
 
-        return response()->json([
-            'success'    => true,
-            'machineId'  => $machineId,
-            'online'     => $online,
-            'lastSeenAt' => $lastSeenAt,
-            'secondsAgo' => $secondsAgo,
-            'deviceIp'      => $deviceIp,      // public IP ที่ server เห็น (NAT)
-            'deviceLocalIp' => $deviceLocalIp, // WiFi.localIP() จาก ESP — ใช้ OTA / ping ใน LAN
-        ]);
+        return [
+            'online'        => $online,
+            'lastSeenAt'    => $lastSeenAt,
+            'secondsAgo'    => $secondsAgo,
+            'deviceIp'      => $deviceIp,
+            'deviceLocalIp' => $deviceLocalIp,
+            'rssi'          => $rssi,
+            'temp'          => $temp,
+            'uptimeSec'     => $uptimeSec,
+        ];
+    }
+
+    private function recordEspHeartbeat(Request $request, string $machineId, string $kind): void
+    {
+        $localIp = trim((string) $request->query('localIp', ''));
+        if ($localIp !== '' && ! filter_var($localIp, FILTER_VALIDATE_IP)) {
+            $localIp = '';
+        }
+
+        $rssi = $request->query('rssi');
+        $rssi = is_numeric($rssi) ? (int) $rssi : null;
+
+        $temp = $request->query('temp');
+        $temp = is_numeric($temp) ? (float) $temp : null;
+
+        $uptime = $request->query('uptime');
+        $uptime = is_numeric($uptime) ? (int) $uptime : null;
+
+        Cache::put("{$kind}_heartbeat_{$machineId}", [
+            'time'    => now()->toISOString(),
+            'localIp' => $localIp,
+            'ip'      => $request->ip(),
+            'rssi'    => $rssi,
+            'temp'    => $temp,
+            'uptime'  => $uptime,
+        ], now()->addSeconds(30));
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -581,8 +650,10 @@ class ProductionMonitorController extends Controller
      * Response: { pending: true, orderId, productCode, targetQty, sheetName }
      *        หรือ { pending: false }
      */
-    public function fetchScaleCommand(string $machineId): JsonResponse
+    public function fetchScaleCommand(Request $request, string $machineId): JsonResponse
     {
+        $this->recordEspHeartbeat($request, $machineId, 'scale');
+
         $cmd = Cache::get("scale_cmd_{$machineId}");
 
         if ($cmd) {
@@ -747,8 +818,10 @@ class ProductionMonitorController extends Controller
      * เว็บยกเลิกการรอยืนยัน (Awaiting_scale / timeout): ฟิร์มแวร์ควรเคลียร์งาน pending ในจอให้เหมือนหยุด
      * Response (unknown): { live:null }  ← ไม่มีแถวเซสชัน
      */
-    public function fetchScaleLive(string $machineId): JsonResponse
+    public function fetchScaleLive(Request $request, string $machineId): JsonResponse
     {
+        $this->recordEspHeartbeat($request, $machineId, 'scale');
+
         $revokeFlag = Cache::get("scale_pending_revoked_{$machineId}");
         $revokePayload = $revokeFlag !== null ? ['pendingStartRevoked' => true] : [];
 

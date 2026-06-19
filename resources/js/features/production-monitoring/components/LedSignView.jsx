@@ -648,20 +648,29 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
 // ─── QuickLedPopup ────────────────────────────────────────────────────────────
 // เปลี่ยนข้อความป้ายไฟอย่างเดียว — ไม่บันทึกสถานะเครื่องจักรลง Sheet
 const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, submitting, confirmError, recorderName = '' }) => {
-  const [text,       setText]      = useState('');
-  const [errors,     setErrors]    = useState({});
+  const [text,        setText]       = useState('');
+  const [showSuffix,  setShowSuffix] = useState(true);
+  const [errors,      setErrors]     = useState({});
 
-  // ตั้งค่าเริ่มต้นเฉพาะตอนเปิด popup — อย่าผูก currentConfig (SSE/merge จะทับขณะพิมพ์)
+  // ตั้งค่าเริ่มต้นเฉพาะตอนเปิด popup — ตัด suffix ออกจาก input ให้ผู้ใช้เห็นแค่ข้อความหลัก
   useEffect(() => {
     if (!isOpen) return;
-    setText(currentConfig?.text ?? '');
+    const raw = currentConfig?.text ?? '';
+    const sepIdx = raw.indexOf(' |- ');
+    setText(sepIdx >= 0 ? raw.substring(0, sepIdx).trim() : raw.trim());
+    setShowSuffix(true);
     setErrors({});
   // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once per open
   }, [isOpen]);
 
+  const suffixPreview = showSuffix && recorderName
+    ? ` |- ${recorderName} ${formatDateThaiShort()} - ${formatTimeThaiDot()}`
+    : '';
+  const previewText = text.trim() ? text.trim() + suffixPreview : '';
+
   const handleConfirm = () => {
     if (!text.trim()) { setErrors({ text: 'กรุณาระบุข้อความ' }); return; }
-    onConfirm({ text: text.trim() });
+    onConfirm({ text: text.trim(), showSuffix });
   };
 
   if (!isOpen) return null;
@@ -693,14 +702,14 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
 
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-y-auto space-y-4 px-5 py-4">
-          {/* Preview */}
+          {/* Preview — แสดงข้อความจริงที่จะส่งไปป้ายรวม suffix */}
           <LedPreview
-            text={text}
+            text={previewText}
             colorHex={currentConfig?.colorHex ?? '#00ffff'}
             speed={currentConfig?.scrollSpeed ?? 10}
           />
 
-          {/* Text */}
+          {/* Text input — ให้พิมพ์เฉพาะข้อความหลัก suffix ไม่ต้องพิมพ์ */}
           <div>
             <label className={labelCls}>ข้อความบนป้ายไฟ <span className="text-red-400">*</span></label>
             <input
@@ -714,17 +723,44 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
             {errors.text && <p className="text-[10px] text-red-400 mt-0.5">{errors.text}</p>}
           </div>
 
-          <div className="text-[11px] text-gray-500 bg-gray-800/30 border border-gray-700/40 rounded-lg px-3 py-2 space-y-1">
-            <div>ใช้ <span className="text-gray-300 font-semibold">สี/ความเร็ว/ฟอนต์เดิม</span> ของเครื่องนี้ (ปรับได้ที่หน้าหลักด้านนอก)</div>
-            {recorderName && (
-              <div className="pt-1 border-t border-gray-700/40">
-                <span className="text-gray-500">ป้ายไฟจะแสดง: </span>
-                <span className="text-cyan-400/80 font-mono break-all">
-                  {text.trim() || '…'}{' |- '}{recorderName}{' '}{formatDateThaiShort()}{' - '}{formatTimeThaiDot()}
-                </span>
+          {/* Checkbox แสดงชื่อ/วันที่/เวลา */}
+          {recorderName && (
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <div className="relative flex-shrink-0 mt-0.5">
+                <input
+                  type="checkbox"
+                  checked={showSuffix}
+                  onChange={e => setShowSuffix(e.target.checked)}
+                  className="sr-only"
+                />
+                <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                  showSuffix
+                    ? 'bg-cyan-500 border-cyan-500'
+                    : 'bg-transparent border-gray-500 group-hover:border-gray-400'
+                }`}>
+                  {showSuffix && (
+                    <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none">
+                      <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
               </div>
-            )}
-          </div>
+              <div className="min-w-0">
+                <p className="text-xs text-gray-300 font-medium leading-tight">แสดงชื่อ / วันที่ / เวลา ท้ายข้อความ</p>
+                {showSuffix ? (
+                  <p className="text-[10px] text-cyan-400/70 font-mono mt-0.5 break-all leading-relaxed">
+                    {text.trim() || '…'}<span className="text-gray-500">{suffixPreview}</span>
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-gray-600 mt-0.5">ส่งเฉพาะข้อความ ไม่มีชื่อ/วันที่</p>
+                )}
+              </div>
+            </label>
+          )}
+
+          <p className="text-[11px] text-gray-600">
+            ใช้ <span className="text-gray-400 font-semibold">สี / ความเร็ว / ฟอนต์เดิม</span> ของเครื่องนี้
+          </p>
 
           {confirmError && (
             <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
@@ -933,7 +969,7 @@ const ControlPanel = ({
   machine, config, onChange, onSpeedChange, onOpenPopup, onOpenQuick, onClearLed,
   onPing, onForceSync, sendStatus, pingStatus, pingMsg, errorMsg,
   wifiStatus = 'noip', syncStatus = 'idle', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
-  deviceLocalIp = null, heartbeatSecondsAgo = null,
+  deviceLocalIp = null, heartbeatSecondsAgo = null, deviceRssi = null, deviceTemp = null,
 }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
@@ -942,6 +978,21 @@ const ControlPanel = ({
   const sheetIps = String(machine?.ledIp ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const { r, g, b } = hexToRgb(colorHex);
   const otaUrl = deviceLocalIp ? `http://${deviceLocalIp}/update` : null;
+  const statusUrl = deviceLocalIp ? `http://${deviceLocalIp}/status` : null;
+  const rssiText = deviceRssi == null
+    ? null
+    : deviceRssi >= -60
+      ? t('production.ledWifiRssiGood', { rssi: deviceRssi })
+      : deviceRssi >= -75
+        ? t('production.ledWifiRssiOk', { rssi: deviceRssi })
+        : t('production.ledWifiRssiWeak', { rssi: deviceRssi });
+  const rssiClass = deviceRssi == null
+    ? 'text-gray-500'
+    : deviceRssi >= -60
+      ? 'text-green-400'
+      : deviceRssi >= -75
+        ? 'text-yellow-400'
+        : 'text-red-400';
 
   return (
     <div className="flex flex-col gap-4">
@@ -996,6 +1047,19 @@ const ControlPanel = ({
         }`}>
           {deviceLocalIp ?? t('production.ledWifiIpUnknown')}
         </p>
+        <div className="pt-1">
+          <span className="text-[10px] text-gray-500 uppercase tracking-wide">
+            {t('production.ledWifiRssiLabel')}
+          </span>
+          <p className={`font-mono text-sm font-semibold ${rssiClass}`}>
+            {rssiText ?? t('production.ledWifiRssiUnknown')}
+          </p>
+          {deviceTemp != null && (
+            <p className="text-[10px] text-gray-500 mt-0.5">
+              CPU {deviceTemp.toFixed(1)}°C
+            </p>
+          )}
+        </div>
         {otaUrl && (
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
             <a
@@ -1006,6 +1070,16 @@ const ControlPanel = ({
             >
               {t('production.ledOtaOpen')} → /update
             </a>
+            {statusUrl && (
+              <a
+                href={statusUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-600/50 bg-gray-800/60 px-3 py-1.5 text-xs font-semibold text-gray-300 hover:bg-gray-700/60"
+              >
+                {t('production.ledDeviceStatusOpen')}
+              </a>
+            )}
             <span className="text-[10px] text-gray-500">{t('production.ledOtaHint')}</span>
           </div>
         )}
@@ -1223,6 +1297,8 @@ const LedSignView = ({
   const [wifiStatuses, setWifiStatuses] = useState({});
   const [deviceLocalIps, setDeviceLocalIps] = useState({});
   const [heartbeatAgo, setHeartbeatAgo] = useState({});
+  const [deviceRssi, setDeviceRssi] = useState({});
+  const [deviceTemp, setDeviceTemp] = useState({});
 
   // Popup state (full — พร้อม log สถานะเครื่องจักร)
   const [popupOpen,      setPopupOpen]      = useState(false);
@@ -1315,6 +1391,62 @@ const LedSignView = ({
     if (name) return name;
     return String(mState.orderId ?? '').trim();
   }, [allMachineStates]);
+
+  /** ส่งสิ่งที่หน้าเว็บแสดงอยู่ไปป้าย (ใช้เมื่อป้ายเพิ่งเปิด/กลับมาออนไลน์) */
+  const pushLedDisplayToDevice = useCallback(async (machineId) => {
+    const machine = validMachines.find((m) => m.id === machineId);
+    if (!machine?.ledIp) return;
+
+    const cfg = configsRef.current[machineId] ?? DEFAULT_CONFIG;
+    const ledState = ledStatesRef.current[machineId];
+    const mState = allMachineStatesRef.current[machineId];
+    const isOverridden = Boolean(ledState?.textOverride);
+    const isCleared = ledState?.showClock || (!String(cfg.text ?? '').trim() && !isOverridden);
+
+    if (isCleared) {
+      await queueLedCommand(machineId, LED_CLEAR_PAYLOAD);
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: '|CLOCK|' };
+      return;
+    }
+
+    let displayText = String(cfg.text ?? '').trim();
+    let displayR = 0;
+    let displayG = 255;
+    let displayB = 255;
+
+    if (!isOverridden && mState?.mode === 'live') {
+      const liveTxt = getLiveProductText(machineId);
+      if (liveTxt) {
+        displayText = liveTxt;
+        displayR = 0;
+        displayG = 255;
+        displayB = 0;
+      }
+    } else {
+      const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+      displayR = r;
+      displayG = g;
+      displayB = b;
+    }
+
+    if (!displayText) return;
+
+    const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+    const sig = `${displayText}|${displayR},${displayG},${displayB}|${cfg.fontSize ?? 1}|${speedMs}`;
+    if (lastQueuedSigRef.current[machineId] === sig) return;
+
+    await queueLedCommand(machineId, {
+      text: displayText,
+      r: displayR,
+      g: displayG,
+      b: displayB,
+      fontSize: cfg.fontSize ?? 1,
+      speed: speedMs,
+      textOverride: isOverridden,
+      ...getLiveCounterPayload(machineId),
+    });
+    lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
+  }, [validMachines, getLiveCounterPayload, getLiveProductText]);
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
@@ -1516,6 +1648,7 @@ const LedSignView = ({
 
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
+  const prevWifiOnlineRef = useRef({});
 
   useEffect(() => {
     if (pingIntervalRef.current) {
@@ -1529,20 +1662,35 @@ const LedSignView = ({
 
     const applyHeartbeat = (result) => {
       const localIp = result?.deviceLocalIp?.trim() || null;
+      const wasOnline = prevWifiOnlineRef.current[sid] === true;
+      const isOnline = Boolean(result?.online);
+
       setDeviceLocalIps((prev) => ({ ...prev, [sid]: localIp }));
       setHeartbeatAgo((prev) => ({
         ...prev,
         [sid]: result?.secondsAgo != null ? result.secondsAgo : null,
       }));
-      if (result?.online) {
+      setDeviceRssi((prev) => ({
+        ...prev,
+        [sid]: result?.rssi != null ? result.rssi : null,
+      }));
+      setDeviceTemp((prev) => ({
+        ...prev,
+        [sid]: result?.temp != null ? result.temp : null,
+      }));
+      if (isOnline) {
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
         setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
+        if (!wasOnline) {
+          pushLedDisplayToDevice(sid).catch(() => {});
+        }
       } else {
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
         const ago = result?.secondsAgo != null ? ` (${result.secondsAgo}s ago)` : '';
         setPingMsgs((prev) => ({ ...prev, [sid]: `Offline${ago}` }));
         if (!localIp) setDeviceLocalIps((prev) => ({ ...prev, [sid]: null }));
       }
+      prevWifiOnlineRef.current[sid] = isOnline;
     };
 
     const doPing = (showChecking = false) => {
@@ -1566,7 +1714,7 @@ const LedSignView = ({
         pingIntervalRef.current = null;
       }
     };
-  }, [sid]);
+  }, [sid, pushLedDisplayToDevice]);
 
   // ── Popup handlers ────────────────────────────────────────────────────────
   const handleOpenPopup = useCallback(() => {
@@ -1643,7 +1791,7 @@ const LedSignView = ({
   }, [sid, selectedMachine, configs, config, allMachineStates, onPauseOrder]);
 
   // ── Quick LED handler (ไม่ log สถานะเครื่องจักร) ──────────────────────────
-  const handleQuickLed = useCallback(async ({ text }) => {
+  const handleQuickLed = useCallback(async ({ text, showSuffix = true }) => {
     if (!selectedMachine?.id || !sid) return;
     setQuickSubmitting(true);
     setQuickError('');
@@ -1652,9 +1800,8 @@ const LedSignView = ({
       const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
 
-      // ต่อท้ายชื่อผู้แก้ไข วันที่ เวลา เช่น "ป้ายไฟพร้อม |- เกียรติภูมิ 28/5/69 - 17.28น."
       const now = new Date();
-      const nameSuffix = defaultRecorderName
+      const nameSuffix = showSuffix && defaultRecorderName
         ? ` |- ${defaultRecorderName} ${formatDateThaiShort(now)} - ${formatTimeThaiDot(now)}`
         : '';
       const fullText = text + nameSuffix;
@@ -1697,10 +1844,22 @@ const LedSignView = ({
         ...prev,
         [sid]: hb.secondsAgo != null ? hb.secondsAgo : null,
       }));
+      setDeviceRssi((prev) => ({
+        ...prev,
+        [sid]: hb.rssi != null ? hb.rssi : null,
+      }));
+      setDeviceTemp((prev) => ({
+        ...prev,
+        [sid]: hb.temp != null ? hb.temp : null,
+      }));
 
       if (hb.online) {
         setPingStatuses((prev)  => ({ ...prev, [sid]: 'ok' }));
         setWifiStatuses((prev)  => ({ ...prev, [sid]: 'online' }));
+        if (prevWifiOnlineRef.current[sid] !== true) {
+          pushLedDisplayToDevice(sid).catch(() => {});
+        }
+        prevWifiOnlineRef.current[sid] = true;
         if (localIp) {
           try {
             const result = await pingLed(localIp);
@@ -1752,7 +1911,7 @@ const LedSignView = ({
       setPingMsgs((prev)      => ({ ...prev, [sid]: err.message ?? 'Connection failed' }));
     }
     setTimeout(() => setPingStatuses((prev) => ({ ...prev, [sid]: 'idle' })), 6000);
-  }, [sid, selectedMachine]);
+  }, [sid, selectedMachine, pushLedDisplayToDevice]);
 
   const [clearStatus, setClearStatus] = useState('idle');
 
@@ -1956,6 +2115,8 @@ const LedSignView = ({
               wifiStatus={wifiStatuses[sid] ?? 'checking'}
               deviceLocalIp={deviceLocalIps[sid] ?? null}
               heartbeatSecondsAgo={heartbeatAgo[sid] ?? null}
+              deviceRssi={deviceRssi[sid] ?? null}
+              deviceTemp={deviceTemp[sid] ?? null}
               syncStatus={syncStatus}
               speedForAll={speedForAll}
               onSpeedForAllChange={handleSpeedForAll}

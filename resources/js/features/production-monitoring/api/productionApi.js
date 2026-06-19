@@ -382,10 +382,18 @@ export const getLedStatus = (machineId) =>
  * เช็คสถานะ WiFi ของป้ายไฟจาก heartbeat (timestamp ล่าสุดที่ ESP32 poll /led-command)
  * ใช้แทนการ ping IP โดยตรง — ทำงานได้แม้ PC กับ ESP32 อยู่คนละ subnet
  *
- * Response: { success, machineId, online: bool, lastSeenAt: string|null, secondsAgo: number|null }
+ * Response: { success, machineId, online, lastSeenAt, secondsAgo, deviceLocalIp, rssi, temp, uptimeSec }
  */
 export const getLedHeartbeat = (machineId) =>
   get(`/led-heartbeat/${encodeURIComponent(machineId)}`);
+
+/**
+ * GET /api/production-monitor/scale-heartbeat/{machineId}
+ *
+ * เช็คสถานะ WiFi ของตาชั่งจาก heartbeat (poll scale-live / scale-command)
+ */
+export const getScaleHeartbeat = (machineId) =>
+  get(`/scale-heartbeat/${encodeURIComponent(machineId)}`);
 
 /** ข้อความป้ายไฟเมื่อหยุด / Pause จากการแก้ข้อความในหน้า LED */
 export const LED_BREAKDOWN_PAYLOAD = {
