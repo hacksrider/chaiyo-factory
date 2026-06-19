@@ -246,6 +246,55 @@ class ProductionMonitorController extends Controller
         }
     }
 
+    /**
+     * POST /api/production-monitor/led-reboot?ledIp=192.168.1.108
+     *
+     * สั่ง ESP32 รีสตาร์ทผ่าน HTTP (เทียบเท่ากดปุ่ม RST บนบอร์ด)
+     * ต้องอัปโหลด firmware ที่มี GET/POST /reboot บน ESP32
+     */
+    public function rebootLed(Request $request): JsonResponse
+    {
+        $ledIp = trim($request->input('ledIp', ''));
+        if ($ledIp === '') {
+            return response()->json(['success' => false, 'message' => 'ledIp is required'], 422);
+        }
+
+        if (! filter_var($ledIp, FILTER_VALIDATE_IP)) {
+            return response()->json(['success' => false, 'message' => 'Invalid ledIp'], 422);
+        }
+
+        try {
+            $response = Http::withOptions(['connect_timeout' => 3])
+                ->timeout(4)
+                ->post("http://{$ledIp}/reboot");
+
+            if ($response->successful()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Reboot command accepted',
+                    'body'    => $response->json() ?? $response->body(),
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'ESP32 rejected reboot (HTTP '.$response->status().') — อัปโหลด firmware ที่มี /reboot',
+            ], 502);
+
+        } catch (ConnectionException $e) {
+            // บอร์ดมักตัดการเชื่อมต่อทันทีหลัง ESP.restart()
+            return response()->json([
+                'success' => true,
+                'message' => 'Reboot command sent (connection dropped — board restarting)',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // LED command queue  (polling architecture)
     // ──────────────────────────────────────────────────────────────────────────

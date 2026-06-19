@@ -4,10 +4,9 @@ import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import {
   queueLedCommand,
-  LED_CLEAR_PAYLOAD,
-  pingLedMulti,
   getLedStatus,
   getLedHeartbeat,
+  rebootLedMulti,
   appendMachineLog,
   fetchMachineLogReporters,
   storeMachineLogReporter,
@@ -27,6 +26,7 @@ const hexToRgb = (hex) => ({
 
 // Speed 1 (ช้าสุด) → 800ms/px … Speed 10 → 50ms/px (default Arduino) … Speed 15 → 20ms/px
 const SPEED_MS = [800, 600, 450, 320, 250, 200, 160, 110, 80, 50, 42, 35, 28, 24, 20];
+const WIFI_FAILS_BEFORE_OFFLINE = 2;
 
 const DEFAULT_CONFIG = { text: '', colorHex: '#00ffff', fontSize: 1, scrollSpeed: 10 };
 
@@ -37,6 +37,45 @@ function buildLedConfigSignature(cfg) {
   const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
   const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
   return `${t}|${r},${g},${b}|${cfg.fontSize ?? 1}|${speedMs}`;
+}
+
+function buildClockPayload(colorHex, cfg = {}) {
+  const { r, g, b } = hexToRgb(colorHex ?? '#00ff00');
+  const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+  return {
+    text: '',
+    showClock: true,
+    r,
+    g,
+    b,
+    fontSize: cfg.fontSize ?? 1,
+    speed: speedMs,
+    actual: '0',
+    target: '0',
+  };
+}
+
+function buildClockSignature(colorHex) {
+  const { r, g, b } = hexToRgb(colorHex ?? '#00ff00');
+  return `|CLOCK|${r},${g},${b}|`;
+}
+
+function formatPreviewClock(now = new Date()) {
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  return `${h} : ${m} : ${s}`;
+}
+
+function collectRebootIps(localIp, sheetIp) {
+  const ips = [];
+  const add = (ip) => {
+    const trimmed = String(ip ?? '').trim();
+    if (trimmed && !ips.includes(trimmed)) ips.push(trimmed);
+  };
+  add(localIp);
+  String(sheetIp ?? '').split(',').forEach((part) => add(part));
+  return ips;
 }
 
 function serverStateToSignature(st) {
@@ -106,6 +145,11 @@ const LED_COMBINING = new Set([
 ]);
 
 const ETL14_ADVANCE = 7;
+/** โซนข้อความบนป้ายจริง: 3 แผ่น P10 (32×16) = 96×16 px */
+const LED_PANEL_W_PX = 32;
+const LED_NAME_PANELS = 3;
+const LED_NAME_ZONE_PX = LED_PANEL_W_PX * LED_NAME_PANELS;
+const LED_PANEL_H_PX = 16;
 
 function getLedPx(text) {
   if (!text) return 0;
@@ -176,7 +220,6 @@ const COLOR_PRESETS = [
   { hex: '#ffff00', label: 'เหลือง' },
   { hex: '#aaff00', label: 'เขียวเหลือง' },
   { hex: '#00ff00', label: 'เขียว' },
-  { hex: '#ffffff', label: 'ขาว' },
 ];
 
 // ─── LedFormPopup ─────────────────────────────────────────────────────────────
@@ -824,44 +867,40 @@ const StatusBadge = ({ status }) => {
 };
 
 // ─── LedPreview ───────────────────────────────────────────────────────────────
-const LedPreview = ({ text, colorHex, speed = 10 }) => {
-  const boxRef  = useRef(null);
+const LedPreview = ({ text, colorHex, speed = 10, showClock = false }) => {
   const textRef = useRef(null);
-  const [fs,    setFs]   = useState(28);
-  const [boxW,  setBoxW] = useState(0);
   const [textW, setTextW] = useState(0);
+  const [clockText, setClockText] = useState(() => formatPreviewClock());
+  const boxW = LED_NAME_ZONE_PX;
+  const fs = 10;
 
-  useLayoutEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const measure = () => {
-      setFs(Math.max(8, Math.round(box.offsetHeight * 0.64)));
-      setBoxW(box.offsetWidth);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(box);
-    return () => ro.disconnect();
-  }, []);
+  useEffect(() => {
+    if (!showClock) return undefined;
+    setClockText(formatPreviewClock());
+    const id = setInterval(() => setClockText(formatPreviewClock()), 1000);
+    return () => clearInterval(id);
+  }, [showClock]);
+
+  const displayText = showClock ? clockText : text;
 
   useLayoutEffect(() => {
     const el = textRef.current;
     if (el) setTextW(el.scrollWidth);
-  }, [text, fs, boxW]);
+  }, [displayText, fs]);
 
-  const ledPx      = getLedPx(text);
-  const isOverflow = ledPx > 64;
+  const ledPx      = getLedPx(displayText);
+  const isOverflow = !showClock && ledPx > LED_NAME_ZONE_PX;
 
   const scrollSpeedMs = SPEED_MS[(speed ?? 10) - 1] ?? 50;
   const duration = isOverflow
-    ? Math.max(1, (64 + ledPx) * scrollSpeedMs / 1000)
+    ? Math.max(1, (LED_NAME_ZONE_PX + ledPx) * scrollSpeedMs / 1000)
     : 0;
 
-  const kfName = `lm_${Math.round(boxW)}_${Math.round(textW)}`.replace(/\./g, '_');
+  const kfName = `lm_${ledPx}_${Math.round(textW)}`.replace(/\./g, '_');
 
-  const targetW   = boxW > 0 && ledPx > 0 ? (ledPx / 64) * boxW : 0;
+  const targetW   = ledPx > 0 ? ledPx : 0;
   const scaleX    = !isOverflow && textW > 0 && targetW > 0 ? targetW / textW : 1;
-  const staticLeft = boxW > 0 && targetW > 0 ? (boxW - targetW) / 2 : 0;
+  const staticLeft = targetW > 0 ? (boxW - targetW) / 2 : 0;
 
   const baseStyle = {
     display:    'inline-block',
@@ -869,37 +908,43 @@ const LedPreview = ({ text, colorHex, speed = 10 }) => {
     fontSize:   `${fs}px`,
     lineHeight:  1,
     color:       colorHex,
-    textShadow: `0 0 6px ${colorHex}bb, 0 0 2px ${colorHex}`,
+    textShadow: `0 0 3px ${colorHex}cc, 0 0 1px ${colorHex}`,
     whiteSpace: 'nowrap',
     fontWeight:  400,
   };
 
   return (
     <>
-      {isOverflow && boxW > 0 && textW > 0 && (
+      {isOverflow && textW > 0 && (
         <style>{`
           @keyframes ${kfName} {
-            from { transform: translateX(${Math.round(boxW)}px); }
+            from { transform: translateX(${boxW}px); }
             to   { transform: translateX(-${Math.round(textW)}px); }
           }
         `}</style>
       )}
       <div
-        ref={boxRef}
-        className="w-full rounded border border-gray-700/50"
-        style={{ background: '#080808', aspectRatio: '64/16', overflow: 'hidden', position: 'relative' }}
+        className="rounded border border-gray-700/50 shrink-0"
+        style={{
+          background:     '#080808',
+          width:          LED_NAME_ZONE_PX,
+          height:         LED_PANEL_H_PX,
+          overflow:       'hidden',
+          position:       'relative',
+          imageRendering: 'pixelated',
+        }}
       >
         <div className="absolute inset-0" style={{ overflow: 'hidden' }}>
-          {text ? (
+          {displayText ? (
             isOverflow ? (
               <div className="absolute inset-0 flex items-center">
                 <span ref={textRef} style={{
                   ...baseStyle,
-                  animation: boxW > 0 && textW > 0
+                  animation: textW > 0
                     ? `${kfName} ${duration.toFixed(2)}s linear infinite`
                     : 'none',
                 }}>
-                  {text}
+                  {displayText}
                 </span>
               </div>
             ) : (
@@ -907,19 +952,20 @@ const LedPreview = ({ text, colorHex, speed = 10 }) => {
                 <span ref={textRef} style={{
                   ...baseStyle,
                   position:        'absolute',
+                  top:             '50%',
                   left:            `${Math.round(staticLeft)}px`,
                   transformOrigin: 'left center',
-                  transform:       boxW > 0 && textW > 0
-                    ? `scaleX(${scaleX.toFixed(4)})`
-                    : 'none',
+                  transform:       textW > 0
+                    ? `translateY(-50%) scaleX(${scaleX.toFixed(4)})`
+                    : 'translateY(-50%)',
                 }}>
-                  {text}
+                  {displayText}
                 </span>
               </div>
             )
           ) : (
-            <div className="absolute inset-0 flex items-center" style={{ paddingLeft: 6 }}>
-              <span style={{ color: '#2a2a2a', fontFamily: 'monospace', fontSize: `${Math.round(fs * 0.45)}px` }}>
+            <div className="absolute inset-0 flex items-center" style={{ paddingLeft: 2 }}>
+              <span style={{ color: '#2a2a2a', fontFamily: 'monospace', fontSize: '7px' }}>
                 preview…
               </span>
             </div>
@@ -931,7 +977,7 @@ const LedPreview = ({ text, colorHex, speed = 10 }) => {
 };
 
 // ─── WiFiBadge ────────────────────────────────────────────────────────────────
-const WiFiBadge = ({ status, onPing }) => {
+const WiFiBadge = ({ status, onReboot, rebooting = false, canReboot = false, compact = false }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
 
@@ -942,6 +988,30 @@ const WiFiBadge = ({ status, onPing }) => {
     noip:     { dot: 'bg-gray-500',                 text: 'text-gray-500',   label: t('production.ledStatusNoIp'),     bg: 'bg-gray-700/30 border-gray-600/20' },
   }[status] ?? { dot: 'bg-gray-500', text: 'text-gray-500', label: status, bg: 'bg-gray-700/30 border-gray-600/20' };
 
+  const rebootTitle = status === 'offline'
+    ? t('production.ledRebootBoardTitleOffline')
+    : t('production.ledRebootBoardTitle');
+
+  if (compact) {
+    return (
+      <div className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${cfg.bg}`}>
+        <span className={`h-2 w-2 flex-shrink-0 rounded-full ${cfg.dot}`} />
+        <span className={`text-[11px] font-semibold leading-none ${cfg.text}`}>{cfg.label}</span>
+        {canReboot && (
+          <button
+            type="button"
+            onClick={onReboot}
+            disabled={rebooting}
+            title={rebootTitle}
+            className="ml-0.5 text-[10px] font-semibold text-orange-300 transition-all hover:text-orange-100 disabled:cursor-wait disabled:opacity-40"
+          >
+            {rebooting ? '…' : 'RST'}
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border ${cfg.bg}`}>
       <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
@@ -949,34 +1019,50 @@ const WiFiBadge = ({ status, onPing }) => {
         <span className="text-[10px] text-gray-500 uppercase tracking-wide leading-none mb-0.5">{t('production.ledStatusLabel')}</span>
         <span className={`text-xs font-semibold ${cfg.text}`}>{cfg.label}</span>
       </div>
-      {status !== 'noip' && (
+      {canReboot && (
         <button
           type="button"
-          onClick={onPing}
-          disabled={status === 'checking'}
-          title={t('production.ledPingCheckAgain')}
-          className="ml-1 text-[10px] text-gray-400 hover:text-white border border-gray-600/50 hover:border-gray-400/60 px-1.5 py-0.5 rounded transition-all disabled:opacity-40 disabled:cursor-wait flex-shrink-0"
+          onClick={onReboot}
+          disabled={rebooting}
+          title={rebootTitle}
+          className="ml-1 text-[10px] font-semibold text-orange-300 hover:text-orange-100 border border-orange-500/40 hover:border-orange-400/60 px-1.5 py-0.5 rounded transition-all disabled:opacity-40 disabled:cursor-wait flex-shrink-0"
         >
-          {status === 'checking' ? '…' : '↻'}
+          {rebooting ? '…' : 'RST'}
         </button>
       )}
     </div>
   );
 };
 
+const DeviceStat = ({ label, value, valueClass = 'text-white', hint = null }) => (
+  <div className="min-w-0 px-4 py-3">
+    <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
+    <p className={`break-all font-mono text-sm font-semibold leading-snug ${valueClass}`}>{value}</p>
+    {hint && <p className="mt-1 text-[10px] text-gray-600">{hint}</p>}
+  </div>
+);
+
 // ─── ControlPanel ─────────────────────────────────────────────────────────────
 const ControlPanel = ({
   machine, config, onChange, onSpeedChange, onOpenPopup, onOpenQuick, onClearLed,
-  onPing, onForceSync, sendStatus, pingStatus, pingMsg, errorMsg,
+  onReboot, onForceSync, sendStatus, pingStatus, pingMsg, errorMsg,
   wifiStatus = 'noip', syncStatus = 'idle', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
   deviceLocalIp = null, heartbeatSecondsAgo = null, deviceRssi = null, deviceTemp = null,
+  showClock = false, rebooting = false,
 }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
   const { text, colorHex, scrollSpeed = 10 } = config;
   const hasIp = !!machine?.ledIp;
-  const sheetIps = String(machine?.ledIp ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const { r, g, b } = hexToRgb(colorHex);
+  const [headerClock, setHeaderClock] = useState(() => formatPreviewClock());
+
+  useEffect(() => {
+    if (!showClock) return undefined;
+    setHeaderClock(formatPreviewClock());
+    const id = setInterval(() => setHeaderClock(formatPreviewClock()), 1000);
+    return () => clearInterval(id);
+  }, [showClock]);
   const otaUrl = deviceLocalIp ? `http://${deviceLocalIp}/update` : null;
   const statusUrl = deviceLocalIp ? `http://${deviceLocalIp}/status` : null;
   const rssiText = deviceRssi == null
@@ -994,120 +1080,207 @@ const ControlPanel = ({
         ? 'text-yellow-400'
         : 'text-red-400';
 
+  const cardTone = wifiStatus === 'online'
+    ? 'border-cyan-500/20 bg-gradient-to-br from-gray-900/90 via-gray-900/80 to-cyan-950/25'
+    : wifiStatus === 'offline'
+      ? 'border-red-500/15 bg-gradient-to-br from-gray-900/90 via-gray-900/80 to-red-950/20'
+      : 'border-gray-700/50 bg-gray-900/70';
+
+  const syncBtnCls = syncStatus === 'syncing'
+    ? 'border-gray-600/30 bg-gray-700/40 text-gray-500 cursor-wait'
+    : syncStatus === 'ok'
+      ? 'border-green-500/30 bg-green-500/15 text-green-400'
+      : syncStatus === 'error'
+        ? 'border-red-500/30 bg-red-500/15 text-red-400'
+        : 'border-indigo-500/25 bg-indigo-500/10 text-indigo-300 hover:border-indigo-400/40 hover:bg-indigo-500/20';
+
   return (
     <div className="flex flex-col gap-4">
 
-      {/* ── Machine Header ── */}
-      <div className="flex w-full flex-wrap items-center gap-2 sm:gap-3">
-        <h3 className="min-w-0 flex-1 truncate text-2xl font-bold leading-none text-white sm:text-3xl md:text-4xl lg:text-5xl">
-          {machine?.label || machine?.id}
-        </h3>
-        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-          <WiFiBadge status={wifiStatus} onPing={onPing} />
-          {hasIp && config.text && (
-            <button
-              type="button"
-              onClick={onForceSync}
-              disabled={syncStatus === 'syncing'}
-              title={t('production.ledForceSyncTitle')}
-              className={`shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
-                syncStatus === 'syncing' ? 'bg-gray-700/40 border-gray-600/30 text-gray-500 cursor-wait' :
-                syncStatus === 'ok'      ? 'bg-green-500/15 border-green-500/30 text-green-400' :
-                syncStatus === 'error'   ? 'bg-red-500/15 border-red-500/30 text-red-400' :
-                'bg-indigo-500/10 border-indigo-500/25 text-indigo-400 hover:bg-indigo-500/20 hover:border-indigo-400/40'
-              }`}
-            >
-              {syncStatus === 'syncing' ? t('production.ledSyncSyncing') :
-               syncStatus === 'ok'      ? t('production.ledSyncOk') :
-               syncStatus === 'error'   ? t('production.ledSyncError') :
-               t('production.ledSyncIdle')}
-            </button>
-          )}
+      {/* ── Device overview (header + telemetry) ── */}
+      <div className={`overflow-hidden rounded-2xl border ${cardTone}`}>
+        <div className="flex flex-col gap-3 border-b border-white/5 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="mb-0.5 text-[10px] uppercase tracking-widest text-gray-500">{machine?.id}</p>
+            <h3 className="truncate text-xl font-bold leading-tight text-white sm:text-2xl">
+              {machine?.label || machine?.id}
+            </h3>
+            {machine?.zone && (
+              <p className="mt-0.5 truncate text-[11px] text-gray-500">{machine.zone}</p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <WiFiBadge
+              status={wifiStatus}
+              onReboot={onReboot}
+              rebooting={rebooting}
+              canReboot={hasIp || !!deviceLocalIp}
+              compact
+            />
+            {hasIp && config.text && (
+              <button
+                type="button"
+                onClick={onForceSync}
+                disabled={syncStatus === 'syncing'}
+                title={t('production.ledForceSyncTitle')}
+                className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition-all ${syncBtnCls}`}
+              >
+                {syncStatus === 'syncing' ? t('production.ledSyncSyncing') :
+                 syncStatus === 'ok'      ? t('production.ledSyncOk') :
+                 syncStatus === 'error'   ? t('production.ledSyncError') :
+                 t('production.ledSyncIdle')}
+              </button>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* ── IP ป้าย (จาก ESP poll) + ชีต Settings ── */}
-      <div className={`rounded-xl border px-3 py-2.5 text-[11px] space-y-2 ${
-        wifiStatus === 'online'
-          ? 'bg-cyan-500/8 border-cyan-500/25'
-          : 'bg-gray-800/50 border-gray-700/50'
-      }`}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-gray-500 uppercase tracking-wide text-[10px]">
-            {t('production.ledWifiIpLabel')}
-          </span>
-          {heartbeatSecondsAgo != null && wifiStatus === 'online' && (
-            <span className="text-gray-500 text-[10px]">
-              {t('production.ledOnlineAgo', { ago: heartbeatSecondsAgo })}
-            </span>
-          )}
+        <div className="grid grid-cols-1 divide-y divide-white/5 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <DeviceStat
+            label={t('production.ledWifiIpLabel')}
+            value={deviceLocalIp ?? t('production.ledWifiIpUnknown')}
+            valueClass={deviceLocalIp ? 'text-cyan-300' : 'text-gray-500'}
+            hint={
+              heartbeatSecondsAgo != null && wifiStatus === 'online'
+                ? t('production.ledOnlineAgo', { ago: heartbeatSecondsAgo })
+                : null
+            }
+          />
+          <DeviceStat
+            label={t('production.ledWifiRssiLabel')}
+            value={rssiText ?? t('production.ledWifiRssiUnknown')}
+            valueClass={rssiClass}
+          />
+          <DeviceStat
+            label={t('production.ledDeviceTempLabel')}
+            value={deviceTemp != null ? `${deviceTemp.toFixed(1)}°C` : '—'}
+            valueClass={deviceTemp != null ? 'text-gray-200' : 'text-gray-500'}
+          />
         </div>
-        <p className={`font-mono text-sm font-semibold break-all ${
-          deviceLocalIp ? 'text-cyan-300' : 'text-gray-500'
-        }`}>
-          {deviceLocalIp ?? t('production.ledWifiIpUnknown')}
-        </p>
-        <div className="pt-1">
-          <span className="text-[10px] text-gray-500 uppercase tracking-wide">
-            {t('production.ledWifiRssiLabel')}
-          </span>
-          <p className={`font-mono text-sm font-semibold ${rssiClass}`}>
-            {rssiText ?? t('production.ledWifiRssiUnknown')}
-          </p>
-          {deviceTemp != null && (
-            <p className="text-[10px] text-gray-500 mt-0.5">
-              CPU {deviceTemp.toFixed(1)}°C
-            </p>
-          )}
-        </div>
+
         {otaUrl && (
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-            <a
-              href={otaUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25"
-            >
-              {t('production.ledOtaOpen')} → /update
-            </a>
-            {statusUrl && (
+          <div className="flex flex-col gap-2 border-t border-white/5 bg-black/20 px-4 py-2.5 sm:flex-row sm:items-center">
+            <div className="flex flex-wrap gap-2">
               <a
-                href={statusUrl}
+                href={otaUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-600/50 bg-gray-800/60 px-3 py-1.5 text-xs font-semibold text-gray-300 hover:bg-gray-700/60"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/25"
               >
-                {t('production.ledDeviceStatusOpen')}
+                {t('production.ledOtaOpen')} → /update
               </a>
-            )}
-            <span className="text-[10px] text-gray-500">{t('production.ledOtaHint')}</span>
-          </div>
-        )}
-        {sheetIps.length > 0 && (
-          <div className="pt-1 border-t border-gray-700/40">
-            <span className="text-[10px] text-gray-500">{t('production.ledSheetIpLabel')}: </span>
-            <span className="font-mono text-[11px] text-gray-400 break-all">{sheetIps.join(' · ')}</span>
+              {statusUrl && (
+                <a
+                  href={statusUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-600/50 bg-gray-800/60 px-3 py-1.5 text-xs font-semibold text-gray-300 transition-colors hover:bg-gray-700/60"
+                >
+                  {t('production.ledDeviceStatusOpen')}
+                </a>
+              )}
+            </div>
+            <span className="text-[10px] text-gray-500 sm:ml-auto">{t('production.ledOtaHint')}</span>
           </div>
         )}
       </div>
 
-      {/* ── Ping / Error message ── */}
       {(pingMsg || errorMsg) && (
-        <div className={`text-[11px] px-3 py-2 rounded-lg border font-mono break-all ${
+        <div className={`break-all rounded-xl border px-3 py-2 font-mono text-[11px] ${
           pingStatus === 'ok' || sendStatus === 'ok'
-            ? 'bg-green-500/10 border-green-500/20 text-green-400'
-            : 'bg-red-500/10 border-red-500/20 text-red-400'
+            ? 'border-green-500/20 bg-green-500/10 text-green-400'
+            : 'border-red-500/20 bg-red-500/10 text-red-400'
         }`}>
           {pingMsg || errorMsg}
         </div>
       )}
 
-      {/* ── Preview ── */}
+      {/* ── แสดงนาฬิกา (ปุ่มบนสุด) ── */}
+      <button
+        type="button"
+        onClick={onClearLed}
+        disabled={!hasIp || clearStatus === 'clearing'}
+        className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
+          !hasIp
+            ? 'bg-gray-700/30 text-gray-600 cursor-not-allowed'
+            : clearStatus === 'clearing'
+            ? 'bg-emerald-500/30 text-emerald-400 cursor-wait'
+            : clearStatus === 'ok'
+            ? 'bg-green-500/20 border border-green-500/40 text-green-300'
+            : clearStatus === 'error'
+            ? 'bg-red-500/20 border border-red-500/40 text-red-300'
+            : showClock
+            ? 'bg-emerald-500/25 border border-emerald-400/50 text-emerald-100 ring-1 ring-emerald-400/30'
+            : 'bg-emerald-500/15 border border-emerald-500/35 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-400/55'
+        }`}
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        {clearStatus === 'clearing'
+          ? t('production.ledClearSending')
+          : clearStatus === 'ok'
+          ? t('production.ledClearOk')
+          : t('production.ledClearBtn')}
+      </button>
+
+      {/* ── Color Picker ── */}
       <div>
-        <LedPreview text={text} colorHex={colorHex} speed={scrollSpeed} />
+        <label className="text-xs text-gray-400 mb-2 block font-medium">
+          {showClock ? t('production.ledClockColor') : t('production.ledTextColor')}
+        </label>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+          <label className="cursor-pointer flex-shrink-0">
+            <input type="color" value={colorHex} onChange={(e) => onChange('colorHex', e.target.value)} className="sr-only" />
+            <div
+              className="w-10 h-10 rounded-lg border-2 border-white/20 shadow-lg"
+              style={{ background: colorHex, boxShadow: `0 0 10px ${colorHex}66` }}
+            />
+          </label>
+          <div className="flex gap-1.5 flex-wrap flex-1">
+            {COLOR_PRESETS.map(({ hex, label }) => (
+              <button
+                key={hex}
+                type="button"
+                title={label}
+                onClick={() => onChange('colorHex', hex)}
+                className={`w-7 h-7 rounded-md border-2 transition-all ${
+                  colorHex === hex ? 'border-white scale-110 shadow-lg' : 'border-transparent hover:border-white/50'
+                }`}
+                style={{ background: hex, boxShadow: colorHex === hex ? `0 0 8px ${hex}cc` : undefined }}
+              />
+            ))}
+          </div>
+          <span className="w-full text-left text-[11px] font-mono text-gray-600 sm:w-auto sm:self-center sm:text-right">
+            {r},{g},{b}
+          </span>
+        </div>
       </div>
 
-      {/* ── Scroll Speed ── */}
+      {/* ── Preview ── */}
+      <div className="overflow-hidden rounded-2xl border border-gray-700/50 bg-gray-900/50">
+        <div className="flex items-center justify-between gap-3 border-b border-gray-800/80 bg-gray-900/70 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="h-3 w-3 flex-shrink-0 rounded-sm border border-white/20 shadow-sm"
+              style={{ background: colorHex, boxShadow: `0 0 8px ${colorHex}88` }}
+            />
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              {showClock ? t('production.ledPreviewClockLabel') : t('production.ledPreviewLabel')}
+            </span>
+          </div>
+          {(showClock || text) && (
+            <span className="min-w-0 truncate font-mono text-[10px] text-gray-500" title={showClock ? headerClock : text}>
+              {showClock ? headerClock : text}
+            </span>
+          )}
+        </div>
+        <div className="flex justify-center p-3">
+          <LedPreview text={text} colorHex={colorHex} speed={scrollSpeed} showClock={showClock} />
+        </div>
+      </div>
+
+      {/* ── Scroll Speed (ไม่ใช้ตอนโหมดนาฬิกา) ── */}
+      {!showClock && (
       <div className="rounded-xl bg-gray-800/40 border border-gray-700/40 px-3 py-2.5">
         <div className="flex items-center justify-between mb-2">
           <label className="text-xs text-gray-400 font-medium">{t('production.ledScrollSpeed')}</label>
@@ -1141,41 +1314,7 @@ const ControlPanel = ({
           </span>
         </div>
       </div>
-
-      {/* ── Color Picker ── */}
-      <div>
-        <label className="text-xs text-gray-400 mb-2 block font-medium">{t('production.ledTextColor')}</label>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-          {/* Native color picker */}
-          <label className="cursor-pointer flex-shrink-0">
-            <input type="color" value={colorHex} onChange={(e) => onChange('colorHex', e.target.value)} className="sr-only" />
-            <div
-              className="w-10 h-10 rounded-lg border-2 border-white/20 shadow-lg"
-              style={{ background: colorHex, boxShadow: `0 0 10px ${colorHex}66` }}
-            />
-          </label>
-
-          {/* Color swatches */}
-          <div className="flex gap-1.5 flex-wrap flex-1">
-            {COLOR_PRESETS.map(({ hex, label }) => (
-              <button
-                key={hex}
-                title={label}
-                onClick={() => onChange('colorHex', hex)}
-                className={`w-7 h-7 rounded-md border-2 transition-all ${
-                  colorHex === hex ? 'border-white scale-110 shadow-lg' : 'border-transparent hover:border-white/50'
-                }`}
-                style={{ background: hex, boxShadow: colorHex === hex ? `0 0 8px ${hex}cc` : undefined }}
-              />
-            ))}
-          </div>
-
-          {/* RGB readout */}
-          <span className="w-full text-left text-[11px] font-mono text-gray-600 sm:w-auto sm:self-center sm:text-right">
-            {r},{g},{b}
-          </span>
-        </div>
-      </div>
+      )}
 
       {/* ── Action buttons ── */}
       <div className="flex flex-col gap-2">
@@ -1200,31 +1339,6 @@ const ControlPanel = ({
           </svg>
           เปลี่ยนข้อความด่วน
           <span className="text-[10px] font-normal opacity-60"></span>
-        </button>
-
-        {/* ล้างป้าย — ป้ายแสดงนาฬิกา HH:MM:SS */}
-        <button
-          type="button"
-          onClick={onClearLed}
-          disabled={clearStatus === 'clearing'}
-          className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
-            clearStatus === 'clearing'
-              ? 'bg-gray-600/40 text-gray-400 cursor-wait'
-              : clearStatus === 'ok'
-              ? 'bg-green-500/20 border border-green-500/40 text-green-300'
-              : clearStatus === 'error'
-              ? 'bg-red-500/20 border border-red-500/40 text-red-300'
-              : 'bg-gray-700/40 border border-gray-500/50 text-gray-200 hover:bg-gray-600/50 hover:border-gray-400/60'
-          }`}
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-          {clearStatus === 'clearing'
-            ? t('production.ledClearSending')
-            : clearStatus === 'ok'
-            ? t('production.ledClearOk')
-            : t('production.ledClearBtn')}
         </button>
 
         {/* Full change — บันทึก Machine Log */}
@@ -1299,6 +1413,9 @@ const LedSignView = ({
   const [heartbeatAgo, setHeartbeatAgo] = useState({});
   const [deviceRssi, setDeviceRssi] = useState({});
   const [deviceTemp, setDeviceTemp] = useState({});
+  const [rebootingBoard, setRebootingBoard] = useState(false);
+  const deviceLocalIpsRef = useRef(deviceLocalIps);
+  useEffect(() => { deviceLocalIpsRef.current = deviceLocalIps; }, [deviceLocalIps]);
 
   // Popup state (full — พร้อม log สถานะเครื่องจักร)
   const [popupOpen,      setPopupOpen]      = useState(false);
@@ -1351,6 +1468,7 @@ const LedSignView = ({
   useEffect(() => { ledStatesRef.current = ledStates; }, [ledStates]);
   const allMachineStatesRef = useRef(allMachineStates);
   useEffect(() => { allMachineStatesRef.current = allMachineStates; }, [allMachineStates]);
+  const pushLedDisplayToDeviceRef = useRef(null);
 
   // Reset textOverride เมื่อ orderId เปลี่ยน (เริ่มงานใหม่) — ป้องกันข้อความเก่าค้าง
   const prevOrderIdRef = useRef({});
@@ -1404,8 +1522,9 @@ const LedSignView = ({
     const isCleared = ledState?.showClock || (!String(cfg.text ?? '').trim() && !isOverridden);
 
     if (isCleared) {
-      await queueLedCommand(machineId, LED_CLEAR_PAYLOAD);
-      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: '|CLOCK|' };
+      const payload = buildClockPayload(cfg.colorHex, cfg);
+      await queueLedCommand(machineId, payload);
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: buildClockSignature(cfg.colorHex) };
       return;
     }
 
@@ -1447,6 +1566,9 @@ const LedSignView = ({
     });
     lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
   }, [validMachines, getLiveCounterPayload, getLiveProductText]);
+  useEffect(() => {
+    pushLedDisplayToDeviceRef.current = pushLedDisplayToDevice;
+  }, [pushLedDisplayToDevice]);
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
@@ -1456,9 +1578,16 @@ const LedSignView = ({
     if (isCleared) {
       setConfigs((prev) => ({
         ...prev,
-        [machineId]: { ...(prev[machineId] ?? DEFAULT_CONFIG), text: '' },
+        [machineId]: {
+          ...(prev[machineId] ?? DEFAULT_CONFIG),
+          text: '',
+          colorHex: rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0),
+        },
       }));
-      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: '|CLOCK|' };
+      lastQueuedSigRef.current = {
+        ...lastQueuedSigRef.current,
+        [machineId]: buildClockSignature(rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0)),
+      };
     } else if (has) {
       const scrollIdx = speedMsToScrollIndex(state.speed);
       setConfigs((prev) => ({
@@ -1618,12 +1747,26 @@ const LedSignView = ({
 
       for (const machine of targets) {
         const cfg = configsRef.current[machine.id] ?? DEFAULT_CONFIG;
+        const ledState = ledStatesRef.current[machine.id];
+        const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+        const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+
+        if (ledState?.showClock) {
+          const sig = buildClockSignature(cfg.colorHex);
+          if (lastQueuedSigRef.current[machine.id] === sig) continue;
+          try {
+            await queueLedCommand(machine.id, buildClockPayload(cfg.colorHex, cfg));
+            lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machine.id]: sig };
+          } catch {
+            /* retry next cycle */
+          }
+          continue;
+        }
+
         const sig = buildLedConfigSignature(cfg);
         if (!sig) continue;
         if (lastQueuedSigRef.current[machine.id] === sig) continue;
 
-        const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
-        const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
         try {
           const liveCounterPayload = getLiveCounterPayload(machine.id);
           await queueLedCommand(machine.id, {
@@ -1631,7 +1774,7 @@ const LedSignView = ({
             r, g, b,
             fontSize: cfg.fontSize ?? 1,
             speed: speedMs,
-            textOverride: Boolean(ledStatesRef.current[machine.id]?.textOverride),
+            textOverride: Boolean(ledState?.textOverride),
             ...liveCounterPayload,
           });
           lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machine.id]: sig };
@@ -1644,11 +1787,13 @@ const LedSignView = ({
     return () => {
       if (autoPushDebounceRef.current) clearTimeout(autoPushDebounceRef.current);
     };
-  }, [configs, sid, selectedMachine, speedForAll, validMachines, getLiveCounterPayload]);
+  }, [configs, sid, selectedMachine, speedForAll, validMachines, getLiveCounterPayload, ledStates]);
 
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
   const prevWifiOnlineRef = useRef({});
+  const wifiFailStreakRef = useRef({});
+  const heartbeatInFlightRef = useRef({});
 
   useEffect(() => {
     if (pingIntervalRef.current) {
@@ -1679,29 +1824,48 @@ const LedSignView = ({
         [sid]: result?.temp != null ? result.temp : null,
       }));
       if (isOnline) {
+        wifiFailStreakRef.current[sid] = 0;
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
         setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
         if (!wasOnline) {
-          pushLedDisplayToDevice(sid).catch(() => {});
+          pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
         }
       } else {
+        const failStreak = (wifiFailStreakRef.current[sid] ?? 0) + 1;
+        wifiFailStreakRef.current[sid] = failStreak;
+        if (wasOnline && failStreak < WIFI_FAILS_BEFORE_OFFLINE) {
+          setPingMsgs((prev) => ({ ...prev, [sid]: 'Heartbeat แกว่ง — กำลังตรวจสอบ…' }));
+          return;
+        }
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
         const ago = result?.secondsAgo != null ? ` (${result.secondsAgo}s ago)` : '';
         setPingMsgs((prev) => ({ ...prev, [sid]: `Offline${ago}` }));
-        if (!localIp) setDeviceLocalIps((prev) => ({ ...prev, [sid]: null }));
       }
       prevWifiOnlineRef.current[sid] = isOnline;
     };
 
     const doPing = (showChecking = false) => {
+      if (heartbeatInFlightRef.current[sid]) return;
+      heartbeatInFlightRef.current[sid] = true;
       if (showChecking) {
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'checking' }));
       }
       getLedHeartbeat(sid)
         .then(applyHeartbeat)
         .catch(() => {
+          const wasOnline = prevWifiOnlineRef.current[sid] === true;
+          const failStreak = (wifiFailStreakRef.current[sid] ?? 0) + 1;
+          wifiFailStreakRef.current[sid] = failStreak;
+          if (wasOnline && failStreak < WIFI_FAILS_BEFORE_OFFLINE) {
+            setPingMsgs((prev) => ({ ...prev, [sid]: 'สัญญาณขาดช่วงสั้นๆ — กำลังตรวจสอบ…' }));
+            return;
+          }
+          prevWifiOnlineRef.current[sid] = false;
           setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
           setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
+        })
+        .finally(() => {
+          heartbeatInFlightRef.current[sid] = false;
         });
     };
 
@@ -1714,7 +1878,7 @@ const LedSignView = ({
         pingIntervalRef.current = null;
       }
     };
-  }, [sid, pushLedDisplayToDevice]);
+  }, [sid]);
 
   // ── Popup handlers ────────────────────────────────────────────────────────
   const handleOpenPopup = useCallback(() => {
@@ -1831,108 +1995,102 @@ const LedSignView = ({
     }
   }, [sid, selectedMachine, configs, getLiveCounterPayload, defaultRecorderName]);
 
-  const handlePing = useCallback(async () => {
-    if (!sid) return;
-    setPingStatuses((prev)  => ({ ...prev, [sid]: 'pinging' }));
-    setWifiStatuses((prev)  => ({ ...prev, [sid]: 'checking' }));
-    setPingMsgs((prev)      => ({ ...prev, [sid]: '' }));
-    try {
-      const hb = await getLedHeartbeat(sid);
-      const localIp = hb.deviceLocalIp?.trim() || null;
-      setDeviceLocalIps((prev) => ({ ...prev, [sid]: localIp }));
-      setHeartbeatAgo((prev) => ({
-        ...prev,
-        [sid]: hb.secondsAgo != null ? hb.secondsAgo : null,
-      }));
-      setDeviceRssi((prev) => ({
-        ...prev,
-        [sid]: hb.rssi != null ? hb.rssi : null,
-      }));
-      setDeviceTemp((prev) => ({
-        ...prev,
-        [sid]: hb.temp != null ? hb.temp : null,
-      }));
+  const handleRebootBoard = useCallback(async () => {
+    if (!sid || rebootingBoard) return;
 
-      if (hb.online) {
-        setPingStatuses((prev)  => ({ ...prev, [sid]: 'ok' }));
-        setWifiStatuses((prev)  => ({ ...prev, [sid]: 'online' }));
-        if (prevWifiOnlineRef.current[sid] !== true) {
-          pushLedDisplayToDevice(sid).catch(() => {});
-        }
-        prevWifiOnlineRef.current[sid] = true;
-        if (localIp) {
-          try {
-            const result = await pingLed(localIp);
-            const body = result?.body ?? result;
-            setPingMsgs((prev) => ({
-              ...prev,
-              [sid]: `LAN OK · ${localIp} · "${body?.text ?? ''}"`,
-            }));
-          } catch {
-            setPingMsgs((prev) => ({
-              ...prev,
-              [sid]: `ป้ายออนไลน์ แต่ ping ${localIp} จากคอมนี้ไม่ได้ — ตรวจ WiFi/subnet`,
-            }));
-          }
-        } else {
-          setPingMsgs((prev) => ({
-            ...prev,
-            [sid]: 'ออนไลน์ — รอ localIp (อัปโหลดโค้ด ESP ใหม่ที่ส่ง ?localIp=)',
-          }));
-        }
-      } else {
-        const sheetIp = selectedMachine?.ledIp;
-        if (sheetIp) {
-          try {
-            const result = await pingLedMulti(sheetIp);
-            setDeviceLocalIps((prev) => ({ ...prev, [sid]: result.ip }));
-            setPingStatuses((prev)  => ({ ...prev, [sid]: 'ok' }));
-            setWifiStatuses((prev)  => ({ ...prev, [sid]: 'online' }));
-            setPingMsgs((prev)      => ({
-              ...prev,
-              [sid]: `เชื่อมตามชีต [${result.ip}] · ยังไม่มี heartbeat ล่าสุด`,
-            }));
-          } catch {
-            const ago = hb.secondsAgo != null ? ` (${hb.secondsAgo}s ago)` : '';
-            setPingStatuses((prev)  => ({ ...prev, [sid]: 'error' }));
-            setWifiStatuses((prev)  => ({ ...prev, [sid]: 'offline' }));
-            setPingMsgs((prev)      => ({ ...prev, [sid]: `Offline${ago}` }));
-          }
-        } else {
-          const ago = hb.secondsAgo != null ? ` (${hb.secondsAgo}s ago)` : '';
-          setPingStatuses((prev)  => ({ ...prev, [sid]: 'error' }));
-          setWifiStatuses((prev)  => ({ ...prev, [sid]: 'offline' }));
-          setPingMsgs((prev)      => ({ ...prev, [sid]: `Offline${ago}` }));
-        }
-      }
-    } catch (err) {
-      setPingStatuses((prev)  => ({ ...prev, [sid]: 'error' }));
-      setWifiStatuses((prev)  => ({ ...prev, [sid]: 'offline' }));
-      setPingMsgs((prev)      => ({ ...prev, [sid]: err.message ?? 'Connection failed' }));
+    const localIp = deviceLocalIpsRef.current[sid]?.trim() || '';
+    const sheetIp = selectedMachine?.ledIp?.trim() || '';
+    const ips = collectRebootIps(localIp, sheetIp);
+    if (ips.length === 0) {
+      setPingMsgs((prev) => ({
+        ...prev,
+        [sid]: t('production.ledRebootNoIp'),
+      }));
+      return;
     }
-    setTimeout(() => setPingStatuses((prev) => ({ ...prev, [sid]: 'idle' })), 6000);
-  }, [sid, selectedMachine, pushLedDisplayToDevice]);
+
+    const wasOffline = wifiStatuses[sid] === 'offline' || prevWifiOnlineRef.current[sid] !== true;
+
+    setRebootingBoard(true);
+    setPingMsgs((prev) => ({
+      ...prev,
+      [sid]: wasOffline ? t('production.ledRebootSendingOffline') : t('production.ledRebootSending'),
+    }));
+
+    try {
+      await rebootLedMulti(ips.join(','));
+
+      prevWifiOnlineRef.current[sid] = false;
+      wifiFailStreakRef.current[sid] = 0;
+      setPingMsgs((prev) => ({ ...prev, [sid]: t('production.ledRebootSent') }));
+      await new Promise((resolve) => setTimeout(resolve, 6000));
+
+      for (let attempt = 0; attempt < 15; attempt++) {
+        try {
+          const hb = await getLedHeartbeat(sid);
+          const hbIp = hb.deviceLocalIp?.trim() || localIp || ips[0] || null;
+          setDeviceLocalIps((prev) => ({ ...prev, [sid]: hbIp }));
+          setHeartbeatAgo((prev) => ({
+            ...prev,
+            [sid]: hb.secondsAgo != null ? hb.secondsAgo : null,
+          }));
+          setDeviceRssi((prev) => ({
+            ...prev,
+            [sid]: hb.rssi != null ? hb.rssi : null,
+          }));
+          setDeviceTemp((prev) => ({
+            ...prev,
+            [sid]: hb.temp != null ? hb.temp : null,
+          }));
+
+          if (hb.online) {
+            setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
+            setPingMsgs((prev) => ({ ...prev, [sid]: t('production.ledRebootOk') }));
+            prevWifiOnlineRef.current[sid] = true;
+            pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
+            return;
+          }
+        } catch {
+          /* retry */
+        }
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+
+      setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
+      setPingMsgs((prev) => ({ ...prev, [sid]: t('production.ledRebootWaitTimeout') }));
+    } catch (err) {
+      setWifiStatuses((prev) => ({ ...prev, [sid]: 'offline' }));
+      setPingMsgs((prev) => ({
+        ...prev,
+        [sid]: err?.message ?? t('production.ledRebootFailed'),
+      }));
+    } finally {
+      setRebootingBoard(false);
+    }
+  }, [sid, selectedMachine, rebootingBoard, wifiStatuses, t]);
 
   const [clearStatus, setClearStatus] = useState('idle');
 
   const handleClearLed = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;
+    const cfg = configs[sid] ?? DEFAULT_CONFIG;
+    const payload = buildClockPayload(cfg.colorHex, cfg);
     setClearStatus('clearing');
     try {
-      await queueLedCommand(selectedMachine.id, LED_CLEAR_PAYLOAD);
-      const cleared = { ...LED_CLEAR_PAYLOAD, updatedAt: new Date().toISOString() };
+      await queueLedCommand(selectedMachine.id, payload);
+      const cleared = { ...payload, updatedAt: new Date().toISOString() };
       setLedStates((prev) => ({ ...prev, [sid]: cleared }));
       setConfigs((prev) => ({
         ...prev,
         [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: '' },
       }));
-      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: '|CLOCK|' };
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildClockSignature(cfg.colorHex) };
       setClearStatus('ok');
     } catch {
       setClearStatus('error');
     }
     setTimeout(() => setClearStatus('idle'), 4000);
-  }, [sid, selectedMachine]);
+  }, [sid, selectedMachine, configs]);
 
   // Force sync
   const [syncStatus, setSyncStatus] = useState('idle');
@@ -2106,7 +2264,8 @@ const LedSignView = ({
               onOpenQuick={() => { setQuickError(''); setQuickOpen(true); }}
               onClearLed={handleClearLed}
               clearStatus={clearStatus}
-              onPing={handlePing}
+              onReboot={handleRebootBoard}
+              rebooting={rebootingBoard}
               onForceSync={handleForceSync}
               sendStatus={statuses[sid]      ?? 'idle'}
               pingStatus={pingStatuses[sid]  ?? 'idle'}
@@ -2120,6 +2279,7 @@ const LedSignView = ({
               syncStatus={syncStatus}
               speedForAll={speedForAll}
               onSpeedForAllChange={handleSpeedForAll}
+              showClock={Boolean(ledStates[sid]?.showClock)}
             />
           </>
         ) : (

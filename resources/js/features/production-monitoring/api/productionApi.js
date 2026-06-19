@@ -330,6 +330,23 @@ export const sendLedCommand = (params) => post('/led', params);
 /** GET /api/production-monitor/led-ping?ledIp=... — ทดสอบเชื่อมต่อ ESP32 (single IP) */
 export const pingLed = (ledIp) => get(`/led-ping?ledIp=${encodeURIComponent(ledIp)}`);
 
+/** POST /api/production-monitor/led-reboot?ledIp=... — รีสตาร์ท ESP32 (เทียบเท่ากด RST) */
+export const rebootLed = (ledIp) => post(`/led-reboot?ledIp=${encodeURIComponent(ledIp)}`, {});
+
+/**
+ * สั่ง reboot ESP32 จากหลาย IP — ใช้ IP แรกที่ตอบสนอง
+ * @param {string} ledIpString  IP เดียว หรือ comma-separated
+ */
+export const rebootLedMulti = async (ledIpString) => {
+  const ips = String(ledIpString ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (ips.length === 0) throw new Error('ยังไม่มี IP ของป้ายไฟ');
+
+  const races = ips.map((ip) => rebootLed(ip).then(() => ({ ip })));
+  return Promise.any(races).catch(() => {
+    throw new Error(`สั่งรีเซ็ตไม่ได้ (ลอง ${ips.length} IP) — ตรวจ WiFi/subnet หรืออัปโหลด firmware ใหม่`);
+  });
+};
+
 /**
  * ทดสอบ ping ESP32 จากหลาย IP พร้อมกัน — คืน IP แรกที่ตอบสนอง
  *

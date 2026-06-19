@@ -61,6 +61,7 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
     Route::get('/product-details', [ProductionMonitorController::class, 'getProductDetails']);
 
     Route::get('/led-ping', [ProductionMonitorController::class, 'pingLed']);
+    Route::post('/led-reboot', [ProductionMonitorController::class, 'rebootLed']);
     Route::get('/led-status/{machineId}', [ProductionMonitorController::class, 'getLedStatus']);
     Route::get('/led-heartbeat/{machineId}', [ProductionMonitorController::class, 'getLedHeartbeat']);
     Route::get('/scale-heartbeat/{machineId}', [ProductionMonitorController::class, 'getScaleHeartbeat']);

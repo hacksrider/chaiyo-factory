@@ -54,6 +54,7 @@ void drawAndScrollText();
 String buildFingerprintFromLedCmd(const LedCmd& c);
 void handleTemp();
 void handleRoot();
+void handleReboot();
 String formatUptimeSec(unsigned long sec);
 String rssiQualityLabel(int rssi);
 String buildHeartbeatQuery();
@@ -221,19 +222,19 @@ void showSyncWaitingVisual() {
   updateTextProperties();
 }
 
-void applyClockVisual() {
+void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0) {
   if (!dma_display) return;
   g_clockMode = true;
   currentFontSize = 1;
   scrollSpeed     = 50;
-  currentColor    = dma_display->color565(0, 255, 0);
+  currentColor    = dma_display->color565(r, g, b);
   actualCount     = "0";
   targetCount     = "0";
   char buf[16];
   formatClockTime(buf, sizeof(buf));
   currentText = String(buf);
   updateClockTextProperties();
-  s_ledStateFingerprint = "|CLOCK|0,255,255|1|50|0|0";
+  s_ledStateFingerprint = "|CLOCK|" + String(r) + "," + String(g) + "," + String(b) + "|1|50|0|0";
   g_lastClockTickMs = millis();
 }
 
@@ -254,7 +255,7 @@ void tickClockIfNeeded() {
 
 void applyLedCommandFromQueue(const LedCmd& cmd) {
   if (cmd.showClock || cmd.text[0] == '\0') {
-    applyClockVisual();
+    applyClockVisual(cmd.r, cmd.g, cmd.b);
     Serial.println("[LED] Clock mode (HH:MM:SS)");
     return;
   }
@@ -602,6 +603,14 @@ void handleTemp() {
   server.send(200, "application/json", resp);
 }
 
+void handleReboot() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String resp = "{\"ok\":true,\"message\":\"rebooting\",\"machineId\":\"" + String(MACHINE_ID) + "\"}";
+  server.send(200, "application/json", resp);
+  delay(250);
+  ESP.restart();
+}
+
 // ─── หน้าเว็บหลัก (/) แสดงข้อมูลบอร์ด: IP, MAC Address ──────────────
 void handleRoot() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -897,6 +906,7 @@ void setup() {
   server.on("/status",  HTTP_ANY, handleStatus);
   server.on("/measure", HTTP_ANY, handleMeasure);
   server.on("/temp",    HTTP_ANY, handleTemp);
+  server.on("/reboot",  HTTP_ANY, handleReboot);
   
   ElegantOTA.begin(&server);
   server.begin();
