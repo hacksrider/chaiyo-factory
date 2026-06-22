@@ -1,6 +1,6 @@
 /* ช่วยแก้ไขไฟล์นี้ถ้ามีสิ่งที่ต้องแก้ไข จะ Copy ไปอัปโหลดลง Code */
 /*
-  ESP32 Weighing Scale Controller
+  ESP32 Weighing Scale Controller — v2 (WiFi stability fixes)
   ─────────────────────────────────────────────────────────────────────
   Hardware:
   - LCD 20x4 I2C (SDA=21, SCL=22)
@@ -28,7 +28,7 @@
   │ 1 │ 2 │ 3 │ A │ ← กะ A
   │ 4 │ 5 │ 6 │ B │ ← กะ B
   │ 7 │ 8 │ 9 │ C │ ← กะ C
-  │ * │ 0 │ # │ D │ ← หน้าผลิต: * เคลียร์แถว 4+ปลดล็อก; # ลบทีละตัว / D ยืนยัน
+  │ * │ 0 │ # │ D │ ← ผลิต: * เคลียร์แถว4(ตอนล็อก) / Finish; # ยกเลิกงาน
   └───┴───┴───┴───┘
 
   State Machine (ใช้คำนำหน้า ST_ เพื่อไม่ชนกับ KeyState::IDLE ใน Keypad.h):
@@ -37,6 +37,8 @@
   ST_WAIT_EMPLOYEE → รอพิมพ์รหัสพนักงาน (max 14 หลัก) + D ยืนยัน
   ST_CONFIRMING → กำลังส่งยืนยันไป server (รอครู่เดียว)
   ST_PRODUCTION → ผลิต: อ่านน้ำหนัก / กด BTN_GREEN ส่งของดี
+  ST_CONFIRM_FINISH → กด * แล้วรอยืนยัน 1=เสร็จสิ้น 2=กลับ
+  ST_CONFIRM_CANCEL → กด # แล้วรอยืนยัน 1=ยกเลิก 2=กลับ
   
   User error — ห้ามกดรัวภายใน 5 วินาทีหลังกดติดครั้งหนึ่ง (ส่ง Laravel ครั้งเดียว):
   → ครั้งแรกกด GREEN/RED → ล็อก 5 วิ + โชว์ผลที่บรรทัดที่ 4 (ซอฟแวร์ = setCursor แถว 3)
@@ -112,7 +114,9 @@ enum ScaleState {
   ST_WAIT_SHIFT,
   ST_WAIT_EMPLOYEE,
   ST_CONFIRMING,
-  ST_PRODUCTION
+  ST_PRODUCTION,
+  ST_CONFIRM_FINISH,
+  ST_CONFIRM_CANCEL
 };
 ScaleState g_state = ST_IDLE;
 
@@ -164,13 +168,21 @@ bool   g_wifiOk    = false;
 unsigned long g_lastPollMs  = 0;
 const  int    POLL_INTERVAL = 3000;   // ms — poll ทุก 3 วินาที
 
-// ─── WiFi reconnect exponential backoff ─────────────────────────────────
+// ─── WiFi reconnect exponential backoff + BSSID lock ───────────────────
 // เริ่ม 2 วินาที → สองเท่าทุกรอบ → สูงสุด 60 วินาที (± 20% jitter)
 // ป้องกัน ESP32 ping server ถี่เกินช่วง outage ยาว
 unsigned long g_wifiBackoffMs        = 2000;
 unsigned long g_lastWifiRetryMs      = 0;
+unsigned long g_disconnectedSinceMs  = 0;
+bool          g_wifiImmediateRecoverTried = false;
 const  unsigned long WIFI_BACKOFF_MIN = 2000;
 const  unsigned long WIFI_BACKOFF_MAX = 60000;
+const  unsigned long WIFI_HARD_RESET_AFTER_MS = 120000;
+const  unsigned long WIFI_SCAN_CACHE_MS       = 180000;
+static bool     g_hasPreferredBssid   = false;
+static uint8_t  g_preferredBssid[6]   = {0};
+static int32_t  g_preferredChannel    = 0;
+static uint32_t g_lastWifiScanMs      = 0;
 
 // คืนค่า backoff ถัดไปพร้อม ±20% jitter
 unsigned long nextWifiBackoff(unsigned long cur) {
@@ -199,33 +211,106 @@ bool syncWithScaleLive();
 void pollScaleLiveFromServer();
 String getIsoTime();
 void handleScaleStatus(); // หน้าเว็บแสดง IP + MAC Address
+void sendFinishToServer();
+void sendCancelToServer();
 String formatUptimeSec(unsigned long sec);
 String rssiQualityLabel(int rssi);
 String buildHeartbeatQuery();
+bool connectWifi(bool hardReset = true);
+bool refreshPreferredAp();
+void beginWifiWithBestAp();
 
 // ======================================================================
-//  WiFi — เชื่อม KANOK-AP เท่านั้น (ใช้ DHCP รองรับ DHCP Reservation)
+//  WiFi — scan ล็อก BSSID signal ดีที่สุด + เชื่อม KANOK-AP (DHCP)
 // ======================================================================
-void connectWifi() {
-  WiFi.persistent(false);    // ไม่บันทึก config ลง flash ทุกครั้ง (ลด flash wear)
-  WiFi.disconnect(true);
+bool refreshPreferredAp() {
+  uint32_t now = millis();
+  if (g_hasPreferredBssid && (now - g_lastWifiScanMs) < WIFI_SCAN_CACHE_MS) return true;
+
+  int n = WiFi.scanNetworks(false, true);
+  g_lastWifiScanMs = now;
+  if (n <= 0) {
+    g_hasPreferredBssid = false;
+    return false;
+  }
+
+  int bestIndex = -1;
+  int bestRssi = -127;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) != WIFI_SSID) continue;
+    int rssi = WiFi.RSSI(i);
+    if (bestIndex < 0 || rssi > bestRssi) {
+      bestIndex = i;
+      bestRssi = rssi;
+    }
+  }
+
+  if (bestIndex < 0) {
+    g_hasPreferredBssid = false;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  uint8_t* bssid = WiFi.BSSID(bestIndex);
+  if (!bssid) {
+    g_hasPreferredBssid = false;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  memcpy(g_preferredBssid, bssid, sizeof(g_preferredBssid));
+  g_preferredChannel = WiFi.channel(bestIndex);
+  g_hasPreferredBssid = true;
+
+  Serial.printf("[WiFi] Lock AP BSSID=%02X:%02X:%02X:%02X:%02X:%02X ch=%d RSSI=%d\n",
+                g_preferredBssid[0], g_preferredBssid[1], g_preferredBssid[2],
+                g_preferredBssid[3], g_preferredBssid[4], g_preferredBssid[5],
+                (int)g_preferredChannel, bestRssi);
+  WiFi.scanDelete();
+  return true;
+}
+
+void beginWifiWithBestAp() {
+  bool hasPreferred = refreshPreferredAp();
+  if (hasPreferred && g_preferredChannel > 0) {
+    WiFi.begin(WIFI_SSID, WIFI_PASS, g_preferredChannel, g_preferredBssid, true);
+    return;
+  }
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+bool connectWifi(bool hardReset) {
+  WiFi.persistent(false);
+  if (hardReset) {
+    WiFi.disconnect(true);
+    delay(300);
+  }
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);          // ปิด Modem Sleep — ป้องกัน radio ดับเองแล้วหลุด AP
-  WiFi.setAutoReconnect(true);   // ให้ driver reconnect อัตโนมัติเมื่อ signal กลับมา
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // TX power เต็ม 19.5 dBm
-  delay(300);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  WiFi.setHostname(MACHINE_ID);
 
-  // ใช้ DHCP — IT สามารถ fix IP ได้โดยผูก MAC กับ IP ที่ Router (DHCP Reservation)
   g_serverUrl = WIFI_SERVER;
-  Serial.printf("[WiFi] กำลังเชื่อม \"%s\" ...\n", WIFI_SSID);
+  Serial.printf("[WiFi] %s connect to \"%s\" ...\n", hardReset ? "Hard" : "Soft", WIFI_SSID);
   Serial.printf("[WiFi] MAC Address: %s\n", WiFi.macAddress().c_str());
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  beginWifiWithBestAp();
+  Serial.print("[WiFi] Connecting");
+
   int tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 40) {  // รอนานขึ้นเป็น 20 วิ
+  int failedCount = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 60) {
     delay(500);
     Serial.print(".");
     tries++;
+    if (WiFi.status() == WL_CONNECT_FAILED) {
+      failedCount++;
+      if (failedCount >= 5) break;
+      WiFi.disconnect(false);
+      delay(1000);
+      beginWifiWithBestAp();
+    }
   }
   Serial.println();
 
@@ -235,9 +320,8 @@ void connectWifi() {
                   WiFi.localIP().toString().c_str(),
                   WiFi.macAddress().c_str(),
                   WiFi.RSSI());
-    // RSSI guide: > -60 dBm = ดีมาก, -60~-75 = พอใช้, < -75 = อ่อน (เสี่ยงหลุด)
     Serial.println("[WiFi] Server: " + g_serverUrl);
-    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
     struct tm timeinfo;
     int ntpRetry = 0;
     while (!getLocalTime(&timeinfo, 500) && ntpRetry < 6) { ntpRetry++; }
@@ -251,6 +335,7 @@ void connectWifi() {
   } else {
     Serial.println("[WiFi] FAILED");
   }
+  return g_wifiOk;
 }
 
 // ======================================================================
@@ -414,7 +499,8 @@ void enterProductionFresh() {
 // ──────────────────────────────────────────────────────────────────────────────
 bool syncWithScaleLive() {
   if (!g_wifiOk || g_serverUrl.isEmpty()) return false;
-  if (g_state != ST_IDLE && g_state != ST_PRODUCTION) return false;
+  if (g_state != ST_IDLE && g_state != ST_PRODUCTION
+      && g_state != ST_CONFIRM_FINISH && g_state != ST_CONFIRM_CANCEL) return false;
 
   HTTPClient http;
   String mid = String(MACHINE_ID);
@@ -435,8 +521,8 @@ bool syncWithScaleLive() {
 
   bool webIsLive = lv.as<bool>();
 
-  // ── PRODUCTION + เว็บบอก false → กลับ IDLE ──────────────────────────────
-  if (g_state == ST_PRODUCTION && !webIsLive) {
+  // ── PRODUCTION / ยืนยัน Finish-Cancel + เว็บบอก false → กลับ IDLE ───────
+  if ((g_state == ST_PRODUCTION || g_state == ST_CONFIRM_FINISH || g_state == ST_CONFIRM_CANCEL) && !webIsLive) {
     Serial.println("[Scale] /scale-live=false → clear NVS → IDLE");
     clearProductionNvs();
     enterState(ST_IDLE);
@@ -531,18 +617,40 @@ void setup() {
 
   // แสดง MAC Address ทันทีตอนเปิดเครื่อง — ให้ IT นำไป fix IP ที่ Router
   WiFi.mode(WIFI_STA);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+#if defined(ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      Serial.printf("[WiFi] Event: STA_DISCONNECTED reason=%d\n", info.wifi_sta_disconnected.reason);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+      Serial.println("[WiFi] Event: STA_CONNECTED");
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      Serial.printf("[WiFi] Event: GOT_IP %s\n", WiFi.localIP().toString().c_str());
+    }
+#elif defined(SYSTEM_EVENT_STA_DISCONNECTED)
+    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+      Serial.printf("[WiFi] Event: STA_DISCONNECTED reason=%d\n", info.disconnected.reason);
+    } else if (event == SYSTEM_EVENT_STA_CONNECTED) {
+      Serial.println("[WiFi] Event: STA_CONNECTED");
+    } else if (event == SYSTEM_EVENT_STA_GOT_IP) {
+      Serial.printf("[WiFi] Event: GOT_IP %s\n", WiFi.localIP().toString().c_str());
+    }
+#endif
+  });
   Serial.printf("[BOOT] Machine ID : %s\n", MACHINE_ID);
   Serial.printf("[BOOT] MAC Address: %s\n", WiFi.macAddress().c_str());
 
   // ── 1. ลอง restore จาก NVS ก่อน (เร็วสุด — ไม่ต้องรอ WiFi) ──────────────
   bool nvsRestored = loadProductionSessionFromNVS();
 
-  // ── 2. ต่อ WiFi + NTP ─────────────────────────────────────────────────────
+  // ── 2. ต่อ WiFi + NTP (retry สูงสุด 10 รอบ) ─────────────────────────────
   if (nvsRestored) {
     renderLcd();
     lcd.setCursor(0, 3); lcd.print("WiFi connecting...  ");
   }
-  connectWifi();
+  for (int bootTry = 0; bootTry < 10 && !g_wifiOk; bootTry++) {
+    if (bootTry > 0) delay(3000);
+    connectWifi();
+  }
 
   // แสดง MAC Address บน LCD บรรทัดที่ 4 ชั่วคราว (~4 วินาที) ก่อนแสดง IP ปกติ
   // เพื่อให้ผู้ดูแลระบบจดบันทึก MAC ได้ (ก่อนที่ IT จะผูก IP ที่ Router)
@@ -669,6 +777,20 @@ void renderLcd() {
     lcd.setCursor(0, 1); lcd.print("Please wait...");
   }
 
+  else if (g_state == ST_CONFIRM_FINISH) {
+    lcd.setCursor(0, 0); lcd.print("Sure to Finish?");
+    lcd.setCursor(0, 1); lcd.print("1=Yes    2=Back");
+    lcd.setCursor(0, 2); lcd.print("                    ");
+    lcd.setCursor(0, 3); lcd.print("                    ");
+  }
+
+  else if (g_state == ST_CONFIRM_CANCEL) {
+    lcd.setCursor(0, 0); lcd.print("Sure to Cancel?");
+    lcd.setCursor(0, 1); lcd.print("1=Yes    2=Back");
+    lcd.setCursor(0, 2); lcd.print("                    ");
+    lcd.setCursor(0, 3); lcd.print("                    ");
+  }
+
   else if (g_state == ST_PRODUCTION) {
     // บรรทัด 0: รหัสสินค้า (เหมือนเดิม)
     lcd.setCursor(0, 0); lcd.print(g_productCode.substring(0, 20));
@@ -703,18 +825,46 @@ void renderLcd() {
 //  handleKeypad — ประมวลผลปุ่มที่กด
 // ======================================================================
 void handleKeypad(char key) {
-  // ── PRODUCTION: กด * = ผู้ใช้ยืนยันว่าอ่านผลครั้งแล้ว → ล้างบรรทัดที่ 4 + ปลดล็อก (ไม่ต้องรอ 5 วิ)
-  if (g_state == ST_PRODUCTION && key == '*') {
-    Serial.println("[KEY] * → clear LCD row 4 + unlock GREEN/RED");
-    g_btnLockUntil = 0;
-    g_lastStatus   = "";
-    lcd.setCursor(0, 3);
-    lcd.print("                    ");
+  // ── ยืนยัน Finish / Cancel จากคีย์แพด ─────────────────────────────────
+  if (g_state == ST_CONFIRM_FINISH || g_state == ST_CONFIRM_CANCEL) {
+    if (key == '1') {
+      if (g_state == ST_CONFIRM_FINISH) sendFinishToServer();
+      else sendCancelToServer();
+    } else if (key == '2') {
+      g_state = ST_PRODUCTION;
+      renderLcd();
+    }
     return;
   }
 
-  // ช่วงหลังส่งน้ำหนัก: ห้าม keypad อื่น (ยกเว้น * ข้างบน)
-  // — ครอบเวลาเดียวกับบล็อกปุ่ม GREEN/RED บนบรรทัดที่ 4
+  // ── PRODUCTION: กด * ระหว่างล็อก 5 วิ = ล้างบรรทัดที่ 4 + ปลดล็อก (เดิม)
+  if (g_state == ST_PRODUCTION && key == '*') {
+    if (g_btnLockUntil > 0 && millis() < g_btnLockUntil) {
+      Serial.println("[KEY] * → clear LCD row 4 + unlock GREEN/RED");
+      g_btnLockUntil = 0;
+      g_lastStatus   = "";
+      lcd.setCursor(0, 3);
+      lcd.print("                    ");
+      return;
+    }
+    // ไม่ล็อก → ถามยืนยันเสร็จสิ้นงาน
+    Serial.println("[KEY] * → confirm Finish");
+    enterState(ST_CONFIRM_FINISH);
+    return;
+  }
+
+  // ── PRODUCTION: กด # = ถามยืนยันยกเลิกงาน ───────────────────────────
+  if (g_state == ST_PRODUCTION && key == '#') {
+    if (millis() < g_btnLockUntil) {
+      Serial.println("[KEY] # ignored (post-weight lock)");
+      return;
+    }
+    Serial.println("[KEY] # → confirm Cancel");
+    enterState(ST_CONFIRM_CANCEL);
+    return;
+  }
+
+  // ช่วงหลังส่งน้ำหนัก: ห้าม keypad อื่น (ยกเว้น * / # ข้างบน)
   if (g_state == ST_PRODUCTION && millis() < g_btnLockUntil) {
     Serial.println("[KEY] ignored (post-weight lock)");
     return;
@@ -757,6 +907,96 @@ void handleKeypad(char key) {
       if ((int)g_employeeId.length() < MAX_EMP) lcd.print("_");
     }
   }
+}
+
+// ======================================================================
+//  sendFinishToServer — ยืนยัน 1 หลังกด * (เทียบเท่า "เสร็จสิ้นงาน" บนเว็บ)
+//  POST /api/production-monitor/scale-finish/{MACHINE_ID}
+// ======================================================================
+void sendFinishToServer() {
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Finishing...");
+  lcd.setCursor(0, 1); lcd.print("Please wait...    ");
+
+  if (g_pendingCount > 0 && g_wifiOk) flushPendingEvents();
+
+  if (!g_wifiOk || g_serverUrl.isEmpty()) {
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd.print("WiFi required!");
+    lcd.setCursor(0, 2); lcd.print("Press 2 to back   ");
+    delay(2500);
+    enterState(ST_PRODUCTION);
+    return;
+  }
+
+  HTTPClient http;
+  String mid = String(MACHINE_ID);
+  mid.replace(" ", "%20");
+  String url = g_serverUrl + "/api/production-monitor/scale-finish/" + mid + buildHeartbeatQuery();
+  http.begin(url);
+  http.setTimeout(20000);
+  int code = http.POST("");
+  Serial.printf("[Scale] scale-finish POST → %d\n", code);
+  http.end();
+
+  if (code >= 200 && code < 300) {
+    clearProductionNvs();
+    g_btnLockUntil = 0;
+    g_lastStatus   = "";
+    enterState(ST_IDLE);
+    Serial.println("[Scale] Finish OK → IDLE");
+    return;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Finish failed!");
+  lcd.setCursor(0, 2); lcd.print("Back to production");
+  delay(2500);
+  enterState(ST_PRODUCTION);
+}
+
+// ======================================================================
+//  sendCancelToServer — ยืนยัน 1 หลังกด # (เทียบเท่า "ยกเลิกงาน" บนเว็บ)
+//  POST /api/production-monitor/scale-cancel/{MACHINE_ID}
+// ======================================================================
+void sendCancelToServer() {
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Cancelling...");
+  lcd.setCursor(0, 1); lcd.print("Please wait...    ");
+
+  if (!g_wifiOk || g_serverUrl.isEmpty()) {
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd.print("WiFi required!");
+    lcd.setCursor(0, 2); lcd.print("Press 2 to back   ");
+    delay(2500);
+    enterState(ST_PRODUCTION);
+    return;
+  }
+
+  HTTPClient http;
+  String mid = String(MACHINE_ID);
+  mid.replace(" ", "%20");
+  String url = g_serverUrl + "/api/production-monitor/scale-cancel/" + mid + buildHeartbeatQuery();
+  http.begin(url);
+  http.setTimeout(15000);
+  int code = http.POST("");
+  Serial.printf("[Scale] scale-cancel POST → %d\n", code);
+  http.end();
+
+  if (code >= 200 && code < 300) {
+    clearProductionNvs();
+    g_btnLockUntil = 0;
+    g_lastStatus   = "";
+    enterState(ST_IDLE);
+    Serial.println("[Scale] Cancel OK → IDLE");
+    return;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Cancel failed!");
+  lcd.setCursor(0, 2); lcd.print("Back to production");
+  delay(2500);
+  enterState(ST_PRODUCTION);
 }
 
 // ======================================================================
@@ -1196,63 +1436,98 @@ void loop() {
   if (now - g_lastPollMs >= POLL_INTERVAL) {
     g_lastPollMs = now;
 
-    // ── WiFi reconnect with exponential backoff ──────────────────────
+    // ── WiFi reconnect: immediate → soft → hard reset ─────────────────
     if (WiFi.status() != WL_CONNECTED) {
       bool wasOffline = g_wifiOk;
       g_wifiOk = false;
+      if (g_disconnectedSinceMs == 0) g_disconnectedSinceMs = now;
 
-      // แสดงสถานะ WiFi หลุดบน LCD
       if (g_state == ST_IDLE) {
-        lcd.setCursor(0, 1); lcd.print("WiFi:Reconnecting.."); // 20 chars
+        lcd.setCursor(0, 1); lcd.print("WiFi:Reconnecting..");
         lcd.setCursor(0, 3); lcd.print("IP: ---.---.---.--- ");
       } else if (g_state == ST_PRODUCTION) {
-        // บรรทัด 3: แจ้ง WiFi หลุด ถ้าไม่มี lock timer กำลังแสดงผลอยู่
         if (millis() >= g_btnLockUntil) {
           lcd.setCursor(0, 3); lcd.print("!WiFi Lost-queuing..");
         }
       }
 
-      // ตรวจว่าถึงเวลา retry ตาม backoff หรือยัง
-      if (now - g_lastWifiRetryMs >= g_wifiBackoffMs) {
+      bool recovered = false;
+
+      if (!g_wifiImmediateRecoverTried) {
+        g_wifiImmediateRecoverTried = true;
+        WiFi.reconnect();
+        for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) delay(200);
+        recovered = (WiFi.status() == WL_CONNECTED);
+      }
+
+      if (!recovered && (now - g_lastWifiRetryMs >= g_wifiBackoffMs)) {
         g_lastWifiRetryMs = now;
-        connectWifi();
-        if (g_wifiOk) {
-          g_wifiBackoffMs = WIFI_BACKOFF_MIN; // reset backoff on success
+        unsigned long disconnectedFor = now - g_disconnectedSinceMs;
+
+        if (disconnectedFor < 60000) {
+          WiFi.reconnect();
+          for (int i = 0; i < 16 && WiFi.status() != WL_CONNECTED; i++) delay(500);
+        }
+
+        if (WiFi.status() != WL_CONNECTED) {
+          bool hardReset = (disconnectedFor >= WIFI_HARD_RESET_AFTER_MS);
+          recovered = connectWifi(hardReset);
+          if (!recovered && !hardReset && disconnectedFor >= 60000) {
+            recovered = connectWifi(true);
+          }
+        } else {
+          recovered = true;
+        }
+
+        if (recovered) {
+          g_wifiOk = true;
+          g_wifiBackoffMs = WIFI_BACKOFF_MIN;
           if (g_state == ST_IDLE) {
-            renderLcd(); // รวม IP บรรทัด 4 ด้วย
+            renderLcd();
           } else if (g_state == ST_PRODUCTION) {
-            // WiFi กลับมา — ล้างแจ้งเตือนบรรทัด 3 แล้วแจ้งว่ากำลัง flush
             lcd.setCursor(0, 3); lcd.print("WiFi OK-Syncing...  ");
           }
         } else {
           g_wifiBackoffMs = nextWifiBackoff(g_wifiBackoffMs);
           Serial.printf("[WiFi] Retry failed — next attempt in %lums\n", g_wifiBackoffMs);
         }
+      } else if (WiFi.status() == WL_CONNECTED) {
+        recovered = true;
+        g_wifiOk = true;
+        g_wifiBackoffMs = WIFI_BACKOFF_MIN;
       }
 
-      // WiFi เพิ่งกลับมา → flush pending events + re-sync
-      if (wasOffline && g_wifiOk) {
-        flushPendingEvents();
-        pollScaleLiveFromServer();
-        // ล้างข้อความ "Syncing..." หลัง flush เสร็จ
-        if (g_state == ST_PRODUCTION && millis() >= g_btnLockUntil) {
-          lcd.setCursor(0, 3);
-          if (g_pendingCount == 0) {
-            lcd.print("WiFi OK-Synced!     ");
-            delay(1500);
-            lcd.setCursor(0, 3); lcd.print("                    ");
-          } else {
-            // flush ยังไม่หมด — แสดงจำนวนที่ค้าง
-            String pendMsg = "!Pending:" + String(g_pendingCount) + "          ";
-            lcd.print(pendMsg.substring(0, 20));
+      if (recovered || (wasOffline && g_wifiOk)) {
+        g_disconnectedSinceMs = 0;
+        g_wifiImmediateRecoverTried = false;
+        g_lastWifiRetryMs = 0;
+        if (wasOffline && g_wifiOk) {
+          flushPendingEvents();
+          pollScaleLiveFromServer();
+          if (g_state == ST_PRODUCTION && millis() >= g_btnLockUntil) {
+            lcd.setCursor(0, 3);
+            if (g_pendingCount == 0) {
+              lcd.print("WiFi OK-Synced!     ");
+              delay(1500);
+              lcd.setCursor(0, 3); lcd.print("                    ");
+            } else {
+              String pendMsg = "!Pending:" + String(g_pendingCount) + "          ";
+              lcd.print(pendMsg.substring(0, 20));
+            }
           }
         }
+      } else {
+        return;
       }
-
-      return; // ออกจาก poll loop รอ WiFi ก่อน
+    } else {
+      if (g_disconnectedSinceMs != 0) {
+        g_disconnectedSinceMs = 0;
+        g_wifiImmediateRecoverTried = false;
+        g_lastWifiRetryMs = 0;
+        g_wifiBackoffMs = WIFI_BACKOFF_MIN;
+      }
+      g_wifiOk = true;
     }
-
-    g_wifiOk = true; // ยืนยันว่า connected
 
     // ─── Log RSSI ทุก 30 วินาที เพื่อ diagnose signal ──────────────────
     static unsigned long s_lastRssiLogMs = 0;

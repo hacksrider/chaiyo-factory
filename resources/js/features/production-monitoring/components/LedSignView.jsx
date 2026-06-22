@@ -1596,7 +1596,14 @@ const LedSignView = ({
       displayB = b;
     }
 
-    if (!displayText) return;
+    if (!displayText) {
+      const payload = buildClockPayload(cfg.colorHex, cfg);
+      const sig = buildClockSignature(cfg.colorHex ?? '#00ff00');
+      if (lastQueuedSigRef.current[machineId] === sig) return;
+      await queueLedCommand(machineId, payload);
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
+      return;
+    }
 
     const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
     const sig = `${displayText}|${displayR},${displayG},${displayB}|${cfg.fontSize ?? 1}|${speedMs}`;
@@ -1781,6 +1788,22 @@ const LedSignView = ({
       ledPollRef.current = null;
     };
   }, [sid, mergeLedStatusIntoUi]);
+
+  // ส่งสิ่งที่ UI แสดงไปป้ายเมื่อเลือกเครื่อง (แก้ป้ายค้าง "กำลังซิงค์" ทั้งที่ heartbeat ออนไลน์)
+  useEffect(() => {
+    if (!sid || !selectedMachine?.ledIp) return;
+    let cancelled = false;
+    const push = () => {
+      if (!cancelled) pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
+    };
+    const t1 = setTimeout(push, 900);
+    const t2 = setTimeout(push, 8000);
+    return () => {
+      cancelled = true;
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [sid, selectedMachine?.ledIp]);
 
   // Auto-push debounce for color/speed changes (not text — text goes through popup)
   const autoPushDebounceRef = useRef(null);

@@ -915,6 +915,127 @@ class ProductionMonitorController extends Controller
     }
 
     /**
+     * POST /api/production-monitor/scale-finish/{machineId}
+     *
+     * ตาชั่งกด * → ยืนยัน 1 — ทำงานเทียบเท่ากด "เสร็จสิ้นงาน" บนเว็บ (finish + GAS daily/plan best-effort)
+     */
+    public function scaleFinishSession(string $machineId): JsonResponse
+    {
+        $this->recordEspHeartbeat(request(), $machineId, 'scale');
+
+        $session = ProductionSession::where('machine_id', $machineId)
+            ->where('status', 'live')
+            ->first();
+
+        if (! $session) {
+            return response()->json(['success' => false, 'message' => 'no live session'], 404);
+        }
+
+        $runUlid = (string) ($session->session_run_ulid ?? '');
+        $goodCount       = (int) ($session->pipe_counter ?? 0);
+        $ngCount         = (int) ($session->ng_count ?? 0);
+        $totalGoodWeight = (float) ($session->total_good_weight ?? 0);
+        $totalNgWeight   = (float) ($session->total_ng_weight ?? 0);
+
+        if ($runUlid !== '') {
+            $dbAgg = $this->summarizeDedupedWeightEventsForRun(
+                $machineId,
+                (string) $session->order_id,
+                $runUlid
+            );
+            if ($dbAgg !== null && (($dbAgg['totalRows'] ?? 0) > 0 || ($dbAgg['goodCount'] ?? 0) > 0 || ($dbAgg['ngCount'] ?? 0) > 0)) {
+                $goodCount       = (int) ($dbAgg['goodCount'] ?? $goodCount);
+                $ngCount         = (int) ($dbAgg['ngCount'] ?? $ngCount);
+                $totalGoodWeight = (float) ($dbAgg['totalGoodWeight'] ?? $totalGoodWeight);
+                $totalNgWeight   = (float) ($dbAgg['totalNgWeight'] ?? $totalNgWeight);
+            }
+        }
+
+        $shift       = trim((string) ($session->shift ?? ''));
+        $employeeId  = trim((string) ($session->employee_id ?? ''));
+        $orderId     = (string) ($session->order_id ?? '');
+        $productCode = (string) ($session->product_code ?? '');
+        $prodDate    = trim((string) ($session->plan_date ?? ''));
+        if ($prodDate === '' && $session->started_at) {
+            $prodDate = $session->started_at->timezone('Asia/Bangkok')->format('Y-m-d');
+        }
+        if ($prodDate === '') {
+            $prodDate = now('Asia/Bangkok')->format('Y-m-d');
+        }
+
+        $finishReq = new Request([
+            'goodCount'       => $goodCount,
+            'ngCount'         => $ngCount,
+            'totalGoodWeight' => $totalGoodWeight,
+            'totalNgWeight'   => $totalNgWeight,
+            'skipGasDispatch' => true,
+        ]);
+        $finishResp = $this->finishSession($finishReq, $machineId);
+        $finishData = $finishResp->getData(true);
+        if (($finishData['success'] ?? false) !== true) {
+            return $finishResp;
+        }
+
+        if ($shift !== '' && $orderId !== '') {
+            try {
+                $this->updateDailyProduced(new Request([
+                    'machineId'   => $machineId,
+                    'jobNo'       => $orderId,
+                    'date'        => $prodDate,
+                    'shift'       => $shift,
+                    'produced'    => $goodCount,
+                    'productCode' => $productCode,
+                ]));
+            } catch (\Throwable $e) {
+                Log::warning('[scaleFinishSession] updateDailyProduced failed', [
+                    'machineId' => $machineId,
+                    'error'     => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if ($orderId !== '') {
+            try {
+                $this->updatePlanProduced(new Request([
+                    'jobNo'      => $orderId,
+                    'date'       => $prodDate,
+                    'goodCount'  => $goodCount,
+                    'goodWeight' => $totalGoodWeight,
+                    'ngWeight'   => $totalNgWeight,
+                    'employeeId' => $employeeId,
+                ]));
+            } catch (\Throwable $e) {
+                Log::warning('[scaleFinishSession] updatePlanProduced failed', [
+                    'machineId' => $machineId,
+                    'error'     => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return response()->json(['success' => true, 'source' => 'scale']);
+    }
+
+    /**
+     * POST /api/production-monitor/scale-cancel/{machineId}
+     *
+     * ตาชั่งกด # → ยืนยัน 1 — ทำงานเทียบเท่ากด "ยกเลิกงาน" บนเว็บ
+     */
+    public function scaleCancelSession(string $machineId): JsonResponse
+    {
+        $this->recordEspHeartbeat(request(), $machineId, 'scale');
+
+        $session = ProductionSession::where('machine_id', $machineId)
+            ->where('status', 'live')
+            ->first();
+
+        if (! $session) {
+            return response()->json(['success' => false, 'message' => 'no live session'], 404);
+        }
+
+        return $this->cancelSession($machineId);
+    }
+
+    /**
      * POST /api/production-monitor/scale-weight/{machineId}
      *
      * Scale ESP32 ส่งน้ำหนัก+ประเภท ทุกครั้งที่กดปุ่ม

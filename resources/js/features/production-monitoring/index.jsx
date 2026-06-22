@@ -933,6 +933,7 @@ const ProductionMonitoring = () => {
       ...prev,
       [machineId]: {
         text: state.text ?? null,
+        showClock: Boolean(state.showClock),
         updatedAt: state.updatedAt ?? Date.now(),
         color: state.r != null ? `rgb(${state.r}, ${state.g ?? 0}, ${state.b ?? 0})` : undefined,
         speed: state.speed ?? 50,

@@ -144,7 +144,8 @@ static bool              g_ntpClockConfigured           = false;
 static bool              g_hasPreferredBssid            = false;
 static uint8_t           g_preferredBssid[6]            = {0};
 static int32_t           g_preferredChannel             = 0;
-static uint32_t          g_lastWifiScanMs               = 0;
+static const uint32_t    BOOT_SYNC_GIVE_UP_MS            = 90000;
+static uint32_t          g_bootSyncWaitingSinceMs       = 0;
 
 void ensureBangkokClockConfig() {
   if (g_ntpClockConfigured) return;
@@ -254,6 +255,7 @@ void tickClockIfNeeded() {
 }
 
 void applyLedCommandFromQueue(const LedCmd& cmd) {
+  g_awaitingBootSync = false;
   if (cmd.showClock || cmd.text[0] == '\0') {
     applyClockVisual(cmd.r, cmd.g, cmd.b);
     Serial.println("[LED] Clock mode (HH:MM:SS)");
@@ -661,7 +663,6 @@ bool syncLedDisplayFromServer() {
   if (code != 200) {
     Serial.printf("[Sync] HTTP %d — รอ retry (ไม่แสดงนาฬิกา)\n", code);
     http.end();
-    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
 
@@ -672,20 +673,23 @@ bool syncLedDisplayFromServer() {
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, body)) {
     Serial.println("[Sync] JSON parse error — รอ retry");
-    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
 
   if (!doc["success"].as<bool>() || !doc["hasState"].as<bool>()) {
-    Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — รอ retry");
-    if (g_awaitingBootSync) showSyncWaitingVisual();
+    Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — รอ led-command");
+    if (g_awaitingBootSync) {
+      g_awaitingBootSync = false;
+      if (!g_clockMode && currentText == "กำลังซิงก์..") {
+        applyClockVisual();
+      }
+    }
     return false;
   }
 
   JsonObject st = doc["state"];
   if (st.isNull()) {
     Serial.println("[Sync] state เป็น null — รอ retry");
-    if (g_awaitingBootSync) showSyncWaitingVisual();
     return false;
   }
 
@@ -884,6 +888,7 @@ void setup() {
   u8g2_for_gfx.setFontDirection(0);
 
   g_awaitingBootSync = true;
+  g_bootSyncWaitingSinceMs = millis();
   showSyncWaitingVisual();
 
   bool wifiOk = false;
@@ -967,7 +972,8 @@ void pollTask(void* pv) {
       if (disconnectedSince == 0) {
         disconnectedSince = now;
         g_ntpSynced = false;
-        g_awaitingBootSync = true;   // ต้อง re-sync เมื่อกลับมาออนไลน์
+        g_awaitingBootSync = true;
+        g_bootSyncWaitingSinceMs = now;
         s_ledStateFingerprint = "";  // ล้าง fingerprint ให้ reconcile ทำงานซ้ำได้
       }
       if (!showingConnecting) {
@@ -1020,6 +1026,7 @@ void pollTask(void* pv) {
 
     if (justReconnected) {
       g_awaitingBootSync = true;
+      g_bootSyncWaitingSinceMs = currentMs;
       vTaskDelay(pdMS_TO_TICKS(1500));
       syncNtpIfNeeded(true);
       s_ledStateFingerprint = "";
@@ -1027,7 +1034,17 @@ void pollTask(void* pv) {
     }
 
     if (g_awaitingBootSync) {
-      syncLedDisplayFromServer();
+      if (g_bootSyncWaitingSinceMs > 0
+          && (currentMs - g_bootSyncWaitingSinceMs) >= BOOT_SYNC_GIVE_UP_MS) {
+        g_awaitingBootSync = false;
+        g_bootSyncWaitingSinceMs = 0;
+        if (!g_clockMode && currentText == "กำลังซิงก์..") {
+          Serial.println("[Sync] boot sync timeout — show clock until command");
+          applyClockVisual();
+        }
+      } else {
+        syncLedDisplayFromServer();
+      }
     }
 
     if (g_serverUrl.isEmpty()) continue;
@@ -1073,6 +1090,8 @@ void pollTask(void* pv) {
         cmd.fontSize = doc["fontSize"] | 1;
         cmd.speed    = doc["speed"]    | 0;
         xQueueSend(cmdQueue, &cmd, 0); 
+        g_awaitingBootSync = false;
+        g_bootSyncWaitingSinceMs = 0;
         s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
       }
     }

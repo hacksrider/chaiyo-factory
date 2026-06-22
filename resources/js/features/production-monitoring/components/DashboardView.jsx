@@ -75,6 +75,13 @@ function isMaintenanceLedText(text) {
   );
 }
 
+function formatLedClock(now = new Date()) {
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  return `${h} : ${m} : ${s}`;
+}
+
 function ledColorFromState(state) {
   if (!state || state.r == null) return null;
   return `rgb(${state.r}, ${state.g ?? 0}, ${state.b ?? 0})`;
@@ -84,6 +91,7 @@ function ledStateToPatch(state) {
   if (!state) return {};
   return {
     text: state.text ?? null,
+    showClock: Boolean(state.showClock),
     color: ledColorFromState(state),
     speed: state.speed ?? 50,
   };
@@ -111,7 +119,7 @@ function isLiveIdle(state, nowMs) {
 
 // ─── LedMarqueeText ───────────────────────────────────────────────────────────
 
-const LedMarqueeText = ({ text, fontSize, color, rowKey }) => {
+const LedMarqueeText = ({ text, fontSize, color, rowKey, isClock = false }) => {
   const boxRef = useRef(null);
   const textRef = useRef(null);
   const [scroll, setScroll] = useState(false);
@@ -138,6 +146,8 @@ const LedMarqueeText = ({ text, fontSize, color, rowKey }) => {
     ? Math.max(4, (boxW + textW) / 36)
     : 0;
 
+  const textClass = isClock ? 'font-mono tabular-nums tracking-tight' : 'font-medium';
+
   if (!text) {
     return <span className="truncate font-medium opacity-60">—</span>;
   }
@@ -146,7 +156,7 @@ const LedMarqueeText = ({ text, fontSize, color, rowKey }) => {
     <div ref={boxRef} className="overflow-hidden min-w-0 flex-1 relative flex items-center">
       <span
         ref={textRef}
-        className="absolute invisible whitespace-nowrap pointer-events-none"
+        className={`absolute invisible whitespace-nowrap pointer-events-none ${textClass}`}
         style={{ fontSize }}
         aria-hidden
       >
@@ -161,7 +171,7 @@ const LedMarqueeText = ({ text, fontSize, color, rowKey }) => {
             }
           `}</style>
           <span
-            className="inline-block whitespace-nowrap font-medium"
+            className={`inline-block whitespace-nowrap ${textClass}`}
             style={{
               fontSize,
               color: color ?? 'inherit',
@@ -173,7 +183,7 @@ const LedMarqueeText = ({ text, fontSize, color, rowKey }) => {
         </>
       ) : (
         <span
-          className="truncate font-medium"
+          className={`truncate ${textClass}`}
           style={{ fontSize, color: color ?? 'inherit' }}
           title={text}
         >
@@ -413,18 +423,22 @@ function useFluidStatusMetrics(containerRef, zoneGroups) {
   return metrics;
 }
 
+function getLedDisplayLabel(led, t, nowMs) {
+  if (led.noIp) return t('production.ledStatusNoIp');
+  if (led.showClock) return formatLedClock(new Date(nowMs));
+  return led.text || t('production.dashboardLedNoText');
+}
+
 function getDashboardRowData(machine, allStates, getMachineState, ledData, t, nowMs) {
   const state = allStates[machine.id] ?? getMachineState(machine.id) ?? DEFAULT_MACHINE_STATE;
   const led = ledData[machine.id] ?? {};
-  const status = resolveMachineStatus(machine, state, led.text, t);
+  const status = resolveMachineStatus(machine, state, led.showClock ? '' : led.text, t);
   const produced = state.pipeCounter ?? 0;
   const goodWeight = state.totalGoodWeight ?? 0;
   const ngWeight = state.totalNgWeight ?? 0;
   const target = (state.remainingQty > 0 ? state.remainingQty : state.targetQty) ?? 0;
   const progress = pct(produced, target);
-  const ledLabel = led.noIp
-    ? t('production.ledStatusNoIp')
-    : led.text || t('production.dashboardLedNoText');
+  const ledLabel = getLedDisplayLabel(led, t, nowMs);
   const staleAlert = isLiveIdle(state, nowMs);
 
   return { machine, state, led, status, produced, goodWeight, ngWeight, target, progress, ledLabel, staleAlert };
@@ -759,7 +773,7 @@ const StatusMobileOverview = ({ zoneGroups, allStates, getMachineState, ledData,
         >
           {flatMachines.map(({ machine: m, zone }) => {
             const state = allStates[m.id] ?? getMachineState(m.id);
-            const status = resolveMachineStatus(m, state, ledData[m.id]?.text, t);
+            const status = resolveMachineStatus(m, state, ledData[m.id]?.showClock ? '' : ledData[m.id]?.text, t);
             const isLive = state?.mode === 'live';
             const value = isLive ? (state.pipeCounter ?? 0) : 0;
             const staleAlert = isLiveIdle(state, Date.now());
@@ -937,6 +951,7 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t, nowMs 
                         fontSize={m.fontSize}
                         color={led.color ?? '#e5e7eb'}
                         rowKey={machine.id}
+                        isClock={Boolean(led.showClock)}
                       />
                     </div>
                   </td>
@@ -1038,7 +1053,7 @@ const StatusZonePanel = ({ zone, machines, allStates, getMachineState, ledData, 
               key={m.id}
               machine={m}
               state={state}
-              ledText={ledData[m.id]?.text}
+              ledText={ledData[m.id]?.showClock ? '' : ledData[m.id]?.text}
               t={t}
               metrics={metrics}
               onCardClick={onCardClick}

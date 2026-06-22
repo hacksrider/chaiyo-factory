@@ -37,6 +37,8 @@ Route::prefix('production-monitor')->group(function () {
     Route::get('/scale-live/{machineId}', [ProductionMonitorController::class, 'fetchScaleLive']);
     Route::post('/scale-weight/{machineId}', [ProductionMonitorController::class, 'storeScaleWeight']);
     Route::get('/scale-weight/{machineId}', [ProductionMonitorController::class, 'fetchScaleWeights']);
+    Route::post('/scale-finish/{machineId}', [ProductionMonitorController::class, 'scaleFinishSession']);
+    Route::post('/scale-cancel/{machineId}', [ProductionMonitorController::class, 'scaleCancelSession']);
     Route::post('/session-confirm/{machineId}', [ProductionMonitorController::class, 'sessionConfirm']);
     Route::get('/led-command/{machineId}', [ProductionMonitorController::class, 'fetchLedCommand']);
 });
