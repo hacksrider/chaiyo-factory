@@ -3,7 +3,7 @@ import ProductionViewExitButton from './ProductionViewExitButton';
 import { useLanguage } from '../../../contexts/LanguageContext';
 import { useTranslation } from '../../../utils/translations';
 import {
-  queueLedCommand,
+  queueLedCommandWithLanFallback,
   getLedStatus,
   getLedHeartbeat,
   rebootLedMulti,
@@ -1636,6 +1636,12 @@ const LedSignView = ({
     return String(mState.orderId ?? '').trim();
   }, [allMachineStates]);
 
+  const queueLedForMachine = useCallback(async (machineId, payload) => {
+    const machine = validMachines.find((m) => m.id === machineId);
+    const ips = collectRebootIps(deviceLocalIpsRef.current[machineId], machine?.ledIp);
+    return queueLedCommandWithLanFallback(machineId, payload, { ips });
+  }, [validMachines]);
+
   /** ส่งสิ่งที่หน้าเว็บแสดงอยู่ไปป้าย (ใช้เมื่อป้ายเพิ่งเปิด/กลับมาออนไลน์) */
   const pushLedDisplayToDevice = useCallback(async (machineId) => {
     const machine = validMachines.find((m) => m.id === machineId);
@@ -1650,7 +1656,7 @@ const LedSignView = ({
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex);
       if (lastQueuedSigRef.current[machineId] === sig) return;
-      await queueLedCommand(machineId, payload);
+      await queueLedForMachine(machineId, payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
     }
@@ -1679,7 +1685,7 @@ const LedSignView = ({
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex ?? '#00ff00');
       if (lastQueuedSigRef.current[machineId] === sig) return;
-      await queueLedCommand(machineId, payload);
+      await queueLedForMachine(machineId, payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
     }
@@ -1688,7 +1694,7 @@ const LedSignView = ({
     const sig = `${displayText}|${displayR},${displayG},${displayB}|${cfg.fontSize ?? 1}|${speedMs}`;
     if (lastQueuedSigRef.current[machineId] === sig) return;
 
-    await queueLedCommand(machineId, {
+    await queueLedForMachine(machineId, {
       text: displayText,
       showClock: false,
       r: displayR,
@@ -1842,7 +1848,7 @@ const LedSignView = ({
 
       if (!displayText) return;
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-      queueLedCommand(mid, {
+      queueLedForMachine(mid, {
         text: displayText,
         showClock: false,
         r: displayR, g: displayG, b: displayB,
@@ -1938,7 +1944,7 @@ const LedSignView = ({
 
         try {
           const liveCounterPayload = getLiveCounterPayload(machine.id);
-          await queueLedCommand(machine.id, buildTextLedPayload(cfg, ledState, {
+          await queueLedForMachine(machine.id, buildTextLedPayload(cfg, ledState, {
             r, g, b,
             ...liveCounterPayload,
           }));
@@ -2077,7 +2083,7 @@ const LedSignView = ({
       };
 
       // Send LED command
-      await queueLedCommand(selectedMachine.id, ledPayload);
+      await queueLedForMachine(selectedMachine.id, ledPayload);
 
       // Update local config
       const newColorHex = formData.colorHex ?? config.colorHex;
@@ -2145,7 +2151,7 @@ const LedSignView = ({
       const fullText = text + nameSuffix;
       const liveCounterPayload = getLiveCounterPayload(sid);
 
-      await queueLedCommand(selectedMachine.id, {
+      await queueLedForMachine(selectedMachine.id, {
         text: fullText,
         showClock: false,
         r, g, b,
@@ -2262,7 +2268,7 @@ const LedSignView = ({
     const payload = buildClockPayload(cfg.colorHex, cfg);
     setClearStatus('clearing');
     try {
-      await queueLedCommand(selectedMachine.id, payload);
+      await queueLedForMachine(selectedMachine.id, payload);
       const cleared = { ...payload, updatedAt: new Date().toISOString() };
       setLedStates((prev) => ({ ...prev, [sid]: cleared }));
       setConfigs((prev) => ({
@@ -2288,7 +2294,7 @@ const LedSignView = ({
     try {
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
       const liveCounterPayload = getLiveCounterPayload(sid);
-      await queueLedCommand(selectedMachine.id, {
+      await queueLedForMachine(selectedMachine.id, {
         text: cfg.text,
         showClock: false,
         r, g, b,
@@ -2321,7 +2327,7 @@ const LedSignView = ({
       if (onRestoreProductionLed) {
         await Promise.resolve(onRestoreProductionLed(sid));
       } else {
-        await queueLedCommand(selectedMachine.id, {
+        await queueLedForMachine(selectedMachine.id, {
           text: liveText,
           showClock: false,
           r, g, b,
@@ -2366,19 +2372,33 @@ const LedSignView = ({
   );
 
   const hbWifiStatus = sid ? (wifiStatuses[sid] ?? 'checking') : 'checking';
-  const effectiveWifiStatus = hbWifiStatus === 'online'
+  const localData = localEspStatus?.data;
+  const espPollOk = localData
+    ? localData.lastPollHttpCode === 200
+      || (localData.lastPollOkAgoSec != null && Number(localData.lastPollOkAgoSec) < 30)
+    : null;
+  const effectiveWifiStatus = hbWifiStatus === 'online' && espPollOk !== false
     ? 'online'
-    : (localEspStatus?.data?.wifiConnected ? 'local_only' : hbWifiStatus);
+    : (localData?.wifiConnected ? 'local_only' : hbWifiStatus);
   const displayLocalIp = deviceLocalIps[sid] ?? localEspStatus?.ip ?? localEspStatus?.data?.ip ?? null;
   const displayRssi = deviceRssi[sid] ?? localEspStatus?.data?.rssi ?? null;
   const displayTemp = deviceTemp[sid] ?? localEspStatus?.data?.cpuTemperatureC ?? null;
-  const localPollHint = effectiveWifiStatus === 'local_only' && localEspStatus?.data
-    ? t('production.ledLocalPollHint', {
-        code: localEspStatus.data.lastPollHttpCode ?? '—',
-        streak: localEspStatus.data.pollFailStreak ?? 0,
-        ago: localEspStatus.data.lastPollOkAgoSec ?? '—',
-      })
-    : null;
+  const localPollHint = (() => {
+    if (!localData) return null;
+    const pollCode = localData.lastPollHttpCode;
+    const syncCode = localData.lastSyncHttpCode;
+    if (pollCode === 404 || syncCode === 404) {
+      return '⚠️ ป้าย poll server ได้ HTTP 404 — กด "ซิงค์ป้ายทันที" หรือส่งข้อความใหม่ (ระบบจะส่งผ่าน LAN โดยตรงด้วย)';
+    }
+    if (effectiveWifiStatus === 'local_only') {
+      return t('production.ledLocalPollHint', {
+        code: pollCode ?? '—',
+        streak: localData.pollFailStreak ?? 0,
+        ago: localData.lastPollOkAgoSec ?? '—',
+      });
+    }
+    return null;
+  })();
 
   const canSendLed = selectedMachine
     ? canSendLedCommand(selectedMachine, effectiveWifiStatus)

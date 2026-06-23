@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.9 (sync ไม่ทับคำสั่งข้อความ + fallback parser)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.10 (retry HTTP 404 ผ่าน IP + URL encode)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -94,6 +94,25 @@ int getMachineIndex() {
   return -1;
 }
 
+String encodeMachineIdForPath(const String& machineId) {
+  String out;
+  out.reserve(machineId.length() + 8);
+  for (unsigned i = 0; i < machineId.length(); i++) {
+    char c = machineId[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+        || c == '-' || c == '_' || c == '.' || c == '~') {
+      out += c;
+    } else if (c == ' ') {
+      out += "%20";
+    } else {
+      char hex[4];
+      snprintf(hex, sizeof(hex), "%%%02X", (uint8_t)c);
+      out += hex;
+    }
+  }
+  return out;
+}
+
 String g_serverUrl = "";
 float g_internalTempC = 0.0f; // ตัวแปร Global สำหรับเก็บค่าอุณหภูมิล่าสุดไว้แสดงบนเว็บ
 // ======================================================================
@@ -173,6 +192,8 @@ static bool              g_lastSyncParseOk                = false;
 static int               g_lastSyncServerTextLen          = 0;
 static int               g_lastSyncBodyLen                = 0;
 static String            g_lastSyncError                  = "";
+static String            g_lastPollUrl                    = "";
+static String            g_lastSyncUrl                    = "";
 static SemaphoreHandle_t g_httpMutex                      = nullptr;
 
 String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
@@ -408,6 +429,8 @@ int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs)
   tls.setTimeout(timeoutMs / 1000 + 5);
   if (!http.begin(tls, ipUrl)) return -2;
   http.addHeader("Host", host);
+  http.addHeader("User-Agent", "ChaiyoLED/2.10");
+  http.addHeader("Accept", "application/json");
   int code = http.GET();
   if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
   http.end();
@@ -433,6 +456,8 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
+    http.addHeader("User-Agent", "ChaiyoLED/2.10");
+    http.addHeader("Accept", "application/json");
     code = http.GET();
   } else {
     WiFiClient plain;
@@ -441,6 +466,8 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
+    http.addHeader("User-Agent", "ChaiyoLED/2.10");
+    http.addHeader("Accept", "application/json");
     code = http.GET();
   }
 
@@ -456,6 +483,8 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.setTimeout(timeoutMs);
     fb.setReuse(false);
     if (fb.begin(url)) {
+      fb.addHeader("User-Agent", "ChaiyoLED/2.10");
+      fb.addHeader("Accept", "application/json");
       code = fb.GET();
       if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
       if (code < 0) {
@@ -472,6 +501,19 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
     int ipCode = httpGetViaResolvedIp(url, bodyOut, timeoutMs);
     if (ipCode >= 0) code = ipCode;
     else g_lastHttpError = "ip:" + String(ipCode);
+  }
+
+  if (code >= 400 && url.startsWith("https://") && g_serverDnsOk) {
+    Serial.printf("[HTTP] GET HTTP %d — retry via IP %s\n", code, g_serverDnsIp.toString().c_str());
+    String retryBody;
+    int ipCode = httpGetViaResolvedIp(url, &retryBody, timeoutMs);
+    if (ipCode == 200) {
+      code = 200;
+      if (bodyOut) *bodyOut = retryBody;
+    } else if (ipCode >= 0) {
+      code = ipCode;
+      if (bodyOut && ipCode == 200) *bodyOut = retryBody;
+    }
   }
 
   if (code == 200 && bodyOut && bodyOut->length() == 0 && url.startsWith("https://")) {
@@ -725,8 +767,7 @@ String buildFingerprintFromLedCmd(const LedCmd& c) {
 void reconcileLedStateWithWeb() {
   if (!cmdQueue || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return;
 
-  String mid = String(MACHINE_ID);
-  mid.replace(" ", "%20");
+  String mid = encodeMachineIdForPath(String(MACHINE_ID));
   String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
   String body;
   int code = httpGetUrl(url, &body, 4000);
@@ -985,6 +1026,8 @@ void handleStatus() {
               + ",\"lastSyncServerTextLen\":" + String(g_lastSyncServerTextLen)
               + ",\"lastSyncBodyLen\":" + String(g_lastSyncBodyLen)
               + ",\"lastSyncError\":\"" + g_lastSyncError + "\""
+              + ",\"lastPollUrl\":\"" + g_lastPollUrl + "\""
+              + ",\"lastSyncUrl\":\"" + g_lastSyncUrl + "\""
               + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -1097,9 +1140,9 @@ bool applyLedStateFromServer(JsonObject st) {
 bool syncLedDisplayFromServer() {
   if (!dma_display || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return false;
 
-  String mid = String(MACHINE_ID);
-  mid.replace(" ", "%20");
+  String mid = encodeMachineIdForPath(String(MACHINE_ID));
   String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
+  g_lastSyncUrl = url;
   Serial.println("[Sync] GET " + url);
   String body;
   int code = httpGetUrl(url, &body, 8000);
@@ -1487,10 +1530,10 @@ void pollTask(void* pv) {
     pollCycle++;
     if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
 
-    String mid = String(MACHINE_ID);
-    mid.replace(" ", "%20");
+    String mid = encodeMachineIdForPath(String(MACHINE_ID));
     
     String url = g_serverUrl + "/api/production-monitor/led-command/" + mid + buildHeartbeatQuery();
+    g_lastPollUrl = url;
     String body;
     int code = httpGetUrl(url, &body, 5000);
     recordCommandPollResult(code);

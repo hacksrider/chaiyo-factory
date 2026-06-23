@@ -385,6 +385,49 @@ export const queueLedCommand = (machineId, params) =>
   post(`/led-command/${encodeURIComponent(machineId)}`, params);
 
 /**
+ * POST ตรงไป ESP32 บน LAN (no-cors — ใช้เมื่อ browser อยู่ WiFi เดียวกับป้าย)
+ * ไม่รอ response แต่ ESP รับ JSON ที่ /led ได้ทันที
+ * @param {string[]} ips
+ */
+export function postLedDirectLan(ips, params) {
+  const list = [...new Set((ips ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
+  if (list.length === 0) return Promise.resolve(false);
+
+  const payload = {
+    text: params.text ?? '',
+    r: params.r ?? 0,
+    g: params.g ?? 255,
+    b: params.b ?? 255,
+    fontSize: params.fontSize ?? 1,
+    speed: params.speed ?? 50,
+    showClock: Boolean(params.showClock),
+  };
+  if (params.actual != null) payload.actual = String(params.actual);
+  if (params.target != null) payload.target = String(params.target);
+
+  const body = JSON.stringify(payload);
+  const attempts = list.map((ip) =>
+    fetch(`http://${ip}/led`, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    }).then(() => true).catch(() => false)
+  );
+  return Promise.any(attempts).catch(() => false);
+}
+
+/**
+ * เก็บคำสั่งบน server แล้วลองส่งตรงไปป้ายบน LAN เป็นทางสำรอง
+ * (กรณี ESP poll server ไม่ถึง เช่น HTTP 404 จาก firewall)
+ */
+export async function queueLedCommandWithLanFallback(machineId, params, { ips = [] } = {}) {
+  const result = await queueLedCommand(machineId, params);
+  postLedDirectLan(ips, params).catch(() => {});
+  return result;
+}
+
+/**
  * GET /api/production-monitor/led-status/{machineId}
  *
  * ดึงสถานะล่าสุดของป้ายไฟ (last command sent from web UI)

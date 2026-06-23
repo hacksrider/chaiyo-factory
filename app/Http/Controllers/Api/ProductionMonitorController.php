@@ -172,7 +172,7 @@ class ProductionMonitorController extends Controller
         ]);
 
         $ledIp   = trim($request->input('ledIp'));
-        $payload = $request->only(['text', 'r', 'g', 'b', 'fontSize', 'speed']);
+        $payload = $request->only(['text', 'r', 'g', 'b', 'fontSize', 'speed', 'showClock', 'actual', 'target']);
 
         try {
             $response = Http::withOptions(['connect_timeout' => 3])
