@@ -483,6 +483,7 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
       : Number(data?.targetQty ?? 0);
   return {
     text,
+    showClock: false,
     r: 0,
     g: 255,
     b: 0,

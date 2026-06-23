@@ -64,9 +64,30 @@ function hasLedDisplayText(cfg) {
   return String(cfg?.text ?? '').trim().length > 0;
 }
 
+function hasServerLedText(ledState) {
+  return String(ledState?.text ?? '').trim().length > 0;
+}
+
 /** ส่งนาฬิกาเฉพาะเมื่อไม่มีข้อความที่จะ push และไม่ได้ override ด้วยมือ */
 function shouldPushClockOnly(cfg, ledState) {
   if (Boolean(ledState?.textOverride) || hasLedDisplayText(cfg)) return false;
+  if (hasServerLedText(ledState)) return false;
+  return Boolean(ledState?.showClock);
+}
+
+function canReachLedViaServer(wifiStatus) {
+  return wifiStatus === 'online' || wifiStatus === 'local_only';
+}
+
+/** ส่งคำสั่งผ่าน server poll ได้ — ไม่จำเป็นต้องมี ledIp ในชีต */
+function canSendLedCommand(machine, wifiStatus) {
+  return Boolean(machine?.id) && (!!machine?.ledIp || canReachLedViaServer(wifiStatus));
+}
+
+/** preview นาฬิกาเฉพาะเมื่อ server/UI ยืนยันโหมดนาฬิกาจริงๆ */
+function isLedPreviewClock(ledState, cfg) {
+  if (hasLedDisplayText(cfg)) return false;
+  if (hasServerLedText(ledState) && !Boolean(ledState?.showClock)) return false;
   return Boolean(ledState?.showClock);
 }
 
@@ -1139,11 +1160,13 @@ const ControlPanel = ({
   deviceLocalIp = null, heartbeatSecondsAgo = null, deviceRssi = null, deviceTemp = null,
   localPollHint = null,
   showClock = false, rebooting = false,
+  canSendLed = false,
 }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
   const { text, colorHex, scrollSpeed = 10 } = config;
   const hasIp = !!machine?.ledIp;
+  const canSend = canSendLed || hasIp;
   const { r, g, b } = hexToRgb(colorHex);
   const [headerClock, setHeaderClock] = useState(() => formatPreviewClock());
 
@@ -1209,7 +1232,7 @@ const ControlPanel = ({
               canReboot={hasIp || !!deviceLocalIp}
               compact
             />
-            {hasIp && config.text && (
+            {canSend && config.text && (
               <button
                 type="button"
                 onClick={onForceSync}
@@ -1328,9 +1351,9 @@ const ControlPanel = ({
           <button
             type="button"
             onClick={onClearLed}
-            disabled={!hasIp || clearStatus === 'clearing'}
+            disabled={!canSend || clearStatus === 'clearing'}
             className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition-all sm:py-2.5 ${
-              !hasIp
+              !canSend
                 ? 'cursor-not-allowed bg-gray-700/30 text-gray-600'
                 : clearStatus === 'clearing'
                 ? 'cursor-wait bg-emerald-500/30 text-emerald-400'
@@ -1356,9 +1379,9 @@ const ControlPanel = ({
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <button
               onClick={onOpenQuick}
-              disabled={!hasIp || sendStatus === 'pinging'}
+              disabled={!canSend || sendStatus === 'pinging'}
               className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition-all sm:py-2.5 ${
-                !hasIp
+                !canSend
                   ? 'cursor-not-allowed bg-gray-700/30 text-gray-600'
                   : sendStatus === 'pinging'
                   ? 'cursor-wait bg-cyan-500/30 text-cyan-400'
@@ -1377,9 +1400,9 @@ const ControlPanel = ({
 
             <button
               onClick={onOpenPopup}
-              disabled={!hasIp || sendStatus === 'pinging'}
+              disabled={!canSend || sendStatus === 'pinging'}
               className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition-all sm:py-2.5 ${
-                !hasIp
+                !canSend
                   ? 'cursor-not-allowed bg-gray-700/30 text-gray-600'
                   : sendStatus === 'pinging'
                   ? 'cursor-wait bg-indigo-500/30 text-indigo-400'
@@ -1616,7 +1639,7 @@ const LedSignView = ({
   /** ส่งสิ่งที่หน้าเว็บแสดงอยู่ไปป้าย (ใช้เมื่อป้ายเพิ่งเปิด/กลับมาออนไลน์) */
   const pushLedDisplayToDevice = useCallback(async (machineId) => {
     const machine = validMachines.find((m) => m.id === machineId);
-    if (!machine?.ledIp) return;
+    if (!machine?.id) return;
 
     const cfg = configsRef.current[machineId] ?? DEFAULT_CONFIG;
     const ledState = ledStatesRef.current[machineId];
@@ -1625,12 +1648,14 @@ const LedSignView = ({
 
     if (shouldPushClockOnly(cfg, ledState)) {
       const payload = buildClockPayload(cfg.colorHex, cfg);
+      const sig = buildClockSignature(cfg.colorHex);
+      if (lastQueuedSigRef.current[machineId] === sig) return;
       await queueLedCommand(machineId, payload);
-      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: buildClockSignature(cfg.colorHex) };
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
     }
 
-    let displayText = String(cfg.text ?? '').trim();
+    let displayText = String(cfg.text ?? '').trim() || String(ledState?.text ?? '').trim();
     let displayR = 0;
     let displayG = 255;
     let displayB = 255;
@@ -1791,7 +1816,7 @@ const LedSignView = ({
       // Only re-push LED for the currently selected machine
       if (mid !== sid) return;
       const machine = validMachines.find((m) => m.id === mid);
-      if (!machine?.ledIp) return;
+      if (!machine?.id) return;
 
       // Build updated LED command with new counters
       const cfg = configsRef.current[mid] ?? DEFAULT_CONFIG;
@@ -1895,8 +1920,10 @@ const LedSignView = ({
 
     autoPushDebounceRef.current = setTimeout(async () => {
       const targets = speedForAll
-        ? validMachines.filter((m) => m.ledIp)
-        : selectedMachine?.ledIp ? [selectedMachine] : [];
+        ? validMachines.filter((m) => canSendLedCommand(m, wifiStatuses[m.id] ?? 'checking'))
+        : selectedMachine && canSendLedCommand(selectedMachine, wifiStatuses[sid] ?? 'checking')
+          ? [selectedMachine]
+          : [];
 
       for (const machine of targets) {
         const cfg = configsRef.current[machine.id] ?? DEFAULT_CONFIG;
@@ -1925,7 +1952,7 @@ const LedSignView = ({
     return () => {
       if (autoPushDebounceRef.current) clearTimeout(autoPushDebounceRef.current);
     };
-  }, [configs, sid, selectedMachine, speedForAll, validMachines, getLiveCounterPayload, ledStates]);
+  }, [configs, sid, selectedMachine, speedForAll, validMachines, getLiveCounterPayload, ledStates, wifiStatuses]);
 
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
@@ -2296,6 +2323,7 @@ const LedSignView = ({
       } else {
         await queueLedCommand(selectedMachine.id, {
           text: liveText,
+          showClock: false,
           r, g, b,
           fontSize: cfg.fontSize ?? 1,
           speed: speedMs,
@@ -2308,6 +2336,7 @@ const LedSignView = ({
         [sid]: {
           ...(prev[sid] ?? {}),
           text: liveText,
+          showClock: false,
           r, g, b,
           textOverride: false,
           updatedAt: new Date().toISOString(),
@@ -2350,6 +2379,11 @@ const LedSignView = ({
         ago: localEspStatus.data.lastPollOkAgoSec ?? '—',
       })
     : null;
+
+  const canSendLed = selectedMachine
+    ? canSendLedCommand(selectedMachine, effectiveWifiStatus)
+    : false;
+  const effectiveShowClock = isLedPreviewClock(ledStates[sid], config);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900/20">
@@ -2455,7 +2489,8 @@ const LedSignView = ({
               syncStatus={syncStatus}
               speedForAll={speedForAll}
               onSpeedForAllChange={handleSpeedForAll}
-              showClock={Boolean(ledStates[sid]?.showClock)}
+              showClock={effectiveShowClock}
+              canSendLed={canSendLed}
             />
           </>
         ) : (

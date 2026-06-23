@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.6 (ข้อความชนะ queue + sync ทับนาฬิกา)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.9 (sync ไม่ทับคำสั่งข้อความ + fallback parser)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -17,6 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <ElegantOTA.h>
+#include <freertos/semphr.h>
 
 // ลดโอกาสรีเซ็ตจากไฟตกตอนบูต (HUB75 กินกระแสสูง)
 #include "soc/rtc_cntl_reg.h"
@@ -45,6 +46,8 @@ struct LedCmd {
 
 // ประกาศฟังก์ชันล่วงหน้าเพื่อให้คอมไพเลอร์รู้จักก่อนเรียกใช้งาน
 void updateTextProperties();
+void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0);
+String buildLedStateFingerprint(const String& text, int r, int g, int b, int fontSize, int speed, const String& act, const String& tgt);
 void showSyncWaitingVisual();
 bool syncLedDisplayFromServer();
 bool bootSyncFromServerWithRetry();
@@ -168,7 +171,150 @@ static String            g_lastHttpError                  = "";
 static volatile bool     g_requestStatusSync              = false;
 static bool              g_lastSyncParseOk                = false;
 static int               g_lastSyncServerTextLen          = 0;
-static const size_t      LED_JSON_CAPACITY                = 8192;
+static int               g_lastSyncBodyLen                = 0;
+static String            g_lastSyncError                  = "";
+static SemaphoreHandle_t g_httpMutex                      = nullptr;
+
+String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
+  String body = http.getString();
+  if (body.length() > 0) return body;
+
+  WiFiClient* stream = http.getStreamPtr();
+  if (!stream) return body;
+
+  int total = http.getSize();
+  uint32_t deadline = millis() + timeoutMs;
+  if (total > 0 && total < 16384) {
+    body.reserve((unsigned)total + 1);
+    while ((int)body.length() < total && (int)millis() < (int)deadline) {
+      if (stream->available()) body += (char)stream->read();
+      else if (!stream->connected() && !stream->available()) break;
+      else delay(1);
+    }
+  } else {
+    while ((int)millis() < (int)deadline) {
+      if (stream->available()) {
+        body += (char)stream->read();
+        deadline = millis() + 500;
+      } else if (!stream->connected() && !stream->available()) {
+        break;
+      } else {
+        delay(1);
+      }
+    }
+  }
+  return body;
+}
+
+String jsonDecodeEscapedUtf8(const String& raw) {
+  String out;
+  out.reserve(raw.length());
+  for (int i = 0; i < (int)raw.length(); i++) {
+    char c = raw[i];
+    if (c != '\\') {
+      out += c;
+      continue;
+    }
+    if (i + 1 >= (int)raw.length()) break;
+    char e = raw[++i];
+    if (e == 'u' && i + 4 < (int)raw.length()) {
+      char hex[5] = { raw[i + 1], raw[i + 2], raw[i + 3], raw[i + 4], 0 };
+      i += 4;
+      unsigned long cp = strtoul(hex, NULL, 16);
+      if (cp < 0x80) out += (char)cp;
+      else if (cp < 0x800) {
+        out += (char)(0xC0 | (cp >> 6));
+        out += (char)(0x80 | (cp & 0x3F));
+      } else {
+        out += (char)(0xE0 | (cp >> 12));
+        out += (char)(0x80 | ((cp >> 6) & 0x3F));
+        out += (char)(0x80 | (cp & 0x3F));
+      }
+    } else if (e == '"') out += '"';
+    else if (e == '\\') out += '\\';
+    else if (e == 'n') out += '\n';
+    else if (e == 'r') out += '\r';
+    else if (e == 't') out += '\t';
+    else out += e;
+  }
+  return out;
+}
+
+int jsonFindIntAfterKey(const String& body, int fromIdx, const char* key, int defVal) {
+  String pat = String("\"") + key + "\":";
+  int i = body.indexOf(pat, fromIdx);
+  if (i < 0) return defVal;
+  i += pat.length();
+  while (i < (int)body.length() && body[i] == ' ') i++;
+  String num;
+  while (i < (int)body.length() && (isdigit((unsigned char)body[i]) || body[i] == '-')) num += body[i++];
+  return num.length() ? num.toInt() : defVal;
+}
+
+String jsonPickQuotedValue(const String& body, int fromIdx, const char* key) {
+  String pat = String("\"") + key + "\":\"";
+  int start = body.indexOf(pat, fromIdx);
+  if (start < 0) return "";
+  start += pat.length();
+  String raw;
+  for (int i = start; i < (int)body.length(); i++) {
+    if (body[i] == '"') break;
+    raw += body[i];
+  }
+  return jsonDecodeEscapedUtf8(raw);
+}
+
+bool jsonHasTruthyTextField(const String& body) {
+  int stateIdx = body.indexOf("\"state\"");
+  if (stateIdx < 0) return false;
+  int start = body.indexOf("\"text\":\"", stateIdx);
+  if (start < 0) return false;
+  start += 8;
+  return start < (int)body.length() && body[start] != '"';
+}
+
+bool applyLedStateFromStatusBody(const String& body) {
+  if (body.indexOf("\"hasState\":true") < 0 && body.indexOf("\"hasState\": true") < 0) return false;
+
+  int stateIdx = body.indexOf("\"state\"");
+  if (stateIdx < 0) return false;
+
+  String txt = jsonPickQuotedValue(body, stateIdx, "text");
+  txt.trim();
+
+  int r = jsonFindIntAfterKey(body, stateIdx, "r", 0);
+  int g = jsonFindIntAfterKey(body, stateIdx, "g", 255);
+  int b = jsonFindIntAfterKey(body, stateIdx, "b", 255);
+  int fontSize = jsonFindIntAfterKey(body, stateIdx, "fontSize", 1);
+  int speed = jsonFindIntAfterKey(body, stateIdx, "speed", 50);
+  String actual = jsonPickQuotedValue(body, stateIdx, "actual");
+  String target = jsonPickQuotedValue(body, stateIdx, "target");
+  if (actual.length() == 0) actual = String(jsonFindIntAfterKey(body, stateIdx, "actual", 0));
+  if (target.length() == 0) target = String(jsonFindIntAfterKey(body, stateIdx, "target", 0));
+
+  if (txt.length() > 0) {
+    g_clockMode = false;
+    currentText = txt;
+    currentFontSize = fontSize > 0 ? fontSize : 1;
+    scrollSpeed = max(20, speed > 0 ? speed : 50);
+    currentColor = dma_display->color565(r, g, b);
+    actualCount = actual.length() ? actual : String("0");
+    targetCount = target.length() ? target : String("0");
+    updateTextProperties();
+    s_ledStateFingerprint = buildLedStateFingerprint(txt, r, g, b, currentFontSize, scrollSpeed, actualCount, targetCount);
+    Serial.println("[Sync/fb] text: \"" + currentText + "\"");
+    return true;
+  }
+
+  bool showClock = (body.indexOf("\"showClock\":true", stateIdx) >= 0)
+                || (body.indexOf("\"showClock\": true", stateIdx) >= 0);
+  if (showClock) {
+    applyClockVisual((uint8_t)r, (uint8_t)g, (uint8_t)b);
+    Serial.println("[Sync/fb] clock mode");
+    return true;
+  }
+  return false;
+}
 
 void applyPublicDns() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -263,12 +409,12 @@ int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs)
   if (!http.begin(tls, ipUrl)) return -2;
   http.addHeader("Host", host);
   int code = http.GET();
-  if (bodyOut && code == 200) *bodyOut = http.getString();
+  if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
   http.end();
   return code;
 }
 
-int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
+int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
   if (WiFi.status() != WL_CONNECTED) return -1;
 
   if (!g_serverDnsOk) refreshServerDns();
@@ -299,7 +445,7 @@ int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
   }
 
   if (bodyOut && code == 200) {
-    *bodyOut = http.getString();
+    *bodyOut = readHttpResponseBody(http, timeoutMs);
   }
   http.end();
 
@@ -311,7 +457,7 @@ int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.setReuse(false);
     if (fb.begin(url)) {
       code = fb.GET();
-      if (bodyOut && code == 200) *bodyOut = fb.getString();
+      if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
       if (code < 0) {
         g_lastHttpError = "fb:" + fb.errorToString(code);
         Serial.printf("[HTTP] fallback GET %d (%s) heap=%u\n",
@@ -321,12 +467,24 @@ int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.end();
   }
 
-  // ต่อ IP ที่ resolve แล้ว + Host header (กรณี DNS router พัง หรือ TLS กับ hostname ไม่ผ่าน)
   if (code < 0 && url.startsWith("https://") && g_serverDnsOk) {
     Serial.printf("[HTTP] retry via IP %s heap=%u\n", g_serverDnsIp.toString().c_str(), ESP.getFreeHeap());
     int ipCode = httpGetViaResolvedIp(url, bodyOut, timeoutMs);
     if (ipCode >= 0) code = ipCode;
     else g_lastHttpError = "ip:" + String(ipCode);
+  }
+
+  if (code == 200 && bodyOut && bodyOut->length() == 0 && url.startsWith("https://")) {
+    Serial.println("[HTTP] empty body on 200 — retry via IP");
+    if (g_serverDnsOk) {
+      String retryBody;
+      int ipCode = httpGetViaResolvedIp(url, &retryBody, timeoutMs);
+      if (ipCode == 200 && retryBody.length() > 0) {
+        *bodyOut = retryBody;
+      } else if (ipCode >= 0) {
+        code = ipCode;
+      }
+    }
   }
 
   if (code < 0) {
@@ -339,6 +497,17 @@ int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
   } else {
     g_lastHttpError = "";
   }
+  return code;
+}
+
+int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
+  if (!g_httpMutex) return httpGetUrlUnlocked(url, bodyOut, timeoutMs);
+  if (xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(timeoutMs + 3000)) != pdTRUE) {
+    g_lastHttpError = "http busy";
+    return -3;
+  }
+  int code = httpGetUrlUnlocked(url, bodyOut, timeoutMs);
+  xSemaphoreGive(g_httpMutex);
   return code;
 }
 
@@ -443,7 +612,7 @@ void showSyncWaitingVisual() {
   updateTextProperties();
 }
 
-void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0) {
+void applyClockVisual(uint8_t r, uint8_t g, uint8_t b) {
   if (!dma_display) return;
   g_clockMode = true;
   currentFontSize = 1;
@@ -567,9 +736,15 @@ void reconcileLedStateWithWeb() {
     return;
   }
 
-  DynamicJsonDocument doc(LED_JSON_CAPACITY);
+  if (g_clockMode && jsonHasTruthyTextField(body)) {
+    g_requestStatusSync = true;
+    Serial.println("[Reconcile] server has text while clock — schedule sync");
+    return;
+  }
+
+  StaticJsonDocument<1536> doc;
   if (deserializeJson(doc, body) || !doc["success"].as<bool>()) {
-    Serial.println("[Reconcile] parse error — ข้าม");
+    if (jsonHasTruthyTextField(body)) g_requestStatusSync = true;
     return;
   }
   if (!doc["hasState"].as<bool>()) {
@@ -584,7 +759,6 @@ void reconcileLedStateWithWeb() {
     return;
   }
 
-  // ให้ loop() เรียก syncLedDisplayFromServer — ไม่ queue จาก pollTask (กัน stack overflow)
   g_requestStatusSync = true;
   Serial.println("[Reconcile] mismatch — schedule status sync");
 }
@@ -809,6 +983,8 @@ void handleStatus() {
               + ",\"clockMode\":" + String(g_clockMode ? "true" : "false")
               + ",\"lastSyncParseOk\":" + String(g_lastSyncParseOk ? "true" : "false")
               + ",\"lastSyncServerTextLen\":" + String(g_lastSyncServerTextLen)
+              + ",\"lastSyncBodyLen\":" + String(g_lastSyncBodyLen)
+              + ",\"lastSyncError\":\"" + g_lastSyncError + "\""
               + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -935,32 +1111,33 @@ bool syncLedDisplayFromServer() {
   }
 
   Serial.println("[Sync] Response: " + body.substring(0, 120));
+  g_lastSyncBodyLen = body.length();
+  if (body.length() == 0) {
+    g_lastSyncParseOk = false;
+    g_lastSyncError = "empty body";
+    g_lastSyncServerTextLen = 0;
+    return false;
+  }
 
-  DynamicJsonDocument doc(LED_JSON_CAPACITY);
+  DynamicJsonDocument doc(3072);
   DeserializationError jerr = deserializeJson(doc, body);
-  g_lastSyncParseOk = !jerr;
-  if (jerr) {
-    Serial.printf("[Sync] JSON parse error: %s\n", jerr.c_str());
-    g_lastSyncServerTextLen = 0;
-    return false;
-  }
-
-  if (!doc["success"].as<bool>() || !doc["hasState"].as<bool>()) {
-    Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — รอ led-command");
-    g_lastSyncServerTextLen = 0;
-    if (g_awaitingBootSync) {
+  if (!jerr && doc["success"].as<bool>() && doc["hasState"].as<bool>()) {
+    JsonObject st = doc["state"];
+    if (!st.isNull()) {
+      g_lastSyncParseOk = true;
+      g_lastSyncError = "json";
+      g_lastSyncServerTextLen = (int)st["text"].as<String>().length();
       g_awaitingBootSync = false;
-      if (!g_clockMode && currentText == "กำลังซิงก์..") {
-        applyClockVisual();
-      }
+      return applyLedStateFromServer(st);
     }
-    return false;
   }
 
-  JsonObject st = doc["state"];
-  g_lastSyncServerTextLen = st.isNull() ? 0 : (int)st["text"].as<String>().length();
+  Serial.printf("[Sync] fallback parser (json=%s bodyLen=%u)\n", jerr.c_str(), body.length());
+  g_lastSyncParseOk = applyLedStateFromStatusBody(body);
+  g_lastSyncError = g_lastSyncParseOk ? "fallback" : (jerr ? jerr.c_str() : "fallback fail");
+  g_lastSyncServerTextLen = g_lastSyncParseOk ? currentText.length() : 0;
   g_awaitingBootSync = false;
-  return applyLedStateFromServer(st);
+  return g_lastSyncParseOk;
 }
 
 bool bootSyncFromServerWithRetry() {
@@ -1170,6 +1347,7 @@ void setup() {
   server.begin();
 
   cmdQueue = xQueueCreate(3, sizeof(LedCmd));
+  g_httpMutex = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(pollTask, "pollTask", 20480, nullptr, 1, nullptr, 0);
   Serial.println("Ready!");
 }
@@ -1184,17 +1362,7 @@ void loop() {
     applyLedCommandFromQueue(cmd);
   }
 
-  // หลัง queue แล้ว — ถ้ายังเป็นนาฬิกา ดึง led-status ทับ (server ชนะคำสั่งนาฬิกาเก่า)
-  if (WiFi.status() == WL_CONNECTED && (g_requestStatusSync || g_clockMode)) {
-    static uint32_t lastResyncMs = 0;
-    uint32_t nowMs = millis();
-    if (g_requestStatusSync || nowMs - lastResyncMs >= 3000) {
-      g_requestStatusSync = false;
-      lastResyncMs = nowMs;
-      syncLedDisplayFromServer();
-    }
-  }
-
+  // หลัง queue แล้ว — sync ทำใน pollTask เท่านั้น (กัน HTTPS ชนกันข้าม core)
   tickClockIfNeeded();
   drawAndScrollText();
 }
@@ -1328,10 +1496,11 @@ void pollTask(void* pv) {
     recordCommandPollResult(code);
     maybeRestartAfterPollFailures(currentMs);
 
+    bool skipSyncThisCycle = false;
     if (code == 200) {
       bool pending = false;
       {
-        DynamicJsonDocument doc(2048);
+        StaticJsonDocument<2048> doc;
         DeserializationError jerr = deserializeJson(doc, body);
         pending = (!jerr && doc["pending"].as<bool>());
         if (!jerr && pending) {
@@ -1343,12 +1512,22 @@ void pollTask(void* pv) {
           g_awaitingBootSync = false;
           g_bootSyncWaitingSinceMs = 0;
           s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
+          if (cmd.text[0] != '\0') skipSyncThisCycle = true;
         } else if (jerr) {
           Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
         }
       }
       if (!pending && g_clockMode) {
         g_requestStatusSync = true;
+      }
+    }
+
+    if ((g_requestStatusSync || g_clockMode) && !skipSyncThisCycle) {
+      static uint32_t lastResyncMs = 0;
+      if (g_requestStatusSync || currentMs - lastResyncMs >= 3000) {
+        g_requestStatusSync = false;
+        lastResyncMs = currentMs;
+        syncLedDisplayFromServer();
       }
     }
   }
