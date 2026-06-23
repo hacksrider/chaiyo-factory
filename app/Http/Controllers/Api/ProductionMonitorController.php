@@ -21,6 +21,9 @@ use Carbon\Carbon;
 
 class ProductionMonitorController extends Controller
 {
+    /** ESP poll ทุก ~2s — ช่วงนี้ครอบ sync/poll ช้าชั่วคราว (~20s) โดยไม่ false offline */
+    private const ESP_HEARTBEAT_ONLINE_SEC = 35;
+
     /**
      * GAS Web App URL สำหรับ แผนการผลิต (Daily Plan / Monthly Plan).
      * GAS_PRODUCTION_URL ถูกถอดออกแล้ว — ข้อมูลเครื่องจักร Hardcode ใน config/machines.php
@@ -419,7 +422,7 @@ class ProductionMonitorController extends Controller
      *
      * เว็บเช็คสถานะ WiFi ของป้ายไฟโดยดูจาก heartbeat ล่าสุด
      * ESP32 poll /led-command ทุก 2s → บันทึก timestamp อัตโนมัติ
-     * ถ้า ESP32 ไม่ได้ poll ภายใน 15 วินาที = offline
+     * ถ้า ESP32 ไม่ได้ poll ภายใน {@see self::ESP_HEARTBEAT_ONLINE_SEC} วินาที = offline
      *
      * วิธีนี้ไม่ต้องให้ PC ping IP ของ ESP32 โดยตรง
      * → ใช้ได้ทุก network (แม้ PC กับ ESP32 อยู่คนละ subnet)
@@ -484,7 +487,7 @@ class ProductionMonitorController extends Controller
                 try {
                     $dt         = Carbon::parse($lastSeenAt);
                     $secondsAgo = (int) $dt->diffInSeconds(now());
-                    $online     = $secondsAgo <= 15;
+                    $online     = $secondsAgo <= self::ESP_HEARTBEAT_ONLINE_SEC;
                 } catch (\Throwable $e) {
                     // parse ไม่ได้ → offline
                 }
@@ -526,7 +529,7 @@ class ProductionMonitorController extends Controller
             'rssi'    => $rssi,
             'temp'    => $temp,
             'uptime'  => $uptime,
-        ], now()->addSeconds(30));
+        ], now()->addSeconds(self::ESP_HEARTBEAT_ONLINE_SEC + 10));
     }
 
     // ──────────────────────────────────────────────────────────────────────────

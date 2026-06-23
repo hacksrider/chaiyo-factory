@@ -1918,6 +1918,21 @@ const LedSignView = ({
     };
   }, [sid, wifiStatuses[sid], selectedMachine?.ledIp, deviceLocalIps[sid]]);
 
+  // เมื่อป้ายกลับมา poll server ได้ (หลัง WiFi หลุด) — re-push ข้อความ + LAN ทันที
+  const prevPollCodeRef = useRef({});
+  useEffect(() => {
+    if (!sid) return;
+    const pollCode = localEspStatus?.data?.lastPollHttpCode;
+    if (pollCode == null) return;
+    const prev = prevPollCodeRef.current[sid];
+    prevPollCodeRef.current[sid] = pollCode;
+    const recovered = prev != null && prev !== 200 && pollCode === 200;
+    const bootedFresh = localEspStatus?.data?.uptimeSec != null && Number(localEspStatus.data.uptimeSec) < 180;
+    if (recovered || (bootedFresh && pollCode === 200 && prev == null)) {
+      pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
+    }
+  }, [sid, localEspStatus?.data?.lastPollHttpCode, localEspStatus?.data?.uptimeSec]);
+
   // Auto-push debounce for color/speed changes (not text — text goes through popup)
   const autoPushDebounceRef = useRef(null);
   useEffect(() => {
@@ -2375,7 +2390,7 @@ const LedSignView = ({
   const localData = localEspStatus?.data;
   const espPollOk = localData
     ? localData.lastPollHttpCode === 200
-      || (localData.lastPollOkAgoSec != null && Number(localData.lastPollOkAgoSec) < 30)
+      || (localData.lastPollOkAgoSec != null && Number(localData.lastPollOkAgoSec) < 35)
     : null;
   const effectiveWifiStatus = hbWifiStatus === 'online' && espPollOk !== false
     ? 'online'

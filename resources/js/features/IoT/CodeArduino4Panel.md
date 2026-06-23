@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.10 (retry HTTP 404 ผ่าน IP + URL encode)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.12 (poll ก่อน sync — ลด false offline)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -56,6 +56,7 @@ bool connectWifi(bool hardReset = true);
 void processSerialCommand();
 void drawAndScrollText();
 String buildFingerprintFromLedCmd(const LedCmd& c);
+void flushLedCommandQueue();
 void handleTemp();
 void handleRoot();
 void handleReboot();
@@ -323,6 +324,9 @@ bool applyLedStateFromStatusBody(const String& body) {
     targetCount = target.length() ? target : String("0");
     updateTextProperties();
     s_ledStateFingerprint = buildLedStateFingerprint(txt, r, g, b, currentFontSize, scrollSpeed, actualCount, targetCount);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
     Serial.println("[Sync/fb] text: \"" + currentText + "\"");
     return true;
   }
@@ -331,6 +335,9 @@ bool applyLedStateFromStatusBody(const String& body) {
                 || (body.indexOf("\"showClock\": true", stateIdx) >= 0);
   if (showClock) {
     applyClockVisual((uint8_t)r, (uint8_t)g, (uint8_t)b);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
     Serial.println("[Sync/fb] clock mode");
     return true;
   }
@@ -429,7 +436,7 @@ int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs)
   tls.setTimeout(timeoutMs / 1000 + 5);
   if (!http.begin(tls, ipUrl)) return -2;
   http.addHeader("Host", host);
-  http.addHeader("User-Agent", "ChaiyoLED/2.10");
+  http.addHeader("User-Agent", "ChaiyoLED/2.12");
   http.addHeader("Accept", "application/json");
   int code = http.GET();
   if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
@@ -456,7 +463,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.10");
+    http.addHeader("User-Agent", "ChaiyoLED/2.12");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   } else {
@@ -466,7 +473,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.10");
+    http.addHeader("User-Agent", "ChaiyoLED/2.12");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   }
@@ -483,7 +490,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.setTimeout(timeoutMs);
     fb.setReuse(false);
     if (fb.begin(url)) {
-      fb.addHeader("User-Agent", "ChaiyoLED/2.10");
+      fb.addHeader("User-Agent", "ChaiyoLED/2.12");
       fb.addHeader("Accept", "application/json");
       code = fb.GET();
       if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
@@ -585,12 +592,14 @@ void ensureBangkokClockConfig() {
 }
 
 bool jsonWantsClockMode(JsonObject o) {
-  if (o.isNull()) return true;
+  if (o.isNull()) return false;
   String t = o["text"].as<String>();
   t.trim();
   // มีข้อความ = โหมดข้อความเสมอ (ไม่ให้ showClock ทับข้อความจาก server)
   if (t.length() > 0) return false;
-  return o["showClock"] | true;
+  // ต้องระบุ showClock:true ชัดเจน — ไม่ default เป็นนาฬิกาเมื่อ field หาย
+  if (o.containsKey("showClock")) return o["showClock"].as<bool>();
+  return false;
 }
 
 void syncNtpIfNeeded(bool force) {
@@ -687,8 +696,10 @@ void tickClockIfNeeded() {
 
 void applyLedCommandFromQueue(const LedCmd& cmd) {
   g_awaitingBootSync = false;
+  g_bootSyncWaitingSinceMs = 0;
   // มีข้อความใน cmd = แสดงข้อความเสมอ (ไม่ให้ showClock ใน poll ทับ)
   if (cmd.text[0] != '\0') {
+    flushLedCommandQueue();
     g_clockMode     = false;
     currentText     = String(cmd.text);
     currentFontSize = cmd.fontSize > 0 ? cmd.fontSize : 1;
@@ -1124,6 +1135,9 @@ bool applyLedStateFromServer(JsonObject st) {
     if (st.containsKey("target")) targetCount = st["target"].as<String>();
     updateTextProperties();
     s_ledStateFingerprint = buildFingerprintFromStateJson(st);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
     Serial.println("[Sync] ✓ text: \"" + currentText + "\"");
     return true;
   }
@@ -1131,10 +1145,19 @@ bool applyLedStateFromServer(JsonObject st) {
   if (jsonWantsClockMode(st)) {
     int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
     applyClockVisual((uint8_t)r, (uint8_t)g, (uint8_t)b);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
     Serial.println("[Sync] clock mode from server");
     return true;
   }
   return false;
+}
+
+void flushLedCommandQueue() {
+  if (!cmdQueue) return;
+  LedCmd discard;
+  while (xQueueReceive(cmdQueue, &discard, 0) == pdTRUE) { /* drop stale clock cmds */ }
 }
 
 bool syncLedDisplayFromServer() {
@@ -1162,7 +1185,7 @@ bool syncLedDisplayFromServer() {
     return false;
   }
 
-  DynamicJsonDocument doc(3072);
+  DynamicJsonDocument doc(5120);
   DeserializationError jerr = deserializeJson(doc, body);
   if (!jerr && doc["success"].as<bool>() && doc["hasState"].as<bool>()) {
     JsonObject st = doc["state"];
@@ -1501,6 +1524,8 @@ void pollTask(void* pv) {
     }
 
     if (justReconnected) {
+      flushLedCommandQueue();
+      showSyncWaitingVisual();
       g_awaitingBootSync = true;
       g_bootSyncWaitingSinceMs = currentMs;
       vTaskDelay(pdMS_TO_TICKS(1500));
@@ -1508,30 +1533,14 @@ void pollTask(void* pv) {
       refreshServerDns();
       syncNtpIfNeeded(true);
       s_ledStateFingerprint = "";
-      bootSyncFromServerWithRetry();
-    }
-
-    if (g_awaitingBootSync) {
-      if (g_bootSyncWaitingSinceMs > 0
-          && (currentMs - g_bootSyncWaitingSinceMs) >= BOOT_SYNC_GIVE_UP_MS) {
-        g_awaitingBootSync = false;
-        g_bootSyncWaitingSinceMs = 0;
-        if (!g_clockMode && currentText == "กำลังซิงก์..") {
-          Serial.println("[Sync] boot sync timeout — show clock until command");
-          applyClockVisual();
-        }
-      } else {
-        syncLedDisplayFromServer();
-      }
     }
 
     if (g_serverUrl.isEmpty()) continue;
 
     pollCycle++;
-    if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
 
+    // ─── POLL ก่อน SYNC — อัปเดต heartbeat ก่อน HTTP ที่ block ได้นาน ───
     String mid = encodeMachineIdForPath(String(MACHINE_ID));
-    
     String url = g_serverUrl + "/api/production-monitor/led-command/" + mid + buildHeartbeatQuery();
     g_lastPollUrl = url;
     String body;
@@ -1549,6 +1558,7 @@ void pollTask(void* pv) {
         if (!jerr && pending) {
           LedCmd cmd = {};
           stateJsonToLedCmd(doc.as<JsonObject>(), cmd);
+          if (cmd.text[0] != '\0') flushLedCommandQueue();
           if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
             Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
           }
@@ -1565,9 +1575,34 @@ void pollTask(void* pv) {
       }
     }
 
+    if (justReconnected) {
+      bootSyncFromServerWithRetry();
+    }
+
+    if (g_awaitingBootSync) {
+      static uint32_t lastAwaitingSyncMs = 0;
+      if (g_bootSyncWaitingSinceMs > 0
+          && (currentMs - g_bootSyncWaitingSinceMs) >= BOOT_SYNC_GIVE_UP_MS) {
+        g_awaitingBootSync = false;
+        g_bootSyncWaitingSinceMs = 0;
+        lastAwaitingSyncMs = 0;
+        if (syncLedDisplayFromServer()) {
+          Serial.println("[Sync] boot sync recovered on final attempt");
+        } else if (currentText == "กำลังซิงก์..") {
+          Serial.println("[Sync] boot sync timeout — keep waiting (no forced clock)");
+          showSyncWaitingVisual();
+        }
+      } else if (currentMs - lastAwaitingSyncMs >= 4000) {
+        lastAwaitingSyncMs = currentMs;
+        syncLedDisplayFromServer();
+      }
+    }
+
+    if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
+
     if ((g_requestStatusSync || g_clockMode) && !skipSyncThisCycle) {
       static uint32_t lastResyncMs = 0;
-      if (g_requestStatusSync || currentMs - lastResyncMs >= 3000) {
+      if (g_requestStatusSync || currentMs - lastResyncMs >= 5000) {
         g_requestStatusSync = false;
         lastResyncMs = currentMs;
         syncLedDisplayFromServer();
