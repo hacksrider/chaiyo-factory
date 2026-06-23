@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.4 (ข้อความชนะ showClock + JSON ใหญ่ขึ้น)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.6 (ข้อความชนะ queue + sync ทับนาฬิกา)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -165,6 +165,10 @@ static IPAddress         g_serverDnsIp;
 static bool              g_serverDnsOk                    = false;
 static bool              g_serverDnsFallback              = false;
 static String            g_lastHttpError                  = "";
+static volatile bool     g_requestStatusSync              = false;
+static bool              g_lastSyncParseOk                = false;
+static int               g_lastSyncServerTextLen          = 0;
+static const size_t      LED_JSON_CAPACITY                = 8192;
 
 void applyPublicDns() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -472,21 +476,24 @@ void tickClockIfNeeded() {
 
 void applyLedCommandFromQueue(const LedCmd& cmd) {
   g_awaitingBootSync = false;
-  if (cmd.showClock || cmd.text[0] == '\0') {
-    applyClockVisual(cmd.r, cmd.g, cmd.b);
-    Serial.println("[LED] Clock mode (HH:MM:SS)");
+  // มีข้อความใน cmd = แสดงข้อความเสมอ (ไม่ให้ showClock ใน poll ทับ)
+  if (cmd.text[0] != '\0') {
+    g_clockMode     = false;
+    currentText     = String(cmd.text);
+    currentFontSize = cmd.fontSize > 0 ? cmd.fontSize : 1;
+    if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
+    currentColor    = dma_display->color565(cmd.r, cmd.g, cmd.b);
+    if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
+    if (cmd.target[0] != '\0') targetCount = String(cmd.target);
+    updateTextProperties();
+    s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
+    Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
     return;
   }
-  g_clockMode     = false;
-  currentText     = String(cmd.text);
-  currentFontSize = cmd.fontSize;
-  if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
-  currentColor    = dma_display->color565(cmd.r, cmd.g, cmd.b);
-  if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
-  if (cmd.target[0] != '\0') targetCount = String(cmd.target);
-  updateTextProperties();
-  s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
-  Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
+  if (cmd.showClock) {
+    applyClockVisual(cmd.r, cmd.g, cmd.b);
+    Serial.println("[LED] Clock mode (HH:MM:SS)");
+  }
 }
 
 String buildLedStateFingerprint(
@@ -560,7 +567,7 @@ void reconcileLedStateWithWeb() {
     return;
   }
 
-  StaticJsonDocument<4096> doc;
+  DynamicJsonDocument doc(LED_JSON_CAPACITY);
   if (deserializeJson(doc, body) || !doc["success"].as<bool>()) {
     Serial.println("[Reconcile] parse error — ข้าม");
     return;
@@ -577,12 +584,9 @@ void reconcileLedStateWithWeb() {
     return;
   }
 
-  LedCmd cmd = {};
-  stateJsonToLedCmd(st, cmd);
-  if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
-    s_ledStateFingerprint = fp;
-    Serial.println("[Reconcile] Queued ตรงกับเว็บ: " + String(cmd.text));
-  }
+  // ให้ loop() เรียก syncLedDisplayFromServer — ไม่ queue จาก pollTask (กัน stack overflow)
+  g_requestStatusSync = true;
+  Serial.println("[Reconcile] mismatch — schedule status sync");
 }
 
 bool isThaiCombining(uint8_t b2, uint8_t b3) {
@@ -738,7 +742,10 @@ void handleLed() {
   }
   bool wantClock = doc["showClock"] | false;
   currentText.trim();
-  if (wantClock || currentText.length() == 0) {
+  if (currentText.length() > 0) {
+    g_clockMode = false;
+    updateTextProperties();
+  } else if (wantClock) {
     applyClockVisual();
   } else {
     g_clockMode = false;
@@ -800,6 +807,8 @@ void handleStatus() {
               + ",\"freeHeap\":" + String(ESP.getFreeHeap())
               + ",\"lastHttpError\":\"" + g_lastHttpError + "\""
               + ",\"clockMode\":" + String(g_clockMode ? "true" : "false")
+              + ",\"lastSyncParseOk\":" + String(g_lastSyncParseOk ? "true" : "false")
+              + ",\"lastSyncServerTextLen\":" + String(g_lastSyncServerTextLen)
               + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -878,6 +887,37 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
+bool applyLedStateFromServer(JsonObject st) {
+  if (st.isNull()) return false;
+
+  String txt = st["text"].as<String>();
+  txt.trim();
+
+  if (txt.length() > 0) {
+    g_clockMode     = false;
+    currentText     = txt;
+    currentFontSize = st["fontSize"] | 1;
+    int sp          = st["speed"] | 50;
+    scrollSpeed     = max(20, sp);
+    int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
+    currentColor    = dma_display->color565(r, g, b);
+    if (st.containsKey("actual")) actualCount = st["actual"].as<String>();
+    if (st.containsKey("target")) targetCount = st["target"].as<String>();
+    updateTextProperties();
+    s_ledStateFingerprint = buildFingerprintFromStateJson(st);
+    Serial.println("[Sync] ✓ text: \"" + currentText + "\"");
+    return true;
+  }
+
+  if (jsonWantsClockMode(st)) {
+    int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
+    applyClockVisual((uint8_t)r, (uint8_t)g, (uint8_t)b);
+    Serial.println("[Sync] clock mode from server");
+    return true;
+  }
+  return false;
+}
+
 bool syncLedDisplayFromServer() {
   if (!dma_display || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return false;
 
@@ -896,14 +936,18 @@ bool syncLedDisplayFromServer() {
 
   Serial.println("[Sync] Response: " + body.substring(0, 120));
 
-  StaticJsonDocument<4096> doc;
-  if (deserializeJson(doc, body)) {
-    Serial.println("[Sync] JSON parse error — รอ retry");
+  DynamicJsonDocument doc(LED_JSON_CAPACITY);
+  DeserializationError jerr = deserializeJson(doc, body);
+  g_lastSyncParseOk = !jerr;
+  if (jerr) {
+    Serial.printf("[Sync] JSON parse error: %s\n", jerr.c_str());
+    g_lastSyncServerTextLen = 0;
     return false;
   }
 
   if (!doc["success"].as<bool>() || !doc["hasState"].as<bool>()) {
     Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — รอ led-command");
+    g_lastSyncServerTextLen = 0;
     if (g_awaitingBootSync) {
       g_awaitingBootSync = false;
       if (!g_clockMode && currentText == "กำลังซิงก์..") {
@@ -914,35 +958,9 @@ bool syncLedDisplayFromServer() {
   }
 
   JsonObject st = doc["state"];
-  if (st.isNull()) {
-    Serial.println("[Sync] state เป็น null — รอ retry");
-    return false;
-  }
-
+  g_lastSyncServerTextLen = st.isNull() ? 0 : (int)st["text"].as<String>().length();
   g_awaitingBootSync = false;
-
-  if (jsonWantsClockMode(st)) {
-    Serial.println("[Sync] เว็บล้างป้าย / ไม่มีข้อความ — แสดงนาฬิกา");
-    applyClockVisual();
-    return true;
-  }
-
-  g_clockMode     = false;
-  String txt = st["text"].as<String>();
-  txt.trim();
-  currentText     = txt;
-  currentFontSize = st["fontSize"] | 1;
-  int sp          = st["speed"] | 50;
-  scrollSpeed     = max(20, sp);
-  int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
-  currentColor    = dma_display->color565(r, g, b);
-
-  if (st.containsKey("actual")) actualCount = st["actual"].as<String>();
-  if (st.containsKey("target")) targetCount = st["target"].as<String>();
-  updateTextProperties();
-  s_ledStateFingerprint = buildFingerprintFromStateJson(st);
-  Serial.println("[Sync] ✓ ตรงกับเว็บ: \"" + currentText + "\" (" + actualCount + "/" + targetCount + ")");
-  return true;
+  return applyLedStateFromServer(st);
 }
 
 bool bootSyncFromServerWithRetry() {
@@ -1152,7 +1170,7 @@ void setup() {
   server.begin();
 
   cmdQueue = xQueueCreate(3, sizeof(LedCmd));
-  xTaskCreatePinnedToCore(pollTask, "pollTask", 12288, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(pollTask, "pollTask", 20480, nullptr, 1, nullptr, 0);
   Serial.println("Ready!");
 }
 
@@ -1160,13 +1178,24 @@ void loop() {
   server.handleClient();
   ElegantOTA.loop(); 
   processSerialCommand();
-  tickClockIfNeeded();
 
   LedCmd cmd;
   if (cmdQueue && xQueueReceive(cmdQueue, &cmd, 0) == pdTRUE) {
     applyLedCommandFromQueue(cmd);
   }
 
+  // หลัง queue แล้ว — ถ้ายังเป็นนาฬิกา ดึง led-status ทับ (server ชนะคำสั่งนาฬิกาเก่า)
+  if (WiFi.status() == WL_CONNECTED && (g_requestStatusSync || g_clockMode)) {
+    static uint32_t lastResyncMs = 0;
+    uint32_t nowMs = millis();
+    if (g_requestStatusSync || nowMs - lastResyncMs >= 3000) {
+      g_requestStatusSync = false;
+      lastResyncMs = nowMs;
+      syncLedDisplayFromServer();
+    }
+  }
+
+  tickClockIfNeeded();
   drawAndScrollText();
 }
 
@@ -1300,22 +1329,26 @@ void pollTask(void* pv) {
     maybeRestartAfterPollFailures(currentMs);
 
     if (code == 200) {
-      StaticJsonDocument<4096> doc;
-      DeserializationError jerr = deserializeJson(doc, body);
-      if (!jerr && doc["pending"].as<bool>()) {
-        LedCmd cmd = {};
-        stateJsonToLedCmd(doc.as<JsonObject>(), cmd);
-        if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
-          Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
+      bool pending = false;
+      {
+        DynamicJsonDocument doc(2048);
+        DeserializationError jerr = deserializeJson(doc, body);
+        pending = (!jerr && doc["pending"].as<bool>());
+        if (!jerr && pending) {
+          LedCmd cmd = {};
+          stateJsonToLedCmd(doc.as<JsonObject>(), cmd);
+          if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
+            Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
+          }
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+          s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
+        } else if (jerr) {
+          Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
         }
-        g_awaitingBootSync = false;
-        g_bootSyncWaitingSinceMs = 0;
-        s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
-      } else if (jerr) {
-        Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
-      } else if (g_clockMode) {
-        // ไม่มี pending แต่ยังโชว์นาฬิกา → ดึง led-status ให้ตรง server
-        reconcileLedStateWithWeb();
+      }
+      if (!pending && g_clockMode) {
+        g_requestStatusSync = true;
       }
     }
   }

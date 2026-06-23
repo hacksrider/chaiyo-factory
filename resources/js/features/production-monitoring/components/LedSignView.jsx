@@ -1904,18 +1904,7 @@ const LedSignView = ({
         const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
         const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
 
-        if (shouldPushClockOnly(cfg, ledState)) {
-          const sig = buildClockSignature(cfg.colorHex);
-          if (lastQueuedSigRef.current[machine.id] === sig) continue;
-          try {
-            await queueLedCommand(machine.id, buildClockPayload(cfg.colorHex, cfg));
-            lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machine.id]: sig };
-          } catch {
-            /* retry next cycle */
-          }
-          continue;
-        }
-
+        // ไม่ auto-push นาฬิกา — ส่งนาฬิกาได้เฉพาะปุ่ม "แสดงนาฬิกา" เท่านั้น
         const sig = buildLedConfigSignature(cfg);
         if (!sig) continue;
         if (lastQueuedSigRef.current[machine.id] === sig) continue;
