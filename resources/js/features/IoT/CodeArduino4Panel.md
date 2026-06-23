@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.1 (HTTPS poll fix + LAN diagnostics)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.3 (DNS fallback 8.8.8.8 + IP สำรอง)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -59,6 +59,7 @@ void handleReboot();
 String formatUptimeSec(unsigned long sec);
 String rssiQualityLabel(int rssi);
 String buildHeartbeatQuery();
+void syncNtpIfNeeded(bool force = false);
 int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs);
 void recordCommandPollResult(int httpCode);
 void maybeRestartAfterPollFailures(uint32_t nowMs);
@@ -74,6 +75,7 @@ void maybeRestartAfterPollFailures(uint32_t nowMs);
 #define WIFI_SSID   "KANOK-AP"
 #define WIFI_PASS   "kanok2564"
 #define WIFI_SERVER "https://www.chaiyo-factory.com"
+#define SERVER_FALLBACK_IP "103.80.48.27"   // chaiyo-factory.com — ใช้เมื่อ DNS router ล้มเหลว
 
 const char* MACHINE_ID_LIST[] = {
   "EM 01","EM 02","EM 03","EM 04","EM 05","EM 06","EM 07","EM 08",
@@ -159,32 +161,180 @@ static uint32_t          g_lastPollAttemptMs            = 0;
 static uint32_t          g_lastPollSuccessMs            = 0;
 static uint32_t          g_pollFailStreak               = 0;
 static int               g_connectFailStreak              = 0;
-static WiFiClientSecure  g_tlsClient;
-static bool              g_tlsReady                     = false;
+static IPAddress         g_serverDnsIp;
+static bool              g_serverDnsOk                    = false;
+static bool              g_serverDnsFallback              = false;
+static String            g_lastHttpError                  = "";
 
-void ensureTlsClient() {
-  if (g_tlsReady) return;
-  g_tlsClient.setInsecure();
-  g_tlsReady = true;
+void applyPublicDns() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  IPAddress routerDns = WiFi.dnsIP();
+  IPAddress dns1(8, 8, 8, 8);
+  IPAddress dns2(1, 1, 1, 1);
+  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+  Serial.printf("[DNS] router was %s → using %s + %s\n",
+                routerDns.toString().c_str(), dns1.toString().c_str(), dns2.toString().c_str());
+}
+
+bool tryHostByName(const char* host, IPAddress& out) {
+  for (int i = 0; i < 3; i++) {
+    if (WiFi.hostByName(host, out) == 1) return true;
+    vTaskDelay(pdMS_TO_TICKS(400));
+  }
+  return false;
+}
+
+String resolveServerHost() {
+  if (g_serverUrl.isEmpty()) return "";
+  int schemeEnd = g_serverUrl.indexOf("://");
+  if (schemeEnd < 0) return "";
+  int hostStart = schemeEnd + 3;
+  int pathStart = g_serverUrl.indexOf('/', hostStart);
+  return pathStart > hostStart
+    ? g_serverUrl.substring(hostStart, pathStart)
+    : g_serverUrl.substring(hostStart);
+}
+
+bool refreshServerDns() {
+  String host = resolveServerHost();
+  if (host.isEmpty()) {
+    g_serverDnsOk = false;
+    g_serverDnsFallback = false;
+    g_lastHttpError = "no host";
+    return false;
+  }
+
+  applyPublicDns();
+  g_serverDnsFallback = false;
+
+  if (tryHostByName(host.c_str(), g_serverDnsIp)) {
+    g_serverDnsOk = true;
+    Serial.printf("[DNS] OK %s → %s\n", host.c_str(), g_serverDnsIp.toString().c_str());
+    return true;
+  }
+
+  if (host.startsWith("www.")) {
+    String bare = host.substring(4);
+    if (tryHostByName(bare.c_str(), g_serverDnsIp)) {
+      g_serverDnsOk = true;
+      Serial.printf("[DNS] OK %s → %s\n", bare.c_str(), g_serverDnsIp.toString().c_str());
+      return true;
+    }
+  }
+
+  if (g_serverDnsIp.fromString(SERVER_FALLBACK_IP)) {
+    g_serverDnsOk = true;
+    g_serverDnsFallback = true;
+    g_lastHttpError = "dns ip fallback";
+    Serial.println("[DNS] router DNS fail — using fallback IP " SERVER_FALLBACK_IP);
+    return true;
+  }
+
+  g_serverDnsOk = false;
+  g_serverDnsFallback = false;
+  g_lastHttpError = "dns fail " + host;
+  Serial.println("[HTTP] DNS fail: " + host);
+  return false;
+}
+
+String extractUrlPath(const String& url) {
+  int schemeEnd = url.indexOf("://");
+  if (schemeEnd < 0) return url;
+  int pathStart = url.indexOf('/', schemeEnd + 3);
+  return pathStart >= 0 ? url.substring(pathStart) : "/";
+}
+
+int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs) {
+  String host = resolveServerHost();
+  if (host.isEmpty() || !g_serverDnsOk) return -1;
+
+  String path = extractUrlPath(url);
+  String ipUrl = "https://" + g_serverDnsIp.toString() + path;
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  http.setReuse(false);
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  tls.setTimeout(timeoutMs / 1000 + 5);
+  if (!http.begin(tls, ipUrl)) return -2;
+  http.addHeader("Host", host);
+  int code = http.GET();
+  if (bodyOut && code == 200) *bodyOut = http.getString();
+  http.end();
+  return code;
 }
 
 int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
   if (WiFi.status() != WL_CONNECTED) return -1;
-  syncNtpIfNeeded();
-  ensureTlsClient();
-  g_tlsClient.setTimeout(timeoutMs / 1000 + 2);
+
+  if (!g_serverDnsOk) refreshServerDns();
 
   HTTPClient http;
-  if (!http.begin(g_tlsClient, url)) {
-    return -2;
-  }
   http.setTimeout(timeoutMs);
-  int code = http.GET();
+  http.setConnectTimeout(min(timeoutMs, (uint32_t)8000));
+  http.setReuse(false);
+
+  int code = -1;
+  if (url.startsWith("https://")) {
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    tls.setTimeout(timeoutMs / 1000 + 5);
+    if (!http.begin(tls, url)) {
+      g_lastHttpError = "begin fail";
+      return -2;
+    }
+    code = http.GET();
+  } else {
+    WiFiClient plain;
+    plain.setTimeout(timeoutMs / 1000 + 5);
+    if (!http.begin(plain, url)) {
+      g_lastHttpError = "begin fail";
+      return -2;
+    }
+    code = http.GET();
+  }
+
   if (bodyOut && code == 200) {
     *bodyOut = http.getString();
   }
   http.end();
-  g_tlsClient.stop();
+
+  if (code < 0 && url.startsWith("https://")) {
+    g_lastHttpError = "tls:" + String(code);
+    Serial.printf("[HTTP] TLS GET %d heap=%u — retry http.begin(url)\n", code, ESP.getFreeHeap());
+    HTTPClient fb;
+    fb.setTimeout(timeoutMs);
+    fb.setReuse(false);
+    if (fb.begin(url)) {
+      code = fb.GET();
+      if (bodyOut && code == 200) *bodyOut = fb.getString();
+      if (code < 0) {
+        g_lastHttpError = "fb:" + fb.errorToString(code);
+        Serial.printf("[HTTP] fallback GET %d (%s) heap=%u\n",
+                      code, g_lastHttpError.c_str(), ESP.getFreeHeap());
+      }
+    }
+    fb.end();
+  }
+
+  // ต่อ IP ที่ resolve แล้ว + Host header (กรณี DNS router พัง หรือ TLS กับ hostname ไม่ผ่าน)
+  if (code < 0 && url.startsWith("https://") && g_serverDnsOk) {
+    Serial.printf("[HTTP] retry via IP %s heap=%u\n", g_serverDnsIp.toString().c_str(), ESP.getFreeHeap());
+    int ipCode = httpGetViaResolvedIp(url, bodyOut, timeoutMs);
+    if (ipCode >= 0) code = ipCode;
+    else g_lastHttpError = "ip:" + String(ipCode);
+  }
+
+  if (code < 0) {
+    if (g_lastHttpError.length() == 0 || g_lastHttpError == "begin fail") {
+      g_lastHttpError = "conn fail";
+    }
+    if (code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_CONNECTION_LOST) {
+      g_serverDnsOk = false;
+    }
+  } else {
+    g_lastHttpError = "";
+  }
   return code;
 }
 
@@ -227,7 +377,7 @@ bool jsonWantsClockMode(JsonObject o) {
   return t.length() == 0;
 }
 
-void syncNtpIfNeeded(bool force = false) {
+void syncNtpIfNeeded(bool force) {
   if (WiFi.status() != WL_CONNECTED) return;
   unsigned long nowMs = millis();
   if (!force) {
@@ -639,6 +789,12 @@ void handleStatus() {
               + ",\"lastPollAgoSec\":" + String(pollAgo)
               + ",\"lastPollOkAgoSec\":" + String(pollOkAgo)
               + ",\"serverUrl\":\"" + g_serverUrl + "\""
+              + ",\"serverDnsOk\":" + String(g_serverDnsOk ? "true" : "false")
+              + ",\"serverDnsFallback\":" + String(g_serverDnsFallback ? "true" : "false")
+              + ",\"serverDnsIp\":\"" + (g_serverDnsOk ? g_serverDnsIp.toString() : String("")) + "\""
+              + ",\"routerDns\":\"" + WiFi.dnsIP().toString() + "\""
+              + ",\"freeHeap\":" + String(ESP.getFreeHeap())
+              + ",\"lastHttpError\":\"" + g_lastHttpError + "\""
               + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -905,7 +1061,9 @@ bool connectWifi(bool hardReset) {
                   WiFi.localIP().toString().c_str(),
                   WiFi.macAddress().c_str());
     vTaskDelay(pdMS_TO_TICKS(1500));
+    applyPublicDns();
     syncNtpIfNeeded();
+    refreshServerDns();
     bootSyncFromServerWithRetry();
     drawAndScrollText();
     return true;
@@ -989,7 +1147,7 @@ void setup() {
   server.begin();
 
   cmdQueue = xQueueCreate(3, sizeof(LedCmd));
-  xTaskCreatePinnedToCore(pollTask, "pollTask", 8192, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(pollTask, "pollTask", 12288, nullptr, 1, nullptr, 0);
   Serial.println("Ready!");
 }
 
@@ -1047,6 +1205,7 @@ void pollTask(void* pv) {
         g_awaitingBootSync = true;
         g_bootSyncWaitingSinceMs = now;
         s_ledStateFingerprint = "";  // ล้าง fingerprint ให้ reconcile ทำงานซ้ำได้
+        g_serverDnsOk = false;
       }
       if (!showingConnecting) {
         showingConnecting = true;
@@ -1100,6 +1259,8 @@ void pollTask(void* pv) {
       g_awaitingBootSync = true;
       g_bootSyncWaitingSinceMs = currentMs;
       vTaskDelay(pdMS_TO_TICKS(1500));
+      applyPublicDns();
+      refreshServerDns();
       syncNtpIfNeeded(true);
       s_ledStateFingerprint = "";
       bootSyncFromServerWithRetry();
@@ -1124,7 +1285,6 @@ void pollTask(void* pv) {
     pollCycle++;
     if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
 
-    HTTPClient http;
     String mid = String(MACHINE_ID);
     mid.replace(" ", "%20");
     
@@ -1135,7 +1295,7 @@ void pollTask(void* pv) {
     maybeRestartAfterPollFailures(currentMs);
 
     if (code == 200) {
-      StaticJsonDocument<512> doc;
+      StaticJsonDocument<1024> doc;
       if (!deserializeJson(doc, body) && doc["pending"].as<bool>()) {
         LedCmd cmd = {};
         cmd.showClock = doc["showClock"] | false;

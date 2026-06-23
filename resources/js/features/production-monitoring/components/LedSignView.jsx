@@ -60,6 +60,32 @@ function buildClockSignature(colorHex) {
   return `|CLOCK|${r},${g},${b}|`;
 }
 
+function hasLedDisplayText(cfg) {
+  return String(cfg?.text ?? '').trim().length > 0;
+}
+
+/** ส่งนาฬิกาเฉพาะเมื่อไม่มีข้อความที่จะ push และไม่ได้ override ด้วยมือ */
+function shouldPushClockOnly(cfg, ledState) {
+  if (Boolean(ledState?.textOverride) || hasLedDisplayText(cfg)) return false;
+  return Boolean(ledState?.showClock);
+}
+
+function buildTextLedPayload(cfg, ledState, extras = {}) {
+  const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+  const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+  return {
+    text: String(cfg.text ?? '').trim(),
+    showClock: false,
+    r,
+    g,
+    b,
+    fontSize: cfg.fontSize ?? 1,
+    speed: speedMs,
+    textOverride: Boolean(ledState?.textOverride),
+    ...extras,
+  };
+}
+
 function formatPreviewClock(now = new Date()) {
   const h = String(now.getHours()).padStart(2, '0');
   const m = String(now.getMinutes()).padStart(2, '0');
@@ -1596,9 +1622,8 @@ const LedSignView = ({
     const ledState = ledStatesRef.current[machineId];
     const mState = allMachineStatesRef.current[machineId];
     const isOverridden = Boolean(ledState?.textOverride);
-    const isCleared = ledState?.showClock || (!String(cfg.text ?? '').trim() && !isOverridden);
 
-    if (isCleared) {
+    if (shouldPushClockOnly(cfg, ledState)) {
       const payload = buildClockPayload(cfg.colorHex, cfg);
       await queueLedCommand(machineId, payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: buildClockSignature(cfg.colorHex) };
@@ -1640,6 +1665,7 @@ const LedSignView = ({
 
     await queueLedCommand(machineId, {
       text: displayText,
+      showClock: false,
       r: displayR,
       g: displayG,
       b: displayB,
@@ -1658,7 +1684,10 @@ const LedSignView = ({
     const state = res?.state ?? null;
     const isCleared = state?.showClock || (res?.hasState && !String(state?.text ?? '').trim());
     const has = res?.hasState && state && !isCleared && String(state.text ?? '').trim().length > 0;
-    setLedStates((prev) => ({ ...prev, [machineId]: state }));
+    setLedStates((prev) => ({
+      ...prev,
+      [machineId]: has ? { ...state, showClock: false } : state,
+    }));
     if (isCleared) {
       setConfigs((prev) => ({
         ...prev,
@@ -1787,6 +1816,7 @@ const LedSignView = ({
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
       queueLedCommand(mid, {
         text: displayText,
+        showClock: false,
         r: displayR, g: displayG, b: displayB,
         fontSize: cfg.fontSize ?? 1,
         speed: speedMs,
@@ -1885,7 +1915,7 @@ const LedSignView = ({
         const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
         const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
 
-        if (ledState?.showClock) {
+        if (shouldPushClockOnly(cfg, ledState)) {
           const sig = buildClockSignature(cfg.colorHex);
           if (lastQueuedSigRef.current[machine.id] === sig) continue;
           try {
@@ -1903,14 +1933,10 @@ const LedSignView = ({
 
         try {
           const liveCounterPayload = getLiveCounterPayload(machine.id);
-          await queueLedCommand(machine.id, {
-            text: cfg.text,
+          await queueLedCommand(machine.id, buildTextLedPayload(cfg, ledState, {
             r, g, b,
-            fontSize: cfg.fontSize ?? 1,
-            speed: speedMs,
-            textOverride: Boolean(ledState?.textOverride),
             ...liveCounterPayload,
-          });
+          }));
           lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machine.id]: sig };
         } catch {
           /* retry next cycle */
@@ -2038,9 +2064,11 @@ const LedSignView = ({
       const speedMs = SPEED_MS[(config.scrollSpeed ?? 10) - 1] ?? 50;
       const ledPayload = {
         text: formData.ledText,
+        showClock: false,
         r, g, b,
         fontSize: config.fontSize ?? 1,
         speed: speedMs,
+        textOverride: true,
       };
 
       // Send LED command
@@ -2061,7 +2089,14 @@ const LedSignView = ({
       setStatuses(prev => ({ ...prev, [sid]: 'ok' }));
       setLedStates(prev => ({
         ...prev,
-        [sid]: { text: formData.ledText, r, g, b, fontSize: 1, updatedAt: new Date().toISOString() },
+        [sid]: {
+          text: formData.ledText,
+          showClock: false,
+          textOverride: true,
+          r, g, b,
+          fontSize: 1,
+          updatedAt: new Date().toISOString(),
+        },
       }));
       setTimeout(() => setStatuses(prev => ({ ...prev, [sid]: 'idle' })), 4000);
 
@@ -2107,6 +2142,7 @@ const LedSignView = ({
 
       await queueLedCommand(selectedMachine.id, {
         text: fullText,
+        showClock: false,
         r, g, b,
         fontSize: cfg.fontSize ?? 1,
         speed: speedMs,
@@ -2119,7 +2155,17 @@ const LedSignView = ({
       setConfigs(prev => ({ ...prev, [sid]: newCfg }));
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildLedConfigSignature(newCfg) };
       setStatuses(prev => ({ ...prev, [sid]: 'ok' }));
-      setLedStates(prev => ({ ...prev, [sid]: { text: fullText, r, g, b, fontSize: cfg.fontSize ?? 1, textOverride: true, updatedAt: new Date().toISOString() } }));
+      setLedStates(prev => ({
+        ...prev,
+        [sid]: {
+          text: fullText,
+          showClock: false,
+          r, g, b,
+          fontSize: cfg.fontSize ?? 1,
+          textOverride: true,
+          updatedAt: new Date().toISOString(),
+        },
+      }));
       setTimeout(() => setStatuses(prev => ({ ...prev, [sid]: 'idle' })), 4000);
       setQuickOpen(false);
     } catch (err) {
@@ -2239,6 +2285,7 @@ const LedSignView = ({
       const liveCounterPayload = getLiveCounterPayload(sid);
       await queueLedCommand(selectedMachine.id, {
         text: cfg.text,
+        showClock: false,
         r, g, b,
         fontSize: cfg.fontSize,
         speed: speedMs,
