@@ -673,7 +673,10 @@ export default {
         ledStatusLabel: 'ဆိုင်းဘုတ်အခြေအနေ',
         ledStatusChecking: 'စစ်ဆေးနေသည်…',
         ledStatusOnline: 'Online',
-        ledStatusOffline: 'Offline / WiFi မချိတ်ဆက်ရသေး',
+        ledStatusLocalOnly: 'WiFi OK / Server unreachable',
+        ledLocalPollHint: ({ code, streak, ago }) =>
+            `LAN WiFi OK but server poll failed · HTTP ${code} · fails ${streak} · last OK ${ago}s ago · auto restart if stuck`,
+        ledStatusOffline: 'Offline / WiFi not connected',
         ledStatusNoIp: 'IP မသတ်မှတ်ရသေး',
         ledPingCheckAgain: 'ထပ်စစ်ဆေး',
         ledRebootBoardTitle: 'ESP32 ဘုတ် reset (RST နှိပ်သကဲ့သို့)',

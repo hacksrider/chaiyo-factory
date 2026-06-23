@@ -41,6 +41,8 @@ Route::prefix('production-monitor')->group(function () {
     Route::post('/scale-cancel/{machineId}', [ProductionMonitorController::class, 'scaleCancelSession']);
     Route::post('/session-confirm/{machineId}', [ProductionMonitorController::class, 'sessionConfirm']);
     Route::get('/led-command/{machineId}', [ProductionMonitorController::class, 'fetchLedCommand']);
+    // ESP32 อ่าน state ล่าสุดตอน boot sync / reconcile (ไม่มี token)
+    Route::get('/led-status/{machineId}', [ProductionMonitorController::class, 'getLedStatus']);
 });
 
 /*
@@ -64,7 +66,6 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
 
     Route::get('/led-ping', [ProductionMonitorController::class, 'pingLed']);
     Route::post('/led-reboot', [ProductionMonitorController::class, 'rebootLed']);
-    Route::get('/led-status/{machineId}', [ProductionMonitorController::class, 'getLedStatus']);
     Route::get('/led-heartbeat/{machineId}', [ProductionMonitorController::class, 'getLedHeartbeat']);
     Route::get('/scale-heartbeat/{machineId}', [ProductionMonitorController::class, 'getScaleHeartbeat']);
 

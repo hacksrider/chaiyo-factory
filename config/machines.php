@@ -36,7 +36,7 @@ return [
         // ── PE Zone 1 ────────────────────────────────────────────────────────
         ['MachineID' => 'EM 20',  'SheetName' => 'EM 20',  'LED_IP' => '192.168.3.108,192.168.103.108', 'Zone' => 'PE Zone 1',   'Status' => 'Active'],
         ['MachineID' => 'EM 21',  'SheetName' => 'EM 21',  'LED_IP' => '192.168.3.109,192.168.103.109', 'Zone' => 'PE Zone 1',   'Status' => 'Active'],
-        ['MachineID' => 'EM 22',  'SheetName' => 'EM 22',  'LED_IP' => '192.168.3.110,192.168.103.110', 'Zone' => 'PE Zone 1',   'Status' => 'Active'],
+        ['MachineID' => 'EM 22',  'SheetName' => 'EM 22',  'LED_IP' => '192.168.103.18', 'Zone' => 'PE Zone 1',   'Status' => 'Active'],
         ['MachineID' => 'EM 23',  'SheetName' => 'EM 23',  'LED_IP' => '192.168.3.111,192.168.103.111', 'Zone' => 'PE Zone 1',   'Status' => 'Active'],
 
         // ── PE Zone 2 ────────────────────────────────────────────────────────

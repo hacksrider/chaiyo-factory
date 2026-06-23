@@ -78,6 +78,28 @@ function collectRebootIps(localIp, sheetIp) {
   return ips;
 }
 
+function parseLedConfigIps(ledIp) {
+  return String(ledIp ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** ตรวจ /status บนป้ายโดยตรง (LAN) เมื่อ heartbeat จาก server ไม่มา */
+async function probeLocalLedStatus(ips) {
+  for (const ip of ips) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    try {
+      const res = await fetch(`http://${ip}/status`, { signal: ctrl.signal, cache: 'no-store' });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data?.ok) return { ip, data };
+    } catch {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
 function serverStateToSignature(st) {
   if (!st || !String(st.text ?? '').trim()) return '';
   const t = String(st.text).trim();
@@ -1024,11 +1046,12 @@ const WiFiBadge = ({ status, onReboot, rebooting = false, canReboot = false, com
   const cfg = {
     checking: { dot: 'bg-yellow-400 animate-pulse', text: 'text-yellow-400', label: t('production.ledStatusChecking'), bg: 'bg-yellow-500/10 border-yellow-500/20' },
     online:   { dot: 'bg-green-400',                text: 'text-green-400',  label: t('production.ledStatusOnline'),   bg: 'bg-green-500/10  border-green-500/20'  },
+    local_only: { dot: 'bg-amber-400 animate-pulse', text: 'text-amber-300', label: t('production.ledStatusLocalOnly'), bg: 'bg-amber-500/10 border-amber-500/25' },
     offline:  { dot: 'bg-red-400 animate-pulse',    text: 'text-red-400',    label: t('production.ledStatusOffline'),  bg: 'bg-red-500/10 border-red-500/20' },
     noip:     { dot: 'bg-gray-500',                 text: 'text-gray-500',   label: t('production.ledStatusNoIp'),     bg: 'bg-gray-700/30 border-gray-600/20' },
   }[status] ?? { dot: 'bg-gray-500', text: 'text-gray-500', label: status, bg: 'bg-gray-700/30 border-gray-600/20' };
 
-  const rebootTitle = status === 'offline'
+  const rebootTitle = status === 'offline' || status === 'local_only'
     ? t('production.ledRebootBoardTitleOffline')
     : t('production.ledRebootBoardTitle');
 
@@ -1088,6 +1111,7 @@ const ControlPanel = ({
   onReboot, onForceSync, sendStatus, pingStatus, pingMsg, errorMsg,
   wifiStatus = 'noip', syncStatus = 'idle', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
   deviceLocalIp = null, heartbeatSecondsAgo = null, deviceRssi = null, deviceTemp = null,
+  localPollHint = null,
   showClock = false, rebooting = false,
 }) => {
   const { language } = useLanguage();
@@ -1122,6 +1146,8 @@ const ControlPanel = ({
 
   const cardTone = wifiStatus === 'online'
     ? 'border-cyan-500/20 bg-gradient-to-br from-gray-900/90 via-gray-900/80 to-cyan-950/25'
+    : wifiStatus === 'local_only'
+      ? 'border-amber-500/20 bg-gradient-to-br from-gray-900/90 via-gray-900/80 to-amber-950/20'
     : wifiStatus === 'offline'
       ? 'border-red-500/15 bg-gradient-to-br from-gray-900/90 via-gray-900/80 to-red-950/20'
       : 'border-gray-700/50 bg-gray-900/70';
@@ -1224,13 +1250,15 @@ const ControlPanel = ({
         )}
       </div>
 
-      {(pingMsg || errorMsg) && (
+      {(pingMsg || errorMsg || localPollHint) && (
         <div className={`break-all rounded-xl border px-3 py-2 font-mono text-[11px] ${
           pingStatus === 'ok' || sendStatus === 'ok'
             ? 'border-green-500/20 bg-green-500/10 text-green-400'
+            : wifiStatus === 'local_only'
+            ? 'border-amber-500/25 bg-amber-500/10 text-amber-200'
             : 'border-red-500/20 bg-red-500/10 text-red-400'
         }`}>
-          {pingMsg || errorMsg}
+          {localPollHint || pingMsg || errorMsg}
         </div>
       )}
 
@@ -1462,6 +1490,7 @@ const LedSignView = ({
   const [deviceRssi, setDeviceRssi] = useState({});
   const [deviceTemp, setDeviceTemp] = useState({});
   const [rebootingBoard, setRebootingBoard] = useState(false);
+  const [localEspStatus, setLocalEspStatus] = useState(null);
   const deviceLocalIpsRef = useRef(deviceLocalIps);
   useEffect(() => { deviceLocalIpsRef.current = deviceLocalIps; }, [deviceLocalIps]);
 
@@ -1804,6 +1833,40 @@ const LedSignView = ({
       clearTimeout(t2);
     };
   }, [sid, selectedMachine?.ledIp]);
+
+  // LAN probe — แยก WiFi ติด vs poll server ไม่ถึง (ไม่ต้อง Serial Monitor)
+  useEffect(() => {
+    if (!sid) {
+      setLocalEspStatus(null);
+      return undefined;
+    }
+    if (wifiStatuses[sid] === 'online') {
+      setLocalEspStatus(null);
+      return undefined;
+    }
+
+    const ips = [
+      ...(deviceLocalIps[sid] ? [deviceLocalIps[sid]] : []),
+      ...parseLedConfigIps(selectedMachine?.ledIp),
+    ].filter((ip, idx, arr) => ip && arr.indexOf(ip) === idx);
+
+    if (!ips.length) {
+      setLocalEspStatus(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      const result = await probeLocalLedStatus(ips);
+      if (!cancelled) setLocalEspStatus(result);
+    };
+    run();
+    const id = setInterval(run, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sid, wifiStatuses[sid], selectedMachine?.ledIp, deviceLocalIps[sid]]);
 
   // Auto-push debounce for color/speed changes (not text — text goes through popup)
   const autoPushDebounceRef = useRef(null);
@@ -2248,6 +2311,21 @@ const LedSignView = ({
     && (isTextOverridden || currentLedText !== liveProductText)
   );
 
+  const hbWifiStatus = sid ? (wifiStatuses[sid] ?? 'checking') : 'checking';
+  const effectiveWifiStatus = hbWifiStatus === 'online'
+    ? 'online'
+    : (localEspStatus?.data?.wifiConnected ? 'local_only' : hbWifiStatus);
+  const displayLocalIp = deviceLocalIps[sid] ?? localEspStatus?.ip ?? localEspStatus?.data?.ip ?? null;
+  const displayRssi = deviceRssi[sid] ?? localEspStatus?.data?.rssi ?? null;
+  const displayTemp = deviceTemp[sid] ?? localEspStatus?.data?.cpuTemperatureC ?? null;
+  const localPollHint = effectiveWifiStatus === 'local_only' && localEspStatus?.data
+    ? t('production.ledLocalPollHint', {
+        code: localEspStatus.data.lastPollHttpCode ?? '—',
+        streak: localEspStatus.data.pollFailStreak ?? 0,
+        ago: localEspStatus.data.lastPollOkAgoSec ?? '—',
+      })
+    : null;
+
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900/20">
       <div className="flex-shrink-0 flex items-center justify-between gap-3 border-b border-gray-800 px-3 py-3 sm:px-6 sm:py-4">
@@ -2343,11 +2421,12 @@ const LedSignView = ({
               pingStatus={pingStatuses[sid]  ?? 'idle'}
               pingMsg={pingMsgs[sid]         ?? ''}
               errorMsg={errorMsgs[sid]       ?? ''}
-              wifiStatus={wifiStatuses[sid] ?? 'checking'}
-              deviceLocalIp={deviceLocalIps[sid] ?? null}
+              wifiStatus={effectiveWifiStatus}
+              deviceLocalIp={displayLocalIp}
               heartbeatSecondsAgo={heartbeatAgo[sid] ?? null}
-              deviceRssi={deviceRssi[sid] ?? null}
-              deviceTemp={deviceTemp[sid] ?? null}
+              deviceRssi={displayRssi}
+              deviceTemp={displayTemp}
+              localPollHint={localPollHint}
               syncStatus={syncStatus}
               speedForAll={speedForAll}
               onSpeedForAllChange={handleSpeedForAll}

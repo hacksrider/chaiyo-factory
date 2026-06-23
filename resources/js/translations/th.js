@@ -673,6 +673,9 @@ export default {
         ledStatusLabel: 'สถานะป้ายไฟ',
         ledStatusChecking: 'กำลังตรวจสอบ…',
         ledStatusOnline: 'ออนไลน์',
+        ledStatusLocalOnly: 'WiFi ติด / Server ไม่ถึง',
+        ledLocalPollHint: ({ code, streak, ago }) =>
+            `WiFi ติดใน LAN แต่ poll server ไม่ถึง · HTTP ${code} · fail ${streak} ครั้ง · สำเร็จล่าสุด ${ago}s ที่แล้ว · บอร์ดจะ restart อัตโนมัติถ้าค้าง`,
         ledStatusOffline: 'ออฟไลน์ / WiFi ยังไม่ได้เชื่อมต่อ',
         ledStatusNoIp: 'ยังไม่ได้ตั้งค่า IP',
         ledPingCheckAgain: 'ตรวจสอบอีกครั้ง',

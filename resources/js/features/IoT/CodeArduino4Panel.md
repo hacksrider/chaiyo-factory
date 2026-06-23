@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2 (WiFi stability fixes + Temp Web Server)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.1 (HTTPS poll fix + LAN diagnostics)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -7,6 +7,7 @@
 */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -58,6 +59,9 @@ void handleReboot();
 String formatUptimeSec(unsigned long sec);
 String rssiQualityLabel(int rssi);
 String buildHeartbeatQuery();
+int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs);
+void recordCommandPollResult(int httpCode);
+void maybeRestartAfterPollFailures(uint32_t nowMs);
 
 // ======================================================================
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
@@ -144,8 +148,69 @@ static bool              g_ntpClockConfigured           = false;
 static bool              g_hasPreferredBssid            = false;
 static uint8_t           g_preferredBssid[6]            = {0};
 static int32_t           g_preferredChannel             = 0;
+static uint32_t          g_lastWifiScanMs               = 0;
 static const uint32_t    BOOT_SYNC_GIVE_UP_MS            = 90000;
 static uint32_t          g_bootSyncWaitingSinceMs       = 0;
+static const uint32_t    POLL_FAIL_STREAK_RESTART       = 90;    // ~3 นาที @ 2s/poll
+static const uint32_t    POLL_STALE_RESTART_MS          = 600000; // 10 นาทีไม่ poll สำเร็จ
+static int               g_lastPollHttpCode             = 0;
+static int               g_lastSyncHttpCode              = 0;
+static uint32_t          g_lastPollAttemptMs            = 0;
+static uint32_t          g_lastPollSuccessMs            = 0;
+static uint32_t          g_pollFailStreak               = 0;
+static int               g_connectFailStreak              = 0;
+static WiFiClientSecure  g_tlsClient;
+static bool              g_tlsReady                     = false;
+
+void ensureTlsClient() {
+  if (g_tlsReady) return;
+  g_tlsClient.setInsecure();
+  g_tlsReady = true;
+}
+
+int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+  syncNtpIfNeeded();
+  ensureTlsClient();
+  g_tlsClient.setTimeout(timeoutMs / 1000 + 2);
+
+  HTTPClient http;
+  if (!http.begin(g_tlsClient, url)) {
+    return -2;
+  }
+  http.setTimeout(timeoutMs);
+  int code = http.GET();
+  if (bodyOut && code == 200) {
+    *bodyOut = http.getString();
+  }
+  http.end();
+  g_tlsClient.stop();
+  return code;
+}
+
+void recordCommandPollResult(int httpCode) {
+  g_lastPollHttpCode = httpCode;
+  g_lastPollAttemptMs = millis();
+  if (httpCode == 200) {
+    g_lastPollSuccessMs = g_lastPollAttemptMs;
+    g_pollFailStreak = 0;
+  } else {
+    g_pollFailStreak++;
+    Serial.printf("[Poll] HTTP %d — fail streak %u\n", httpCode, g_pollFailStreak);
+  }
+}
+
+void maybeRestartAfterPollFailures(uint32_t nowMs) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (g_pollFailStreak >= POLL_FAIL_STREAK_RESTART) {
+    Serial.printf("[Poll] fail streak %u — restarting ESP\n", g_pollFailStreak);
+    ESP.restart();
+  }
+  if (g_lastPollSuccessMs > 0 && (nowMs - g_lastPollSuccessMs) >= POLL_STALE_RESTART_MS && g_pollFailStreak > 0) {
+    Serial.println("[Poll] no successful poll for 10 min — restarting ESP");
+    ESP.restart();
+  }
+}
 
 void ensureBangkokClockConfig() {
   if (g_ntpClockConfigured) return;
@@ -330,20 +395,16 @@ String buildFingerprintFromLedCmd(const LedCmd& c) {
 void reconcileLedStateWithWeb() {
   if (!cmdQueue || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return;
 
-  HTTPClient http;
   String mid = String(MACHINE_ID);
   mid.replace(" ", "%20");
   String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
-  http.begin(url);
-  http.setTimeout(4000);
-  int code = http.GET();
+  String body;
+  int code = httpGetUrl(url, &body, 4000);
+  g_lastSyncHttpCode = code;
   if (code != 200) {
     Serial.printf("[Reconcile] HTTP %d (ข้าม — รอรอบถัดไป)\n", code);
-    http.end();
     return;
   }
-  String body = http.getString();
-  http.end();
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, body) || !doc["success"].as<bool>()) {
@@ -561,6 +622,8 @@ String buildHeartbeatQuery() {
 void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  uint32_t pollAgo = g_lastPollAttemptMs > 0 ? (millis() - g_lastPollAttemptMs) / 1000UL : 999999UL;
+  uint32_t pollOkAgo = g_lastPollSuccessMs > 0 ? (millis() - g_lastPollSuccessMs) / 1000UL : 999999UL;
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString()
               + "\",\"mac\":\"" + WiFi.macAddress()
@@ -570,6 +633,12 @@ void handleStatus() {
               + ",\"uptimeSec\":" + String(millis() / 1000UL)
               + ",\"uptime\":\"" + formatUptimeSec(millis() / 1000UL) + "\""
               + ",\"cpuTemperatureC\":" + String(g_internalTempC, 1)
+              + ",\"lastPollHttpCode\":" + String(g_lastPollHttpCode)
+              + ",\"lastSyncHttpCode\":" + String(g_lastSyncHttpCode)
+              + ",\"pollFailStreak\":" + String(g_pollFailStreak)
+              + ",\"lastPollAgoSec\":" + String(pollAgo)
+              + ",\"lastPollOkAgoSec\":" + String(pollOkAgo)
+              + ",\"serverUrl\":\"" + g_serverUrl + "\""
               + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -651,23 +720,19 @@ void handleRoot() {
 bool syncLedDisplayFromServer() {
   if (!dma_display || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return false;
 
-  HTTPClient http;
   String mid = String(MACHINE_ID);
   mid.replace(" ", "%20");
   String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
   Serial.println("[Sync] GET " + url);
-  http.begin(url);
-  http.setTimeout(8000);
-  int code = http.GET();
+  String body;
+  int code = httpGetUrl(url, &body, 8000);
+  g_lastSyncHttpCode = code;
 
   if (code != 200) {
-    Serial.printf("[Sync] HTTP %d — รอ retry (ไม่แสดงนาฬิกา)\n", code);
-    http.end();
+    Serial.printf("[Sync] HTTP %d — รอ retry\n", code);
     return false;
   }
 
-  String body = http.getString();
-  http.end();
   Serial.println("[Sync] Response: " + body.substring(0, 120));
 
   StaticJsonDocument<768> doc;
@@ -834,6 +899,7 @@ bool connectWifi(bool hardReset) {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    g_connectFailStreak = 0;
     g_serverUrl = WIFI_SERVER;
     Serial.printf("\n[WiFi] ✓ Connected! IP: %s  MAC: %s\n",
                   WiFi.localIP().toString().c_str(),
@@ -843,6 +909,12 @@ bool connectWifi(bool hardReset) {
     bootSyncFromServerWithRetry();
     drawAndScrollText();
     return true;
+  }
+  g_connectFailStreak++;
+  if (g_connectFailStreak >= 3) {
+    g_hasPreferredBssid = false;
+    g_lastWifiScanMs = 0;
+    Serial.println("[WiFi] connect fail — clear BSSID lock for rescan");
   }
   Serial.println("\n[WiFi] Connection failed");
   return false;
@@ -1057,14 +1129,14 @@ void pollTask(void* pv) {
     mid.replace(" ", "%20");
     
     String url = g_serverUrl + "/api/production-monitor/led-command/" + mid + buildHeartbeatQuery();
-               
-    http.begin(url);
-    http.setTimeout(5000);  // HTTPS ต้องทำ TLS handshake ~1-3 วิ บน ESP32 — 1800ms สั้นเกินไป
-    int code = http.GET();
+    String body;
+    int code = httpGetUrl(url, &body, 5000);
+    recordCommandPollResult(code);
+    maybeRestartAfterPollFailures(currentMs);
 
     if (code == 200) {
       StaticJsonDocument<512> doc;
-      if (!deserializeJson(doc, http.getString()) && doc["pending"].as<bool>()) {
+      if (!deserializeJson(doc, body) && doc["pending"].as<bool>()) {
         LedCmd cmd = {};
         cmd.showClock = doc["showClock"] | false;
         String t = doc["text"].as<String>();
@@ -1095,7 +1167,6 @@ void pollTask(void* pv) {
         s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
       }
     }
-    http.end();
   }
 }
 
