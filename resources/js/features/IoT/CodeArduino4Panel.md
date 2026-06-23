@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.3 (DNS fallback 8.8.8.8 + IP สำรอง)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.4 (ข้อความชนะ showClock + JSON ใหญ่ขึ้น)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -371,10 +371,11 @@ void ensureBangkokClockConfig() {
 
 bool jsonWantsClockMode(JsonObject o) {
   if (o.isNull()) return true;
-  if (o["showClock"] | false) return true;
   String t = o["text"].as<String>();
   t.trim();
-  return t.length() == 0;
+  // มีข้อความ = โหมดข้อความเสมอ (ไม่ให้ showClock ทับข้อความจาก server)
+  if (t.length() > 0) return false;
+  return o["showClock"] | true;
 }
 
 void syncNtpIfNeeded(bool force) {
@@ -497,7 +498,10 @@ String buildLedStateFingerprint(
 
 String buildFingerprintFromStateJson(JsonObject o) {
   if (o.isNull()) return String();
-  if (jsonWantsClockMode(o)) return "|CLOCK|0,255,255|1|50|0|0";
+  if (jsonWantsClockMode(o)) {
+    int r = o["r"] | 0, g = o["g"] | 255, b = o["b"] | 255;
+    return "|CLOCK|" + String(r) + "," + String(g) + "," + String(b) + "|1|50|0|0";
+  }
   String t = o["text"].as<String>();
   t.trim();
   int r   = o["r"]         | 0,   g   = o["g"]         | 255, b  = o["b"]         | 255;
@@ -556,7 +560,7 @@ void reconcileLedStateWithWeb() {
     return;
   }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<4096> doc;
   if (deserializeJson(doc, body) || !doc["success"].as<bool>()) {
     Serial.println("[Reconcile] parse error — ข้าม");
     return;
@@ -795,6 +799,7 @@ void handleStatus() {
               + ",\"routerDns\":\"" + WiFi.dnsIP().toString() + "\""
               + ",\"freeHeap\":" + String(ESP.getFreeHeap())
               + ",\"lastHttpError\":\"" + g_lastHttpError + "\""
+              + ",\"clockMode\":" + String(g_clockMode ? "true" : "false")
               + ",\"text\":\"" + currentText + "\"}";
   server.send(200, "application/json", resp);
 }
@@ -891,7 +896,7 @@ bool syncLedDisplayFromServer() {
 
   Serial.println("[Sync] Response: " + body.substring(0, 120));
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<4096> doc;
   if (deserializeJson(doc, body)) {
     Serial.println("[Sync] JSON parse error — รอ retry");
     return false;
@@ -1295,36 +1300,22 @@ void pollTask(void* pv) {
     maybeRestartAfterPollFailures(currentMs);
 
     if (code == 200) {
-      StaticJsonDocument<1024> doc;
-      if (!deserializeJson(doc, body) && doc["pending"].as<bool>()) {
+      StaticJsonDocument<4096> doc;
+      DeserializationError jerr = deserializeJson(doc, body);
+      if (!jerr && doc["pending"].as<bool>()) {
         LedCmd cmd = {};
-        cmd.showClock = doc["showClock"] | false;
-        String t = doc["text"].as<String>();
-        t.trim();
-        if (t.length() == 0 || cmd.showClock) {
-          cmd.showClock = true;
-          cmd.text[0] = '\0';
-        } else {
-          strncpy(cmd.text, t.c_str(), sizeof(cmd.text) - 1);
-          cmd.text[sizeof(cmd.text) - 1] = '\0';
+        stateJsonToLedCmd(doc.as<JsonObject>(), cmd);
+        if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
+          Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
         }
-        if (doc.containsKey("actual")) {
-          strncpy(cmd.actual, doc["actual"].as<String>().c_str(), sizeof(cmd.actual) - 1);
-          cmd.actual[sizeof(cmd.actual) - 1] = '\0';
-        }
-        if (doc.containsKey("target")) {
-          strncpy(cmd.target, doc["target"].as<String>().c_str(), sizeof(cmd.target) - 1);
-          cmd.target[sizeof(cmd.target) - 1] = '\0';
-        }
-        cmd.r        = doc["r"]        | 0;
-        cmd.g        = doc["g"]        | 255;
-        cmd.b        = doc["b"]        | 255;
-        cmd.fontSize = doc["fontSize"] | 1;
-        cmd.speed    = doc["speed"]    | 0;
-        xQueueSend(cmdQueue, &cmd, 0); 
         g_awaitingBootSync = false;
         g_bootSyncWaitingSinceMs = 0;
         s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
+      } else if (jerr) {
+        Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
+      } else if (g_clockMode) {
+        // ไม่มี pending แต่ยังโชว์นาฬิกา → ดึง led-status ให้ตรง server
+        reconcileLedStateWithWeb();
       }
     }
   }

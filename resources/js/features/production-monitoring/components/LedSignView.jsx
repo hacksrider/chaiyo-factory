@@ -1682,26 +1682,16 @@ const LedSignView = ({
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
-    const isCleared = state?.showClock || (res?.hasState && !String(state?.text ?? '').trim());
-    const has = res?.hasState && state && !isCleared && String(state.text ?? '').trim().length > 0;
+    const hasText = res?.hasState && state && String(state?.text ?? '').trim().length > 0;
+    const isCleared = !hasText && Boolean(state?.showClock);
+    const has = hasText;
     setLedStates((prev) => ({
       ...prev,
-      [machineId]: has ? { ...state, showClock: false } : state,
+      [machineId]: has
+        ? { ...state, showClock: false, textOverride: Boolean(state.textOverride) }
+        : state,
     }));
-    if (isCleared) {
-      setConfigs((prev) => ({
-        ...prev,
-        [machineId]: {
-          ...(prev[machineId] ?? DEFAULT_CONFIG),
-          text: '',
-          colorHex: rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0),
-        },
-      }));
-      lastQueuedSigRef.current = {
-        ...lastQueuedSigRef.current,
-        [machineId]: buildClockSignature(rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0)),
-      };
-    } else if (has) {
+    if (has) {
       const scrollIdx = speedMsToScrollIndex(state.speed);
       setConfigs((prev) => ({
         ...prev,
@@ -1715,6 +1705,19 @@ const LedSignView = ({
       lastQueuedSigRef.current = {
         ...lastQueuedSigRef.current,
         [machineId]: serverStateToSignature(state),
+      };
+    } else if (isCleared) {
+      setConfigs((prev) => ({
+        ...prev,
+        [machineId]: {
+          ...(prev[machineId] ?? DEFAULT_CONFIG),
+          text: '',
+          colorHex: rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0),
+        },
+      }));
+      lastQueuedSigRef.current = {
+        ...lastQueuedSigRef.current,
+        [machineId]: buildClockSignature(rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0)),
       };
     } else {
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: '' };
@@ -1848,21 +1851,7 @@ const LedSignView = ({
     };
   }, [sid, mergeLedStatusIntoUi]);
 
-  // ส่งสิ่งที่ UI แสดงไปป้ายเมื่อเลือกเครื่อง (แก้ป้ายค้าง "กำลังซิงค์" ทั้งที่ heartbeat ออนไลน์)
-  useEffect(() => {
-    if (!sid || !selectedMachine?.ledIp) return;
-    let cancelled = false;
-    const push = () => {
-      if (!cancelled) pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
-    };
-    const t1 = setTimeout(push, 900);
-    const t2 = setTimeout(push, 8000);
-    return () => {
-      cancelled = true;
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [sid, selectedMachine?.ledIp]);
+  // ไม่ auto-push ตอนเลือกเครื่อง — ทำให้ส่งนาฬิกาทับคำสั่งข้อความที่ user เพิ่งส่ง
 
   // LAN probe — แยก WiFi ติด vs poll server ไม่ถึง (ไม่ต้อง Serial Monitor)
   useEffect(() => {
