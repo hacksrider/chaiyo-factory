@@ -1643,7 +1643,7 @@ const LedSignView = ({
   }, [validMachines]);
 
   /** ส่งสิ่งที่หน้าเว็บแสดงอยู่ไปป้าย (ใช้เมื่อป้ายเพิ่งเปิด/กลับมาออนไลน์) */
-  const pushLedDisplayToDevice = useCallback(async (machineId) => {
+  const pushLedDisplayToDevice = useCallback(async (machineId, { force = false } = {}) => {
     const machine = validMachines.find((m) => m.id === machineId);
     if (!machine?.id) return;
 
@@ -1655,7 +1655,7 @@ const LedSignView = ({
     if (shouldPushClockOnly(cfg, ledState)) {
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex);
-      if (lastQueuedSigRef.current[machineId] === sig) return;
+      if (!force && lastQueuedSigRef.current[machineId] === sig) return;
       await queueLedForMachine(machineId, payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
@@ -1684,7 +1684,7 @@ const LedSignView = ({
     if (!displayText) {
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex ?? '#00ff00');
-      if (lastQueuedSigRef.current[machineId] === sig) return;
+      if (!force && lastQueuedSigRef.current[machineId] === sig) return;
       await queueLedForMachine(machineId, payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
@@ -1692,7 +1692,7 @@ const LedSignView = ({
 
     const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
     const sig = `${displayText}|${displayR},${displayG},${displayB}|${cfg.fontSize ?? 1}|${speedMs}`;
-    if (lastQueuedSigRef.current[machineId] === sig) return;
+    if (!force && lastQueuedSigRef.current[machineId] === sig) return;
 
     await queueLedForMachine(machineId, {
       text: displayText,
@@ -1929,7 +1929,7 @@ const LedSignView = ({
     const recovered = prev != null && prev !== 200 && pollCode === 200;
     const bootedFresh = localEspStatus?.data?.uptimeSec != null && Number(localEspStatus.data.uptimeSec) < 180;
     if (recovered || (bootedFresh && pollCode === 200 && prev == null)) {
-      pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
+      pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
     }
   }, [sid, localEspStatus?.data?.lastPollHttpCode, localEspStatus?.data?.uptimeSec]);
 
@@ -2014,7 +2014,7 @@ const LedSignView = ({
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
         setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
         if (!wasOnline) {
-          pushLedDisplayToDeviceRef.current?.(sid).catch(() => {});
+          pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
         }
       } else {
         const failStreak = (wifiFailStreakRef.current[sid] ?? 0) + 1;
@@ -2302,32 +2302,15 @@ const LedSignView = ({
   const [syncStatus, setSyncStatus] = useState('idle');
   const handleForceSync = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;
-    const cfg = configs[sid] ?? DEFAULT_CONFIG;
-    if (!cfg.text) return;
-    const { r, g, b } = hexToRgb(cfg.colorHex);
     setSyncStatus('syncing');
     try {
-      const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-      const liveCounterPayload = getLiveCounterPayload(sid);
-      await queueLedForMachine(selectedMachine.id, {
-        text: cfg.text,
-        showClock: false,
-        r, g, b,
-        fontSize: cfg.fontSize,
-        speed: speedMs,
-        textOverride: Boolean(ledStates[sid]?.textOverride),
-        ...liveCounterPayload,
-      });
-      lastQueuedSigRef.current = {
-        ...lastQueuedSigRef.current,
-        [selectedMachine.id]: buildLedConfigSignature(cfg),
-      };
+      await pushLedDisplayToDevice(sid, { force: true });
       setSyncStatus('ok');
     } catch {
       setSyncStatus('error');
     }
     setTimeout(() => setSyncStatus('idle'), 3000);
-  }, [sid, selectedMachine, configs, getLiveCounterPayload, ledStates]);
+  }, [sid, selectedMachine, pushLedDisplayToDevice]);
 
   const handleRestoreLiveProductText = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;

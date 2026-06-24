@@ -392,6 +392,9 @@ class ProductionMonitorController extends Controller
      */
     public function fetchLedCommand(Request $request, string $machineId): JsonResponse
     {
+        // ตรวจ gap ก่อนอัปเดต heartbeat — poll แรกหลัง WiFi หลุดจะได้ led_state กลับทันที
+        $wasOffline = $this->espHeartbeatWasOffline("led_heartbeat_{$machineId}");
+
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
         $command = Cache::pull("led_cmd_{$machineId}");
@@ -411,6 +414,14 @@ class ProductionMonitorController extends Controller
 
                     return response()->json(array_merge(['pending' => true], $state));
                 }
+            }
+        }
+
+        // WiFi กลับมาหลัง offline (heartbeat ขาด > ESP_HEARTBEAT_ONLINE_SEC) — ส่ง state ซ้ำ 1 ครั้ง
+        if ($wasOffline) {
+            $state = Cache::get("led_state_{$machineId}");
+            if (is_array($state)) {
+                return response()->json(array_merge(['pending' => true], $state));
             }
         }
 
@@ -504,6 +515,26 @@ class ProductionMonitorController extends Controller
             'temp'          => $temp,
             'uptimeSec'     => $uptimeSec,
         ];
+    }
+
+    /** poll แรกหลัง heartbeat เก่าเกิน threshold = ESP กลับมาออนไลน์ */
+    private function espHeartbeatWasOffline(string $cacheKey): bool
+    {
+        $raw = Cache::get($cacheKey);
+        if ($raw === null) {
+            return false;
+        }
+
+        $lastSeenAt = is_array($raw) ? ($raw['time'] ?? null) : $raw;
+        if (! $lastSeenAt) {
+            return false;
+        }
+
+        try {
+            return (int) Carbon::parse($lastSeenAt)->diffInSeconds(now()) > self::ESP_HEARTBEAT_ONLINE_SEC;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     private function recordEspHeartbeat(Request $request, string $machineId, string $kind): void

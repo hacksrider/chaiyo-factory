@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.12 (poll ก่อน sync — ลด false offline)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.13 (reconnect sync — ไม่ทับด้วยนาฬิกา)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -49,6 +49,8 @@ void updateTextProperties();
 void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0);
 String buildLedStateFingerprint(const String& text, int r, int g, int b, int fontSize, int speed, const String& act, const String& tgt);
 void showSyncWaitingVisual();
+void saveDisplaySnapshot();
+bool restoreDisplaySnapshot();
 bool syncLedDisplayFromServer();
 bool bootSyncFromServerWithRetry();
 void pollTask(void* pv);
@@ -196,6 +198,23 @@ static String            g_lastSyncError                  = "";
 static String            g_lastPollUrl                    = "";
 static String            g_lastSyncUrl                    = "";
 static SemaphoreHandle_t g_httpMutex                      = nullptr;
+static String            g_snapshotText                   = "";
+static String            g_snapshotActual                 = "0";
+static String            g_snapshotTarget                 = "0";
+static uint16_t          g_snapshotColor                  = 0;
+static int               g_snapshotFontSize              = 1;
+static int               g_snapshotSpeed                  = 50;
+static uint8_t           g_snapshotClockR                 = 0;
+static uint8_t           g_snapshotClockG                 = 255;
+static uint8_t           g_snapshotClockB                 = 255;
+static uint8_t           g_snapshotTextR                  = 0;
+static uint8_t           g_snapshotTextG                  = 255;
+static uint8_t           g_snapshotTextB                  = 255;
+static bool              g_snapshotValid                  = false;
+static bool              g_snapshotWasClock               = false;
+static uint8_t           g_lastClockR                     = 0;
+static uint8_t           g_lastClockG                     = 255;
+static uint8_t           g_lastClockB                     = 255;
 
 String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
   String body = http.getString();
@@ -436,7 +455,7 @@ int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs)
   tls.setTimeout(timeoutMs / 1000 + 5);
   if (!http.begin(tls, ipUrl)) return -2;
   http.addHeader("Host", host);
-  http.addHeader("User-Agent", "ChaiyoLED/2.12");
+  http.addHeader("User-Agent", "ChaiyoLED/2.13");
   http.addHeader("Accept", "application/json");
   int code = http.GET();
   if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
@@ -463,7 +482,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.12");
+    http.addHeader("User-Agent", "ChaiyoLED/2.13");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   } else {
@@ -473,7 +492,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.12");
+    http.addHeader("User-Agent", "ChaiyoLED/2.13");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   }
@@ -490,7 +509,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.setTimeout(timeoutMs);
     fb.setReuse(false);
     if (fb.begin(url)) {
-      fb.addHeader("User-Agent", "ChaiyoLED/2.12");
+      fb.addHeader("User-Agent", "ChaiyoLED/2.13");
       fb.addHeader("Accept", "application/json");
       code = fb.GET();
       if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
@@ -663,8 +682,62 @@ void showSyncWaitingVisual() {
   updateTextProperties();
 }
 
+bool isTransientStatusText(const String& txt) {
+  return txt == "กำลังเชื่อมต่อ.." || txt == "กำลังซิงก์.." || txt == "WiFi Error";
+}
+
+void saveDisplaySnapshot() {
+  if (!dma_display || isTransientStatusText(currentText)) return;
+  g_snapshotText = currentText;
+  g_snapshotActual = actualCount;
+  g_snapshotTarget = targetCount;
+  g_snapshotColor = currentColor;
+  g_snapshotFontSize = currentFontSize;
+  g_snapshotSpeed = scrollSpeed;
+  g_snapshotWasClock = g_clockMode;
+  if (g_clockMode) {
+    g_snapshotClockR = g_lastClockR;
+    g_snapshotClockG = g_lastClockG;
+    g_snapshotClockB = g_lastClockB;
+  } else {
+    g_snapshotTextR = (uint8_t)(currentColor >> 11);
+    g_snapshotTextG = (uint8_t)((currentColor >> 5) & 0x3F);
+    g_snapshotTextB = (uint8_t)(currentColor & 0x1F);
+    g_snapshotTextR = (g_snapshotTextR * 255) / 31;
+    g_snapshotTextG = (g_snapshotTextG * 255) / 63;
+    g_snapshotTextB = (g_snapshotTextB * 255) / 31;
+  }
+  g_snapshotValid = true;
+}
+
+bool restoreDisplaySnapshot() {
+  if (!g_snapshotValid || !dma_display) return false;
+  if (g_snapshotWasClock) {
+    applyClockVisual(g_snapshotClockR, g_snapshotClockG, g_snapshotClockB);
+  } else {
+    g_clockMode = false;
+    currentText = g_snapshotText;
+    currentFontSize = g_snapshotFontSize > 0 ? g_snapshotFontSize : 1;
+    scrollSpeed = max(20, g_snapshotSpeed > 0 ? g_snapshotSpeed : 50);
+    currentColor = g_snapshotColor;
+    actualCount = g_snapshotActual.length() ? g_snapshotActual : String("0");
+    targetCount = g_snapshotTarget.length() ? g_snapshotTarget : String("0");
+    updateTextProperties();
+    s_ledStateFingerprint = buildLedStateFingerprint(
+      currentText, g_snapshotTextR, g_snapshotTextG, g_snapshotTextB,
+      currentFontSize, scrollSpeed, actualCount, targetCount);
+  }
+  g_awaitingBootSync = false;
+  g_bootSyncWaitingSinceMs = 0;
+  Serial.println("[Sync] restored pre-disconnect display");
+  return true;
+}
+
 void applyClockVisual(uint8_t r, uint8_t g, uint8_t b) {
   if (!dma_display) return;
+  g_lastClockR = r;
+  g_lastClockG = g;
+  g_lastClockB = b;
   g_clockMode = true;
   currentFontSize = 1;
   scrollSpeed     = 50;
@@ -1446,12 +1519,9 @@ void pollTask(void* pv) {
   // ─── ➕ ตัวแปรจับเวลาล็อกอุณหภูมิ ───
   static uint32_t lastTempLogMs            = 0; 
 
-  // ตอน WiFi หลุด → แสดงนาฬิกา HH:MM:SS ทันที
-  auto sendOfflineClock = []() {
-    if (!cmdQueue) return;
-    LedCmd cmd = {};
-    cmd.showClock = true;
-    xQueueSend(cmdQueue, &cmd, 0);
+  // ตอน WiFi หลุด → เก็บ snapshot แล้วคงข้อความเดิม (ไม่สลับเป็นนาฬิกา)
+  auto onWifiDisconnected = []() {
+    saveDisplaySnapshot();
   };
 
   for (;;) {
@@ -1472,12 +1542,12 @@ void pollTask(void* pv) {
         g_ntpSynced = false;
         g_awaitingBootSync = true;
         g_bootSyncWaitingSinceMs = now;
-        s_ledStateFingerprint = "";  // ล้าง fingerprint ให้ reconcile ทำงานซ้ำได้
+        s_ledStateFingerprint = "";
         g_serverDnsOk = false;
+        onWifiDisconnected();
       }
       if (!showingConnecting) {
         showingConnecting = true;
-        sendOfflineClock();          // แสดงนาฬิกาทันทีที่ WiFi หลุด
       }
 
       if (!wifiImmediateRecoverTried) {
@@ -1583,24 +1653,29 @@ void pollTask(void* pv) {
       static uint32_t lastAwaitingSyncMs = 0;
       if (g_bootSyncWaitingSinceMs > 0
           && (currentMs - g_bootSyncWaitingSinceMs) >= BOOT_SYNC_GIVE_UP_MS) {
-        g_awaitingBootSync = false;
-        g_bootSyncWaitingSinceMs = 0;
         lastAwaitingSyncMs = 0;
         if (syncLedDisplayFromServer()) {
-          Serial.println("[Sync] boot sync recovered on final attempt");
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+          Serial.println("[Sync] boot sync recovered on extended attempt");
+        } else if (restoreDisplaySnapshot()) {
+          Serial.println("[Sync] boot sync timeout — restored snapshot");
         } else if (currentText == "กำลังซิงก์..") {
-          Serial.println("[Sync] boot sync timeout — keep waiting (no forced clock)");
+          Serial.println("[Sync] boot sync timeout — keep retrying");
           showSyncWaitingVisual();
         }
       } else if (currentMs - lastAwaitingSyncMs >= 4000) {
         lastAwaitingSyncMs = currentMs;
-        syncLedDisplayFromServer();
+        if (syncLedDisplayFromServer()) {
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+        }
       }
     }
 
     if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
 
-    if ((g_requestStatusSync || g_clockMode) && !skipSyncThisCycle) {
+    if ((g_requestStatusSync || g_clockMode || currentText == "กำลังซิงก์..") && !skipSyncThisCycle) {
       static uint32_t lastResyncMs = 0;
       if (g_requestStatusSync || currentMs - lastResyncMs >= 5000) {
         g_requestStatusSync = false;
