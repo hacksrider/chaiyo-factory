@@ -91,22 +91,6 @@ function isLedPreviewClock(ledState, cfg) {
   return Boolean(ledState?.showClock);
 }
 
-function buildTextLedPayload(cfg, ledState, extras = {}) {
-  const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
-  const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-  return {
-    text: String(cfg.text ?? '').trim(),
-    showClock: false,
-    r,
-    g,
-    b,
-    fontSize: cfg.fontSize ?? 1,
-    speed: speedMs,
-    textOverride: Boolean(ledState?.textOverride),
-    ...extras,
-  };
-}
-
 function formatPreviewClock(now = new Date()) {
   const h = String(now.getHours()).padStart(2, '0');
   const m = String(now.getMinutes()).padStart(2, '0');
@@ -1748,12 +1732,12 @@ const LedSignView = ({
         [machineId]: {
           ...(prev[machineId] ?? DEFAULT_CONFIG),
           text: '',
-          colorHex: rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0),
+          colorHex: rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 255),
         },
       }));
       lastQueuedSigRef.current = {
         ...lastQueuedSigRef.current,
-        [machineId]: buildClockSignature(rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 0)),
+        [machineId]: buildClockSignature(rgbToHex(state?.r ?? 0, state?.g ?? 255, state?.b ?? 255)),
       };
     } else {
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: '' };
@@ -1811,63 +1795,32 @@ const LedSignView = ({
   useEffect(() => {
     const handler = (e) => {
       if (!canAutoPushQtyToLed) return;
-      const { machineId: mid, qty_good, qty_remaining } = e.detail ?? {};
+      const { machineId: mid, qty_good, qty_remaining, state: sseState } = e.detail ?? {};
       if (!mid) return;
+
+      const mState = sseState ?? allMachineStatesRef.current[mid];
+      const pipeCounter = typeof qty_good === 'number' ? qty_good : mState?.pipeCounter;
+      const remainingQty = typeof qty_remaining === 'number' && qty_remaining > 0
+        ? qty_remaining
+        : mState?.remainingQty;
 
       const prevGood = prevProductionQtyRef.current[mid]?.qty_good;
       const prevRem  = prevProductionQtyRef.current[mid]?.qty_remaining;
 
-      const goodChanged = typeof qty_good === 'number' && qty_good !== prevGood;
-      const remChanged  = typeof qty_remaining === 'number' && qty_remaining !== prevRem;
+      const goodChanged = typeof pipeCounter === 'number' && pipeCounter !== prevGood;
+      const remChanged  = typeof remainingQty === 'number' && remainingQty !== prevRem;
 
-      prevProductionQtyRef.current[mid] = { qty_good, qty_remaining };
+      prevProductionQtyRef.current[mid] = { qty_good: pipeCounter, qty_remaining: remainingQty };
 
       if (!goodChanged && !remChanged) return;
-
-      // Only re-push LED for the currently selected machine
       if (mid !== sid) return;
-      const machine = validMachines.find((m) => m.id === mid);
-      if (!machine?.id) return;
 
-      // Build updated LED command with new counters
-      const cfg = configsRef.current[mid] ?? DEFAULT_CONFIG;
-      const isOverridden = Boolean(ledStatesRef.current[mid]?.textOverride);
-      const mState = allMachineStatesRef.current[mid];
-
-      // ถ้าไม่ได้ override → ใช้ชื่อสินค้าจริงๆ (green) แทน cfg.text เก่า
-      let displayText = cfg.text;
-      let displayR = 0, displayG = 255, displayB = 0;
-      if (!isOverridden && mState?.mode === 'live') {
-        const code = String(mState.productCode ?? '').trim();
-        const name = String(mState.productName ?? '').trim();
-        const liveTxt = code && name ? `${code} — ${name}` : (code || name || String(mState.orderId ?? '').trim());
-        if (liveTxt) {
-          displayText = liveTxt;
-        } else {
-          displayR = 0; displayG = 255; displayB = 0;
-        }
-      } else if (isOverridden) {
-        const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
-        displayR = r; displayG = g; displayB = b;
-      }
-
-      if (!displayText) return;
-      const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-      queueLedForMachine(mid, {
-        text: displayText,
-        showClock: false,
-        r: displayR, g: displayG, b: displayB,
-        fontSize: cfg.fontSize ?? 1,
-        speed: speedMs,
-        textOverride: isOverridden,
-        actual: String(qty_good ?? 0),
-        target: String(qty_remaining ?? 0),
-      }).catch(() => { /* retry handled by next poll */ });
+      pushLedDisplayToDeviceRef.current?.(mid, { force: true }).catch(() => {});
     };
 
     window.addEventListener('sse:production_updated', handler);
     return () => window.removeEventListener('sse:production_updated', handler);
-  }, [sid, validMachines, canAutoPushQtyToLed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sid, canAutoPushQtyToLed]);
 
   // ── Fallback poll every 10s (was 3s) — SSE is now primary ────────────────
   const ledPollRef = useRef(null);
@@ -1952,23 +1905,8 @@ const LedSignView = ({
           : [];
 
       for (const machine of targets) {
-        const cfg = configsRef.current[machine.id] ?? DEFAULT_CONFIG;
-        const ledState = ledStatesRef.current[machine.id];
-        const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
-        const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
-
-        // ไม่ auto-push นาฬิกา — ส่งนาฬิกาได้เฉพาะปุ่ม "แสดงนาฬิกา" เท่านั้น
-        const sig = buildLedConfigSignature(cfg);
-        if (!sig) continue;
-        if (lastQueuedSigRef.current[machine.id] === sig) continue;
-
         try {
-          const liveCounterPayload = getLiveCounterPayload(machine.id);
-          await queueLedForMachine(machine.id, buildTextLedPayload(cfg, ledState, {
-            r, g, b,
-            ...liveCounterPayload,
-          }));
-          lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machine.id]: sig };
+          await pushLedDisplayToDeviceRef.current?.(machine.id);
         } catch {
           /* retry next cycle */
         }
@@ -1978,7 +1916,7 @@ const LedSignView = ({
     return () => {
       if (autoPushDebounceRef.current) clearTimeout(autoPushDebounceRef.current);
     };
-  }, [configs, sid, selectedMachine, speedForAll, validMachines, getLiveCounterPayload, ledStates, wifiStatuses]);
+  }, [configs, sid, selectedMachine, speedForAll, validMachines, ledStates, wifiStatuses]);
 
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
@@ -2323,11 +2261,11 @@ const LedSignView = ({
   const handleClearLed = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;
     const cfg = configs[sid] ?? DEFAULT_CONFIG;
-    const payload = buildClockPayload(cfg.colorHex, cfg);
+    const payload = { ...buildClockPayload(cfg.colorHex, cfg), textOverride: false };
     setClearStatus('clearing');
     try {
       await queueLedForMachine(selectedMachine.id, payload);
-      const cleared = { ...payload, updatedAt: new Date().toISOString() };
+      const cleared = { ...payload, textOverride: false, updatedAt: new Date().toISOString() };
       setLedStates((prev) => ({ ...prev, [sid]: cleared }));
       setConfigs((prev) => ({
         ...prev,

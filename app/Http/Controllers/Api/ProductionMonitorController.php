@@ -1305,9 +1305,9 @@ class ProductionMonitorController extends Controller
             $ledTarget = ($remainingFromDb >= 0)
                 ? $remainingFromDb
                 : (($sessionAfter->remaining_qty ?? $sessionAfter->target_qty) ?? 0);
-            $displayText = ($productCodeLc !== '')
-                ? "{$productCodeLc} {$productNameLc}"
-                : "Order: {$orderIdLc}";
+            $displayText = ($productCodeLc !== '' && $productNameLc !== '')
+                ? "{$productCodeLc} — {$productNameLc}"
+                : ($productCodeLc !== '' ? $productCodeLc : ($productNameLc !== '' ? $productNameLc : "Order: {$orderIdLc}"));
 
             if (! $ledState) {
                 $ledState = [
