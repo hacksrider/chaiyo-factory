@@ -1978,6 +1978,7 @@ const LedSignView = ({
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
   const prevWifiOnlineRef = useRef({});
+  const prevHeartbeatAgoRef = useRef({});
   const wifiFailStreakRef = useRef({});
   const heartbeatInFlightRef = useRef({});
 
@@ -1993,8 +1994,12 @@ const LedSignView = ({
 
     const applyHeartbeat = (result) => {
       const localIp = result?.deviceLocalIp?.trim() || null;
+      const hadPriorStatus = prevWifiOnlineRef.current[sid] !== undefined;
       const wasOnline = prevWifiOnlineRef.current[sid] === true;
       const isOnline = Boolean(result?.online);
+      const ago = result?.secondsAgo;
+      const prevAgo = prevHeartbeatAgoRef.current[sid];
+      if (ago != null) prevHeartbeatAgoRef.current[sid] = ago;
 
       setDeviceLocalIps((prev) => ({ ...prev, [sid]: localIp }));
       setHeartbeatAgo((prev) => ({
@@ -2013,7 +2018,9 @@ const LedSignView = ({
         wifiFailStreakRef.current[sid] = 0;
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
         setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
-        if (!wasOnline) {
+        // offline→online หรือ poll กลับมาหลังหยุดช่วงสั้นๆ (<35s) — ส่งคำสั่งซ้ำเหมือนกดซิงก์ป้าย
+        const pollResumed = prevAgo != null && prevAgo >= 10 && ago <= 8;
+        if ((hadPriorStatus && !wasOnline) || pollResumed) {
           pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
         }
       } else {

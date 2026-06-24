@@ -417,8 +417,9 @@ class ProductionMonitorController extends Controller
             }
         }
 
-        // WiFi กลับมาหลัง offline (heartbeat ขาด > ESP_HEARTBEAT_ONLINE_SEC) — ส่ง state ซ้ำ 1 ครั้ง
-        if ($wasOffline) {
+        // WiFi กลับมาหลัง offline (heartbeat ขาด) หรือ ESP ขอ resync เอง — ส่ง state กลับทันที
+        $resync = filter_var($request->query('resync'), FILTER_VALIDATE_BOOL);
+        if ($wasOffline || $resync) {
             $state = Cache::get("led_state_{$machineId}");
             if (is_array($state)) {
                 return response()->json(array_merge(['pending' => true], $state));
@@ -531,7 +532,8 @@ class ProductionMonitorController extends Controller
         }
 
         try {
-            return (int) Carbon::parse($lastSeenAt)->diffInSeconds(now()) > self::ESP_HEARTBEAT_ONLINE_SEC;
+            // 8s — ESP poll ทุก 2s; gap >8 = หลุดช่วงสั้นๆ ก็ resync ได้
+            return (int) Carbon::parse($lastSeenAt)->diffInSeconds(now()) > 8;
         } catch (\Throwable $e) {
             return false;
         }

@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.13 (reconnect sync — ไม่ทับด้วยนาฬิกา)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.14 (poll resync — ไม่ block ซิงก์)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -54,7 +54,7 @@ bool restoreDisplaySnapshot();
 bool syncLedDisplayFromServer();
 bool bootSyncFromServerWithRetry();
 void pollTask(void* pv);
-bool connectWifi(bool hardReset = true);
+bool connectWifi(bool hardReset = true, bool runBootSync = true);
 void processSerialCommand();
 void drawAndScrollText();
 String buildFingerprintFromLedCmd(const LedCmd& c);
@@ -215,6 +215,7 @@ static bool              g_snapshotWasClock               = false;
 static uint8_t           g_lastClockR                     = 0;
 static uint8_t           g_lastClockG                     = 255;
 static uint8_t           g_lastClockB                     = 255;
+static bool              g_pollResyncNext                  = false;
 
 String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
   String body = http.getString();
@@ -455,7 +456,7 @@ int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs)
   tls.setTimeout(timeoutMs / 1000 + 5);
   if (!http.begin(tls, ipUrl)) return -2;
   http.addHeader("Host", host);
-  http.addHeader("User-Agent", "ChaiyoLED/2.13");
+  http.addHeader("User-Agent", "ChaiyoLED/2.14");
   http.addHeader("Accept", "application/json");
   int code = http.GET();
   if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
@@ -482,7 +483,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.13");
+    http.addHeader("User-Agent", "ChaiyoLED/2.14");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   } else {
@@ -492,7 +493,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.13");
+    http.addHeader("User-Agent", "ChaiyoLED/2.14");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   }
@@ -509,7 +510,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.setTimeout(timeoutMs);
     fb.setReuse(false);
     if (fb.begin(url)) {
-      fb.addHeader("User-Agent", "ChaiyoLED/2.13");
+      fb.addHeader("User-Agent", "ChaiyoLED/2.14");
       fb.addHeader("Accept", "application/json");
       code = fb.GET();
       if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
@@ -1073,10 +1074,15 @@ String rssiQualityLabel(int rssi) {
 
 String buildHeartbeatQuery() {
   if (WiFi.status() != WL_CONNECTED) return "";
-  return "?localIp=" + WiFi.localIP().toString()
+  String q = "?localIp=" + WiFi.localIP().toString()
        + "&rssi=" + String(WiFi.RSSI())
        + "&uptime=" + String(millis() / 1000UL)
        + "&temp=" + String(g_internalTempC, 1);
+  if (g_pollResyncNext) {
+    q += "&resync=1";
+    g_pollResyncNext = false;
+  }
+  return q;
 }
 
 void handleStatus() {
@@ -1346,7 +1352,7 @@ void beginWifiWithBestAp() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
-bool connectWifi(bool hardReset) {
+bool connectWifi(bool hardReset, bool runBootSync) {
   WiFi.persistent(false);
   if (hardReset) {
     WiFi.disconnect(true);
@@ -1403,7 +1409,10 @@ bool connectWifi(bool hardReset) {
     applyPublicDns();
     syncNtpIfNeeded();
     refreshServerDns();
-    bootSyncFromServerWithRetry();
+    g_pollResyncNext = true;
+    if (runBootSync) {
+      bootSyncFromServerWithRetry();
+    }
     drawAndScrollText();
     return true;
   }
@@ -1566,9 +1575,9 @@ void pollTask(void* pv) {
         }
         if (WiFi.status() != WL_CONNECTED) {
           bool hardReset = (disconnectedFor >= WIFI_HARD_RESET_AFTER_MS);
-          connectWifi(hardReset);
+          connectWifi(hardReset, false);
           if (WiFi.status() != WL_CONNECTED && !hardReset && disconnectedFor >= 60000) {
-            connectWifi(true);
+            connectWifi(true, false);
           }
         }
         if (WiFi.status() != WL_CONNECTED) {
@@ -1595,10 +1604,12 @@ void pollTask(void* pv) {
 
     if (justReconnected) {
       flushLedCommandQueue();
-      showSyncWaitingVisual();
+      g_pollResyncNext = true;
+      if (!restoreDisplaySnapshot()) {
+        showSyncWaitingVisual();
+      }
       g_awaitingBootSync = true;
       g_bootSyncWaitingSinceMs = currentMs;
-      vTaskDelay(pdMS_TO_TICKS(1500));
       applyPublicDns();
       refreshServerDns();
       syncNtpIfNeeded(true);
@@ -1645,8 +1656,8 @@ void pollTask(void* pv) {
       }
     }
 
-    if (justReconnected) {
-      bootSyncFromServerWithRetry();
+    if (justReconnected && !skipSyncThisCycle) {
+      syncLedDisplayFromServer();
     }
 
     if (g_awaitingBootSync) {
