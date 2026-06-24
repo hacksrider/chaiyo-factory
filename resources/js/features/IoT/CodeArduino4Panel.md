@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.15 (ไม่รีสตาร์ทเมื่อ HTTPS ล่ม / ไม่ทับจอตอน WiFi กระพริบ)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.16 (ไม่ค้าง "กำลังซิงก์.." / ฟื้นตัวอัตโนมัติ)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -49,6 +49,7 @@ void updateTextProperties();
 void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0);
 String buildLedStateFingerprint(const String& text, int r, int g, int b, int fontSize, int speed, const String& act, const String& tgt);
 void showSyncWaitingVisual();
+void exitSyncWaitingWithFallback();
 void saveDisplaySnapshot();
 bool restoreDisplaySnapshot();
 bool syncLedDisplayFromServer();
@@ -176,7 +177,8 @@ static bool              g_hasPreferredBssid            = false;
 static uint8_t           g_preferredBssid[6]            = {0};
 static int32_t           g_preferredChannel             = 0;
 static uint32_t          g_lastWifiScanMs               = 0;
-static const uint32_t    BOOT_SYNC_GIVE_UP_MS            = 90000;
+static const uint32_t    BOOT_SYNC_GIVE_UP_MS            = 60000;
+static const uint32_t    TRANSIENT_FALLBACK_MS           = 45000;
 static uint32_t          g_bootSyncWaitingSinceMs       = 0;
 static const uint32_t    POLL_FAIL_STREAK_RESTART       = 0;     // ปิด — รีสตาร์ททำให้ค้าง "กำลังซิงก์.." ทั้งที่ WiFi ดี
 static const uint32_t    POLL_STALE_RESTART_MS          = 1800000; // 30 นาทีไม่ poll สำเร็จ (เดิม 10 นาที)
@@ -249,6 +251,27 @@ String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
   return body;
 }
 
+String jsonEscapeString(const String& s) {
+  String out;
+  out.reserve(s.length() + 16);
+  for (unsigned i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if ((unsigned char)c < 0x20) {
+      char buf[7];
+      snprintf(buf, sizeof(buf), "\\u%04X", (unsigned char)c);
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 String jsonDecodeEscapedUtf8(const String& raw) {
   String out;
   out.reserve(raw.length());
@@ -301,8 +324,13 @@ String jsonPickQuotedValue(const String& body, int fromIdx, const char* key) {
   start += pat.length();
   String raw;
   for (int i = start; i < (int)body.length(); i++) {
-    if (body[i] == '"') break;
-    raw += body[i];
+    char c = body[i];
+    if (c == '"') {
+      int backslashes = 0;
+      for (int j = i - 1; j >= start && body[j] == '\\'; j--) backslashes++;
+      if ((backslashes % 2) == 0) break;
+    }
+    raw += c;
   }
   return jsonDecodeEscapedUtf8(raw);
 }
@@ -310,10 +338,9 @@ String jsonPickQuotedValue(const String& body, int fromIdx, const char* key) {
 bool jsonHasTruthyTextField(const String& body) {
   int stateIdx = body.indexOf("\"state\"");
   if (stateIdx < 0) return false;
-  int start = body.indexOf("\"text\":\"", stateIdx);
-  if (start < 0) return false;
-  start += 8;
-  return start < (int)body.length() && body[start] != '"';
+  String txt = jsonPickQuotedValue(body, stateIdx, "text");
+  txt.trim();
+  return txt.length() > 0;
 }
 
 bool applyLedStateFromStatusBody(const String& body) {
@@ -684,6 +711,19 @@ void showSyncWaitingVisual() {
   updateTextProperties();
 }
 
+/** ออกจากหน้าซิงก์/เชื่อมต่อ — คืนจอจาก snapshot หรือนาฬิกา (ไม่ค้างทั้งวัน) */
+void exitSyncWaitingWithFallback() {
+  g_awaitingBootSync = false;
+  g_bootSyncWaitingSinceMs = 0;
+  g_needsPollResync = true;
+  if (restoreDisplaySnapshot()) {
+    Serial.println("[Sync] fallback — restored snapshot");
+    return;
+  }
+  applyClockVisual(0, 255, 0);
+  Serial.println("[Sync] fallback — clock mode");
+}
+
 bool isTransientStatusText(const String& txt) {
   return txt == "กำลังเชื่อมต่อ.." || txt == "กำลังซิงก์.." || txt == "WiFi Error";
 }
@@ -780,8 +820,8 @@ void applyLedCommandFromQueue(const LedCmd& cmd) {
     currentFontSize = cmd.fontSize > 0 ? cmd.fontSize : 1;
     if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
     currentColor    = dma_display->color565(cmd.r, cmd.g, cmd.b);
-    if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
-    if (cmd.target[0] != '\0') targetCount = String(cmd.target);
+    actualCount     = String(cmd.actual);
+    targetCount     = String(cmd.target);
     updateTextProperties();
     s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
     Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
@@ -831,6 +871,10 @@ void stateJsonToLedCmd(JsonObject o, LedCmd& cmd) {
   cmd.r  = o["r"]  | 0;   cmd.g  = o["g"]  | 255;  cmd.b  = o["b"]  | 255;
   cmd.fontSize = o["fontSize"] | 1;
   cmd.speed    = o["speed"]    | 0;
+  strncpy(cmd.actual, "0", sizeof(cmd.actual) - 1);
+  cmd.actual[sizeof(cmd.actual) - 1] = '\0';
+  strncpy(cmd.target, "0", sizeof(cmd.target) - 1);
+  cmd.target[sizeof(cmd.target) - 1] = '\0';
   if (o.containsKey("actual") && !o["actual"].isNull()) {
     strncpy(cmd.actual, o["actual"].as<String>().c_str(), sizeof(cmd.actual) - 1);
     cmd.actual[sizeof(cmd.actual) - 1] = '\0';
@@ -1035,7 +1079,9 @@ void handleLed() {
   if (doc.containsKey("fontSize")) currentFontSize = doc["fontSize"].as<int>();
   if (doc.containsKey("speed"))    scrollSpeed     = max(20, doc["speed"].as<int>());
   if (doc.containsKey("actual"))   actualCount     = doc["actual"].as<String>();
+  else if (doc.containsKey("text")) actualCount     = "0";
   if (doc.containsKey("target"))   targetCount     = doc["target"].as<String>();
+  else if (doc.containsKey("text")) targetCount     = "0";
   if (doc.containsKey("r") && doc.containsKey("g") && doc.containsKey("b")) {
     currentColor = dma_display->color565(
       doc["r"].as<int>(), doc["g"].as<int>(), doc["b"].as<int>()
@@ -1047,7 +1093,8 @@ void handleLed() {
     g_clockMode = false;
     updateTextProperties();
   } else if (wantClock) {
-    applyClockVisual();
+    int cr = doc["r"] | 0, cg = doc["g"] | 255, cb = doc["b"] | 255;
+    applyClockVisual((uint8_t)cr, (uint8_t)cg, (uint8_t)cb);
   } else {
     g_clockMode = false;
     updateTextProperties();
@@ -1082,6 +1129,9 @@ String buildHeartbeatQuery() {
   if (g_needsPollResync || isTransientStatusText(currentText)) {
     q += "&resync=1";
   }
+  if (isTransientStatusText(currentText)) {
+    q += "&stuck=1";
+  }
   return q;
 }
 
@@ -1090,35 +1140,36 @@ void handleStatus() {
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   uint32_t pollAgo = g_lastPollAttemptMs > 0 ? (millis() - g_lastPollAttemptMs) / 1000UL : 999999UL;
   uint32_t pollOkAgo = g_lastPollSuccessMs > 0 ? (millis() - g_lastPollSuccessMs) / 1000UL : 999999UL;
-  String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
-              + "\",\"ip\":\"" + WiFi.localIP().toString()
-              + "\",\"mac\":\"" + WiFi.macAddress()
-              + "\",\"wifiConnected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false")
+  String resp = String("{\"ok\":true")
+              + ",\"machineId\":\"" + jsonEscapeString(String(MACHINE_ID)) + "\""
+              + ",\"ip\":\"" + jsonEscapeString(WiFi.localIP().toString()) + "\""
+              + ",\"mac\":\"" + jsonEscapeString(WiFi.macAddress()) + "\""
+              + ",\"wifiConnected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false")
               + ",\"rssi\":" + String(rssi)
-              + ",\"rssiLabel\":\"" + rssiQualityLabel(rssi) + "\""
+              + ",\"rssiLabel\":\"" + jsonEscapeString(rssiQualityLabel(rssi)) + "\""
               + ",\"uptimeSec\":" + String(millis() / 1000UL)
-              + ",\"uptime\":\"" + formatUptimeSec(millis() / 1000UL) + "\""
+              + ",\"uptime\":\"" + jsonEscapeString(formatUptimeSec(millis() / 1000UL)) + "\""
               + ",\"cpuTemperatureC\":" + String(g_internalTempC, 1)
               + ",\"lastPollHttpCode\":" + String(g_lastPollHttpCode)
               + ",\"lastSyncHttpCode\":" + String(g_lastSyncHttpCode)
               + ",\"pollFailStreak\":" + String(g_pollFailStreak)
               + ",\"lastPollAgoSec\":" + String(pollAgo)
               + ",\"lastPollOkAgoSec\":" + String(pollOkAgo)
-              + ",\"serverUrl\":\"" + g_serverUrl + "\""
+              + ",\"serverUrl\":\"" + jsonEscapeString(g_serverUrl) + "\""
               + ",\"serverDnsOk\":" + String(g_serverDnsOk ? "true" : "false")
               + ",\"serverDnsFallback\":" + String(g_serverDnsFallback ? "true" : "false")
-              + ",\"serverDnsIp\":\"" + (g_serverDnsOk ? g_serverDnsIp.toString() : String("")) + "\""
-              + ",\"routerDns\":\"" + WiFi.dnsIP().toString() + "\""
+              + ",\"serverDnsIp\":\"" + jsonEscapeString(g_serverDnsOk ? g_serverDnsIp.toString() : String("")) + "\""
+              + ",\"routerDns\":\"" + jsonEscapeString(WiFi.dnsIP().toString()) + "\""
               + ",\"freeHeap\":" + String(ESP.getFreeHeap())
-              + ",\"lastHttpError\":\"" + g_lastHttpError + "\""
+              + ",\"lastHttpError\":\"" + jsonEscapeString(g_lastHttpError) + "\""
               + ",\"clockMode\":" + String(g_clockMode ? "true" : "false")
               + ",\"lastSyncParseOk\":" + String(g_lastSyncParseOk ? "true" : "false")
               + ",\"lastSyncServerTextLen\":" + String(g_lastSyncServerTextLen)
               + ",\"lastSyncBodyLen\":" + String(g_lastSyncBodyLen)
-              + ",\"lastSyncError\":\"" + g_lastSyncError + "\""
-              + ",\"lastPollUrl\":\"" + g_lastPollUrl + "\""
-              + ",\"lastSyncUrl\":\"" + g_lastSyncUrl + "\""
-              + ",\"text\":\"" + currentText + "\"}";
+              + ",\"lastSyncError\":\"" + jsonEscapeString(g_lastSyncError) + "\""
+              + ",\"lastPollUrl\":\"" + jsonEscapeString(g_lastPollUrl) + "\""
+              + ",\"lastSyncUrl\":\"" + jsonEscapeString(g_lastSyncUrl) + "\""
+              + ",\"text\":\"" + jsonEscapeString(currentText) + "\"}";
   server.send(200, "application/json", resp);
 }
 
@@ -1210,8 +1261,10 @@ bool applyLedStateFromServer(JsonObject st) {
     scrollSpeed     = max(20, sp);
     int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
     currentColor    = dma_display->color565(r, g, b);
-    if (st.containsKey("actual")) actualCount = st["actual"].as<String>();
-    if (st.containsKey("target")) targetCount = st["target"].as<String>();
+    actualCount     = (st.containsKey("actual") && !st["actual"].isNull())
+                        ? st["actual"].as<String>() : String("0");
+    targetCount     = (st.containsKey("target") && !st["target"].isNull())
+                        ? st["target"].as<String>() : String("0");
     updateTextProperties();
     s_ledStateFingerprint = buildFingerprintFromStateJson(st);
     flushLedCommandQueue();
@@ -1266,14 +1319,24 @@ bool syncLedDisplayFromServer() {
 
   DynamicJsonDocument doc(5120);
   DeserializationError jerr = deserializeJson(doc, body);
-  if (!jerr && doc["success"].as<bool>() && doc["hasState"].as<bool>()) {
-    JsonObject st = doc["state"];
-    if (!st.isNull()) {
+  if (!jerr && doc["success"].as<bool>()) {
+    if (doc["hasState"].as<bool>()) {
+      JsonObject st = doc["state"];
+      if (!st.isNull()) {
+        g_lastSyncParseOk = true;
+        g_lastSyncError = "json";
+        g_lastSyncServerTextLen = (int)st["text"].as<String>().length();
+        g_awaitingBootSync = false;
+        return applyLedStateFromServer(st);
+      }
+    } else {
       g_lastSyncParseOk = true;
-      g_lastSyncError = "json";
-      g_lastSyncServerTextLen = (int)st["text"].as<String>().length();
+      g_lastSyncError = "no-state";
+      g_lastSyncServerTextLen = 0;
       g_awaitingBootSync = false;
-      return applyLedStateFromServer(st);
+      applyClockVisual(0, 255, 0);
+      Serial.println("[Sync] no server state — clock fallback");
+      return true;
     }
   }
 
@@ -1291,8 +1354,8 @@ bool bootSyncFromServerWithRetry() {
     if (syncLedDisplayFromServer()) return true;
     if (attempt < BOOT_SYNC_MAX_ATTEMPTS) vTaskDelay(pdMS_TO_TICKS(BOOT_SYNC_RETRY_MS));
   }
-  showSyncWaitingVisual();
-  Serial.println("[BootSync] ยังซิงก์ไม่ได้ — รอ poll/reconcile รอบถัดไป");
+  exitSyncWaitingWithFallback();
+  Serial.println("[BootSync] ยังซิงก์ไม่ได้ — ใช้ fallback รอ poll/resync");
   return false;
 }
 
@@ -1607,9 +1670,14 @@ void pollTask(void* pv) {
     if (justReconnected) {
       flushLedCommandQueue();
       g_needsPollResync = true;
-      restoreDisplaySnapshot();
-      g_awaitingBootSync = true;
-      g_bootSyncWaitingSinceMs = currentMs;
+      bool restored = restoreDisplaySnapshot();
+      if (!restored) {
+        g_awaitingBootSync = true;
+        g_bootSyncWaitingSinceMs = currentMs;
+      } else {
+        g_awaitingBootSync = false;
+        g_bootSyncWaitingSinceMs = 0;
+      }
       applyPublicDns();
       refreshServerDns();
       syncNtpIfNeeded(true);
@@ -1629,11 +1697,9 @@ void pollTask(void* pv) {
     static uint32_t stuckTransientSinceMs = 0;
     if (isTransientStatusText(currentText)) {
       if (stuckTransientSinceMs == 0) stuckTransientSinceMs = currentMs;
-      else if (currentMs - stuckTransientSinceMs >= 15000UL) {
-        if (restoreDisplaySnapshot()) {
-          Serial.println("[Sync] stuck transient — restored snapshot");
-          stuckTransientSinceMs = 0;
-        }
+      else if (currentMs - stuckTransientSinceMs >= TRANSIENT_FALLBACK_MS) {
+        exitSyncWaitingWithFallback();
+        stuckTransientSinceMs = 0;
       }
     } else {
       stuckTransientSinceMs = 0;
@@ -1668,7 +1734,7 @@ void pollTask(void* pv) {
           g_bootSyncWaitingSinceMs = 0;
           g_needsPollResync = false;
           s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
-          if (cmd.text[0] != '\0') skipSyncThisCycle = true;
+          skipSyncThisCycle = true;
         } else if (jerr) {
           Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
         }
@@ -1692,13 +1758,9 @@ void pollTask(void* pv) {
           g_bootSyncWaitingSinceMs = 0;
           g_needsPollResync = false;
           Serial.println("[Sync] boot sync recovered on extended attempt");
-        } else if (restoreDisplaySnapshot()) {
-          g_awaitingBootSync = false;
-          g_bootSyncWaitingSinceMs = 0;
-          Serial.println("[Sync] boot sync timeout — restored snapshot");
         } else {
-          Serial.println("[Sync] boot sync timeout — keep resync poll");
-          g_needsPollResync = true;
+          exitSyncWaitingWithFallback();
+          Serial.println("[Sync] boot sync timeout — fallback display");
         }
       } else if (currentMs - lastAwaitingSyncMs >= 4000) {
         lastAwaitingSyncMs = currentMs;

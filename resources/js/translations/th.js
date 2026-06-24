@@ -736,6 +736,7 @@ export default {
         ledPreviewLabel: 'ตัวอย่างป้ายไฟ',
         ledPreviewClockLabel: 'ตัวอย่างนาฬิกา',
         ledClockColor: 'สีนาฬิกา',
+        ledLiveColorLockedHint: 'ระหว่างรันงาน ป้ายแสดงชื่อสินค้าสีเขียวอัตโนมัติ — เปลี่ยนสีได้เมื่อส่งข้อความแทนที่ (ปุ่มเปลี่ยนข้อความ)',
 
         // aliases used by LedSignView component
         ledNoIpHint: 'ยังไม่ได้ตั้งค่า IP ในชีต Settings',

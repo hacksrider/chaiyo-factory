@@ -29,6 +29,7 @@ const SPEED_MS = [800, 600, 450, 320, 250, 200, 160, 110, 80, 50, 42, 35, 28, 24
 const WIFI_FAILS_BEFORE_OFFLINE = 2;
 
 const DEFAULT_CONFIG = { text: '', colorHex: '#00ffff', fontSize: 1, scrollSpeed: 10 };
+const IDLE_PANEL_COUNTERS = { actual: '0', target: '0' };
 
 function buildLedConfigSignature(cfg) {
   if (!cfg) return '';
@@ -82,6 +83,18 @@ function canReachLedViaServer(wifiStatus) {
 /** ส่งคำสั่งผ่าน server poll ได้ — ไม่จำเป็นต้องมี ledIp ในชีต */
 function canSendLedCommand(machine, wifiStatus) {
   return Boolean(machine?.id) && (!!machine?.ledIp || canReachLedViaServer(wifiStatus));
+}
+
+/** รวม heartbeat + LAN probe เป็นสถานะเดียวกับที่ UI แสดง (online / local_only / offline / checking) */
+function resolveEffectiveWifiStatus(hbWifiStatus, localProbeData) {
+  const hb = hbWifiStatus ?? 'checking';
+  const espPollOk = localProbeData
+    ? localProbeData.lastPollHttpCode === 200
+      || (localProbeData.lastPollOkAgoSec != null && Number(localProbeData.lastPollOkAgoSec) < 35)
+    : null;
+  if (hb === 'online' && espPollOk !== false) return 'online';
+  if (localProbeData?.wifiConnected) return 'local_only';
+  return hb;
 }
 
 /** preview นาฬิกาเฉพาะเมื่อ server/UI ยืนยันโหมดนาฬิกาจริงๆ */
@@ -1150,13 +1163,15 @@ const ControlPanel = ({
   localPollHint = null,
   showClock = false, rebooting = false,
   canSendLed = false,
+  liveColorLocked = false,
 }) => {
   const { language } = useLanguage();
   const { t } = useTranslation(language);
   const { text, colorHex, scrollSpeed = 10 } = config;
   const hasIp = !!machine?.ledIp;
   const canSend = canSendLed || hasIp;
-  const { r, g, b } = hexToRgb(colorHex);
+  const displayColorHex = liveColorLocked ? '#00ff00' : colorHex;
+  const { r, g, b } = hexToRgb(displayColorHex);
   const [headerClock, setHeaderClock] = useState(() => formatPreviewClock());
 
   useEffect(() => {
@@ -1307,13 +1322,13 @@ const ControlPanel = ({
         <section className="order-1 flex min-w-0 flex-col lg:col-span-7 xl:col-span-8">
           <div
             className="overflow-hidden rounded-xl border border-gray-700/50 bg-gradient-to-b from-gray-900/90 to-black/70 shadow-lg lg:rounded-2xl"
-            style={{ boxShadow: `0 4px 24px ${colorHex}18, inset 0 1px 0 rgba(255,255,255,0.04)` }}
+            style={{ boxShadow: `0 4px 24px ${displayColorHex}18, inset 0 1px 0 rgba(255,255,255,0.04)` }}
           >
             <div className="flex items-center justify-between gap-2 border-b border-gray-800/80 bg-gray-900/60 px-3 py-2 sm:px-4 sm:py-2.5">
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   className="h-3 w-3 flex-shrink-0 rounded-sm border border-white/20"
-                  style={{ background: colorHex, boxShadow: `0 0 10px ${colorHex}aa` }}
+                  style={{ background: displayColorHex, boxShadow: `0 0 10px ${displayColorHex}aa` }}
                 />
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 sm:text-[11px]">
                   {showClock ? t('production.ledPreviewClockLabel') : t('production.ledPreviewLabel')}
@@ -1326,7 +1341,7 @@ const ControlPanel = ({
               )}
             </div>
             <div className="p-2 sm:p-3 md:p-4 lg:p-5">
-              <LedPreviewScaled text={text} colorHex={colorHex} speed={scrollSpeed} showClock={showClock} />
+              <LedPreviewScaled text={text} colorHex={displayColorHex} speed={scrollSpeed} showClock={showClock} />
               <p className="mt-2 text-center text-[9px] text-gray-600 sm:text-[10px]">
                 96×16 px · 3 panels
               </p>
@@ -1425,16 +1440,27 @@ const ControlPanel = ({
             </button>
           </div>
 
-          <div className="rounded-xl border border-gray-700/40 bg-gray-800/30 px-3 py-3 sm:px-4">
+          <div className={`rounded-xl border border-gray-700/40 bg-gray-800/30 px-3 py-3 sm:px-4 ${liveColorLocked ? 'border-emerald-500/20' : ''}`}>
             <label className="mb-2 block text-xs font-medium text-gray-400">
               {showClock ? t('production.ledClockColor') : t('production.ledTextColor')}
             </label>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <label className="flex-shrink-0 cursor-pointer">
-                <input type="color" value={colorHex} onChange={(e) => onChange('colorHex', e.target.value)} className="sr-only" />
+            {liveColorLocked && (
+              <p className="mb-2 text-[10px] leading-snug text-amber-400/90 sm:text-[11px]">
+                {t('production.ledLiveColorLockedHint')}
+              </p>
+            )}
+            <div className={`flex flex-col gap-3 sm:flex-row sm:items-center ${liveColorLocked ? 'pointer-events-none opacity-55' : ''}`}>
+              <label className={`flex-shrink-0 ${liveColorLocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                <input
+                  type="color"
+                  value={displayColorHex}
+                  onChange={(e) => onChange('colorHex', e.target.value)}
+                  disabled={liveColorLocked}
+                  className="sr-only"
+                />
                 <div
                   className="h-10 w-10 rounded-lg border-2 border-white/20 shadow-lg sm:h-11 sm:w-11"
-                  style={{ background: colorHex, boxShadow: `0 0 12px ${colorHex}66` }}
+                  style={{ background: displayColorHex, boxShadow: `0 0 12px ${displayColorHex}66` }}
                 />
               </label>
               <div className="flex flex-1 flex-wrap gap-1.5">
@@ -1443,11 +1469,12 @@ const ControlPanel = ({
                     key={hex}
                     type="button"
                     title={label}
+                    disabled={liveColorLocked}
                     onClick={() => onChange('colorHex', hex)}
                     className={`h-7 w-7 rounded-md border-2 transition-all sm:h-8 sm:w-8 ${
-                      colorHex === hex ? 'scale-110 border-white shadow-lg' : 'border-transparent hover:border-white/50'
+                      displayColorHex === hex ? 'scale-110 border-white shadow-lg' : 'border-transparent hover:border-white/50'
                     }`}
-                    style={{ background: hex, boxShadow: colorHex === hex ? `0 0 8px ${hex}cc` : undefined }}
+                    style={{ background: hex, boxShadow: displayColorHex === hex ? `0 0 8px ${hex}cc` : undefined }}
                   />
                 ))}
               </div>
@@ -1603,9 +1630,11 @@ const LedSignView = ({
   }, [sid, allMachineStates]);
 
   const lastQueuedSigRef = useRef({});
-  const getLiveCounterPayload = useCallback((machineId) => {
+  /** จอแผ่นที่ 4: เลขผลิตเฉพาะ live + ไม่ override ข้อความ — นอกนั้นส่ง 0 เพื่อแสดงชื่อเครื่อง */
+  const getPanelCounterPayload = useCallback((machineId, isTextOverridden = false) => {
+    if (isTextOverridden) return IDLE_PANEL_COUNTERS;
     const mState = allMachineStates[machineId];
-    if (mState?.mode !== 'live') return {};
+    if (mState?.mode !== 'live') return IDLE_PANEL_COUNTERS;
     const actual = Number(mState.pipeCounter ?? 0);
     const targetRaw = Number(mState.remainingQty ?? 0);
     const fallbackTarget = Number(mState.targetQty ?? 0);
@@ -1692,10 +1721,10 @@ const LedSignView = ({
       fontSize: cfg.fontSize ?? 1,
       speed: speedMs,
       textOverride: isOverridden,
-      ...getLiveCounterPayload(machineId),
+      ...getPanelCounterPayload(machineId, isOverridden),
     });
     lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
-  }, [validMachines, getLiveCounterPayload, getLiveProductText]);
+  }, [validMachines, getPanelCounterPayload, getLiveProductText]);
   useEffect(() => {
     pushLedDisplayToDeviceRef.current = pushLedDisplayToDevice;
   }, [pushLedDisplayToDevice]);
@@ -1891,6 +1920,12 @@ const LedSignView = ({
     }
   }, [sid, localEspStatus?.data?.lastPollHttpCode, localEspStatus?.data?.uptimeSec]);
 
+  const getEffectiveWifiStatusForMachine = useCallback((machineId) => {
+    const hb = wifiStatuses[machineId] ?? 'checking';
+    const localData = machineId === sid ? (localEspStatus?.data ?? null) : null;
+    return resolveEffectiveWifiStatus(hb, localData);
+  }, [wifiStatuses, sid, localEspStatus?.data]);
+
   // Auto-push debounce for color/speed changes (not text — text goes through popup)
   const autoPushDebounceRef = useRef(null);
   useEffect(() => {
@@ -1899,8 +1934,8 @@ const LedSignView = ({
 
     autoPushDebounceRef.current = setTimeout(async () => {
       const targets = speedForAll
-        ? validMachines.filter((m) => canSendLedCommand(m, wifiStatuses[m.id] ?? 'checking'))
-        : selectedMachine && canSendLedCommand(selectedMachine, wifiStatuses[sid] ?? 'checking')
+        ? validMachines.filter((m) => canSendLedCommand(m, getEffectiveWifiStatusForMachine(m.id)))
+        : selectedMachine && canSendLedCommand(selectedMachine, getEffectiveWifiStatusForMachine(sid))
           ? [selectedMachine]
           : [];
 
@@ -1916,7 +1951,7 @@ const LedSignView = ({
     return () => {
       if (autoPushDebounceRef.current) clearTimeout(autoPushDebounceRef.current);
     };
-  }, [configs, sid, selectedMachine, speedForAll, validMachines, ledStates, wifiStatuses]);
+  }, [configs, sid, selectedMachine, speedForAll, validMachines, ledStates, getEffectiveWifiStatusForMachine]);
 
   // Auto-ping every 15s
   const pingIntervalRef = useRef(null);
@@ -1924,6 +1959,7 @@ const LedSignView = ({
   const prevHeartbeatAgoRef = useRef({});
   const wifiFailStreakRef = useRef({});
   const heartbeatInFlightRef = useRef({});
+  const stuckRecoverPushAtRef = useRef({});
 
   useEffect(() => {
     if (pingIntervalRef.current) {
@@ -1965,6 +2001,15 @@ const LedSignView = ({
         const pollResumed = prevAgo != null && prevAgo >= 10 && ago <= 8;
         if ((hadPriorStatus && !wasOnline) || pollResumed) {
           pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+        }
+        // ป้าย poll server ได้แต่ค้าง "กำลังซิงก์.." — ส่งคำสั่งซ้ำอัตโนมัติ (ไม่ต้องกดปุ่ม)
+        if (result?.stuckTransient) {
+          const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
+          const now = Date.now();
+          if (now - lastPush >= 30_000) {
+            stuckRecoverPushAtRef.current[sid] = now;
+            pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+          }
         }
       } else {
         const failStreak = (wifiFailStreakRef.current[sid] ?? 0) + 1;
@@ -2022,27 +2067,49 @@ const LedSignView = ({
     if (!sid) return undefined;
     const tick = async () => {
       if (wifiStatuses[sid] !== 'online') return;
+
       const ips = [
         ...(deviceLocalIps[sid] ? [deviceLocalIps[sid]] : []),
         ...parseLedConfigIps(selectedMachine?.ledIp),
       ].filter((ip, idx, arr) => ip && arr.indexOf(ip) === idx);
-      if (!ips.length) return;
 
-      const result = await probeLocalLedStatus(ips);
-      const displayText = result?.data?.text ?? '';
-      if (!isEspTransientDisplayText(displayText)) {
-        stuckRecoverRef.current[sid] = 0;
-        return;
+      let isStuck = false;
+      if (ips.length) {
+        const result = await probeLocalLedStatus(ips);
+        const displayText = result?.data?.text ?? '';
+        if (!isEspTransientDisplayText(displayText)) {
+          stuckRecoverRef.current[sid] = 0;
+          return;
+        }
+        isStuck = true;
+      } else {
+        try {
+          const hb = await getLedHeartbeat(sid);
+          if (!hb?.online || !hb?.stuckTransient) {
+            stuckRecoverRef.current[sid] = 0;
+            return;
+          }
+          isStuck = true;
+        } catch {
+          return;
+        }
       }
+
+      if (!isStuck) return;
 
       const n = (stuckRecoverRef.current[sid] ?? 0) + 1;
       stuckRecoverRef.current[sid] = n;
-      if (n >= 2) {
-        pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+      if (n >= 1) {
+        const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
+        const now = Date.now();
+        if (now - lastPush >= 30_000) {
+          stuckRecoverPushAtRef.current[sid] = now;
+          pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+        }
       }
     };
 
-    const id = setInterval(tick, 15000);
+    const id = setInterval(tick, 15_000);
     tick();
     return () => clearInterval(id);
   }, [sid, wifiStatuses[sid], selectedMachine?.ledIp, deviceLocalIps[sid]]);
@@ -2076,6 +2143,7 @@ const LedSignView = ({
         fontSize: config.fontSize ?? 1,
         speed: speedMs,
         textOverride: true,
+        ...IDLE_PANEL_COUNTERS,
       };
 
       // Send LED command
@@ -2145,8 +2213,6 @@ const LedSignView = ({
         ? ` |- ${defaultRecorderName} ${formatDateThaiShort(now)} - ${formatTimeThaiDot(now)}`
         : '';
       const fullText = text + nameSuffix;
-      const liveCounterPayload = getLiveCounterPayload(sid);
-
       await queueLedForMachine(selectedMachine.id, {
         text: fullText,
         showClock: false,
@@ -2154,7 +2220,7 @@ const LedSignView = ({
         fontSize: cfg.fontSize ?? 1,
         speed: speedMs,
         textOverride: true,
-        ...liveCounterPayload,
+        ...IDLE_PANEL_COUNTERS,
       });
 
       // อัปเดต local config และ signature (ใช้ fullText ที่ต่อท้ายชื่อ/วันที่/เวลาแล้ว)
@@ -2180,7 +2246,7 @@ const LedSignView = ({
     } finally {
       setQuickSubmitting(false);
     }
-  }, [sid, selectedMachine, configs, getLiveCounterPayload, defaultRecorderName]);
+  }, [sid, selectedMachine, configs, defaultRecorderName]);
 
   const handleRebootBoard = useCallback(async () => {
     if (!sid || rebootingBoard) return;
@@ -2313,7 +2379,7 @@ const LedSignView = ({
           fontSize: cfg.fontSize ?? 1,
           speed: speedMs,
           textOverride: false,
-          ...getLiveCounterPayload(sid),
+          ...getPanelCounterPayload(sid, false),
         });
       }
       setLedStates((prev) => ({
@@ -2336,7 +2402,7 @@ const LedSignView = ({
     } catch {
       setStatuses((prev) => ({ ...prev, [sid]: 'error' }));
     }
-  }, [sid, selectedMachine, configs, onRestoreProductionLed, getLiveCounterPayload, getLiveProductText]);
+  }, [sid, selectedMachine, configs, onRestoreProductionLed, getPanelCounterPayload, getLiveProductText]);
 
   const activeMachineState = sid ? allMachineStates[sid] : null;
   const liveProductText = sid ? getLiveProductText(sid) : '';
@@ -2352,13 +2418,7 @@ const LedSignView = ({
 
   const hbWifiStatus = sid ? (wifiStatuses[sid] ?? 'checking') : 'checking';
   const localData = localEspStatus?.data;
-  const espPollOk = localData
-    ? localData.lastPollHttpCode === 200
-      || (localData.lastPollOkAgoSec != null && Number(localData.lastPollOkAgoSec) < 35)
-    : null;
-  const effectiveWifiStatus = hbWifiStatus === 'online' && espPollOk !== false
-    ? 'online'
-    : (localData?.wifiConnected ? 'local_only' : hbWifiStatus);
+  const effectiveWifiStatus = resolveEffectiveWifiStatus(hbWifiStatus, localData ?? null);
   const displayLocalIp = deviceLocalIps[sid] ?? localEspStatus?.ip ?? localEspStatus?.data?.ip ?? null;
   const displayRssi = deviceRssi[sid] ?? localEspStatus?.data?.rssi ?? null;
   const displayTemp = deviceTemp[sid] ?? localEspStatus?.data?.cpuTemperatureC ?? null;
@@ -2490,6 +2550,7 @@ const LedSignView = ({
               onSpeedForAllChange={handleSpeedForAll}
               showClock={effectiveShowClock}
               canSendLed={canSendLed}
+              liveColorLocked={isLiveMachine && !isTextOverridden && !effectiveShowClock}
             />
           </>
         ) : (

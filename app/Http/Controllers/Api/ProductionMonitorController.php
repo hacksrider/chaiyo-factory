@@ -327,13 +327,21 @@ class ProductionMonitorController extends Controller
         }
 
         $session = ProductionSession::where('machine_id', $machineId)->first();
-        if (!array_key_exists('actual', $payload) && $session) {
-            $ledState['actual'] = (string) ((int) ($session->pipe_counter ?? 0));
+        $activeSession = $session && in_array($session->status ?? '', ['live', 'paused', 'awaiting_scale'], true);
+        $showProductionCounters = $activeSession && ! (bool) ($ledState['textOverride'] ?? false);
+        if (!array_key_exists('actual', $payload)) {
+            $ledState['actual'] = $showProductionCounters
+                ? (string) ((int) ($session->pipe_counter ?? 0))
+                : '0';
         }
-        if (!array_key_exists('target', $payload) && $session) {
-            $remaining = (int) ($session->remaining_qty ?? 0);
-            $fallbackTarget = (int) ($session->target_qty ?? 0);
-            $ledState['target'] = (string) ($remaining > 0 ? $remaining : $fallbackTarget);
+        if (!array_key_exists('target', $payload)) {
+            if ($showProductionCounters) {
+                $remaining = (int) ($session->remaining_qty ?? 0);
+                $fallbackTarget = (int) ($session->target_qty ?? 0);
+                $ledState['target'] = (string) ($remaining > 0 ? $remaining : $fallbackTarget);
+            } else {
+                $ledState['target'] = '0';
+            }
         }
         if (!array_key_exists('textOverride', $payload)) {
             $ledState['textOverride'] = (bool) ($ledState['textOverride'] ?? false);
@@ -346,6 +354,8 @@ class ProductionMonitorController extends Controller
                 $ledState['showClock'] = (bool) ($ledState['showClock'] ?? false);
             }
         }
+
+        $ledState = $this->normalizeLedPanelCounters($machineId, $ledState);
 
         // Pending command — ESP32 ดึงแล้วลบทิ้ง (TTL 5 นาที)
         Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
@@ -372,6 +382,9 @@ class ProductionMonitorController extends Controller
     public function getLedStatus(string $machineId): JsonResponse
     {
         $state = Cache::get("led_state_{$machineId}");
+        if (is_array($state)) {
+            $state = $this->normalizeLedPanelCounters($machineId, $state);
+        }
 
         return response()->json([
             'success'   => true,
@@ -400,6 +413,8 @@ class ProductionMonitorController extends Controller
         $command = Cache::pull("led_cmd_{$machineId}");
 
         if ($command) {
+            $command = $this->normalizeLedPanelCounters($machineId, $command);
+
             return response()->json(array_merge(['pending' => true], $command));
         }
 
@@ -411,6 +426,7 @@ class ProductionMonitorController extends Controller
                 $state = Cache::get("led_state_{$machineId}");
                 if (is_array($state)) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
+                    $state = $this->normalizeLedPanelCounters($machineId, $state);
 
                     return response()->json(array_merge(['pending' => true], $state));
                 }
@@ -422,7 +438,23 @@ class ProductionMonitorController extends Controller
         if ($wasOffline || $resync) {
             $state = Cache::get("led_state_{$machineId}");
             if (is_array($state)) {
+                $state = $this->normalizeLedPanelCounters($machineId, $state);
+
                 return response()->json(array_merge(['pending' => true], $state));
+            }
+            if ($resync) {
+                return response()->json([
+                    'pending'    => true,
+                    'text'       => '',
+                    'showClock'  => true,
+                    'r'          => 0,
+                    'g'          => 255,
+                    'b'          => 0,
+                    'fontSize'   => 1,
+                    'speed'      => 50,
+                    'actual'     => '0',
+                    'target'     => '0',
+                ]);
             }
         }
 
@@ -482,6 +514,7 @@ class ProductionMonitorController extends Controller
         $rssi          = null;
         $temp          = null;
         $uptimeSec     = null;
+        $stuckTransient = false;
 
         if ($raw !== null) {
             if (is_array($raw)) {
@@ -491,6 +524,7 @@ class ProductionMonitorController extends Controller
                 $rssi          = isset($raw['rssi']) && is_numeric($raw['rssi']) ? (int) $raw['rssi'] : null;
                 $temp          = isset($raw['temp']) && is_numeric($raw['temp']) ? (float) $raw['temp'] : null;
                 $uptimeSec     = isset($raw['uptime']) && is_numeric($raw['uptime']) ? (int) $raw['uptime'] : null;
+                $stuckTransient = (bool) ($raw['stuck'] ?? false);
             } else {
                 $lastSeenAt = $raw; // format เก่า (string)
             }
@@ -515,6 +549,7 @@ class ProductionMonitorController extends Controller
             'rssi'          => $rssi,
             'temp'          => $temp,
             'uptimeSec'     => $uptimeSec,
+            'stuckTransient' => $stuckTransient,
         ];
     }
 
@@ -555,6 +590,8 @@ class ProductionMonitorController extends Controller
         $uptime = $request->query('uptime');
         $uptime = is_numeric($uptime) ? (int) $uptime : null;
 
+        $stuck = filter_var($request->query('stuck'), FILTER_VALIDATE_BOOL);
+
         Cache::put("{$kind}_heartbeat_{$machineId}", [
             'time'    => now()->toISOString(),
             'localIp' => $localIp,
@@ -562,6 +599,7 @@ class ProductionMonitorController extends Controller
             'rssi'    => $rssi,
             'temp'    => $temp,
             'uptime'  => $uptime,
+            'stuck'   => $stuck,
         ], now()->addSeconds(self::ESP_HEARTBEAT_ONLINE_SEC + 10));
     }
 
@@ -2413,6 +2451,28 @@ class ProductionMonitorController extends Controller
         $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
 
         return response()->json(['success' => true, 'session' => $state]);
+    }
+
+    /**
+     * จอแผ่นที่ 4: แสดงเลขผลิตเฉพาะ session ที่ active และไม่ได้ override ข้อความ
+     */
+    private function normalizeLedPanelCounters(string $machineId, array $ledState): array
+    {
+        $session = ProductionSession::where('machine_id', $machineId)->first();
+        $activeSession = $session && in_array($session->status ?? '', ['live', 'paused', 'awaiting_scale'], true);
+        $showCounters = $activeSession && ! (bool) ($ledState['textOverride'] ?? false);
+
+        if ($showCounters) {
+            $ledState['actual'] = (string) ((int) ($session->pipe_counter ?? 0));
+            $remaining = (int) ($session->remaining_qty ?? 0);
+            $fallbackTarget = (int) ($session->target_qty ?? 0);
+            $ledState['target'] = (string) ($remaining > 0 ? $remaining : $fallbackTarget);
+        } else {
+            $ledState['actual'] = '0';
+            $ledState['target'] = '0';
+        }
+
+        return $ledState;
     }
 
     /**

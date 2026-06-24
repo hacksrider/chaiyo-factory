@@ -736,6 +736,7 @@ export default {
         ledPreviewLabel: 'ဆိုင်းဘုတ်ကြည့်ရှု',
         ledPreviewClockLabel: 'နာရီကြည့်ရှု',
         ledClockColor: 'နာရီအရောင်',
+        ledLiveColorLockedHint: 'ထုတ်လုပ်နေစဉ် ဆိုင်းဘုတ်သည် ကုန်ပစ္စည်းအမည်ကို အစိမ်းရောင်ဖြင့် အလိုအလျောက်ပြသည် — စာသားအစားထိုးပြီးမှသာ အရောင်ပြောင်းနိုင်သည်',
 
         // aliases used by LedSignView component
         ledNoIpHint: 'Settings sheet တွင် IP မသတ်မှတ်ရသေး',
