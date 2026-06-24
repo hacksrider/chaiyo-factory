@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.14 (poll resync — ไม่ block ซิงก์)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.15 (ไม่รีสตาร์ทเมื่อ HTTPS ล่ม / ไม่ทับจอตอน WiFi กระพริบ)
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -54,7 +54,7 @@ bool restoreDisplaySnapshot();
 bool syncLedDisplayFromServer();
 bool bootSyncFromServerWithRetry();
 void pollTask(void* pv);
-bool connectWifi(bool hardReset = true, bool runBootSync = true);
+bool connectWifi(bool hardReset = true, bool runBootSync = true, bool showOnDisplay = true);
 void processSerialCommand();
 void drawAndScrollText();
 String buildFingerprintFromLedCmd(const LedCmd& c);
@@ -73,7 +73,7 @@ void maybeRestartAfterPollFailures(uint32_t nowMs);
 // ======================================================================
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
-#define MACHINE_ID  "EM 20"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
+#define MACHINE_ID  "EM 08"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
 
 // ── WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น) ──────────
 // IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
@@ -178,8 +178,9 @@ static int32_t           g_preferredChannel             = 0;
 static uint32_t          g_lastWifiScanMs               = 0;
 static const uint32_t    BOOT_SYNC_GIVE_UP_MS            = 90000;
 static uint32_t          g_bootSyncWaitingSinceMs       = 0;
-static const uint32_t    POLL_FAIL_STREAK_RESTART       = 90;    // ~3 นาที @ 2s/poll
-static const uint32_t    POLL_STALE_RESTART_MS          = 600000; // 10 นาทีไม่ poll สำเร็จ
+static const uint32_t    POLL_FAIL_STREAK_RESTART       = 0;     // ปิด — รีสตาร์ททำให้ค้าง "กำลังซิงก์.." ทั้งที่ WiFi ดี
+static const uint32_t    POLL_STALE_RESTART_MS          = 1800000; // 30 นาทีไม่ poll สำเร็จ (เดิม 10 นาที)
+static const uint32_t    WIFI_FULL_RECONNECT_AFTER_MS   = 45000;  // ก่อน 45s ใช้ reconnect เงียบๆ ไม่ทับจอ
 static int               g_lastPollHttpCode             = 0;
 static int               g_lastSyncHttpCode              = 0;
 static uint32_t          g_lastPollAttemptMs            = 0;
@@ -215,7 +216,7 @@ static bool              g_snapshotWasClock               = false;
 static uint8_t           g_lastClockR                     = 0;
 static uint8_t           g_lastClockG                     = 255;
 static uint8_t           g_lastClockB                     = 255;
-static bool              g_pollResyncNext                  = false;
+static bool              g_needsPollResync                = false;
 
 String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
   String body = http.getString();
@@ -456,7 +457,7 @@ int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs)
   tls.setTimeout(timeoutMs / 1000 + 5);
   if (!http.begin(tls, ipUrl)) return -2;
   http.addHeader("Host", host);
-  http.addHeader("User-Agent", "ChaiyoLED/2.14");
+  http.addHeader("User-Agent", "ChaiyoLED/2.15");
   http.addHeader("Accept", "application/json");
   int code = http.GET();
   if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
@@ -483,7 +484,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.14");
+    http.addHeader("User-Agent", "ChaiyoLED/2.15");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   } else {
@@ -493,7 +494,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
       g_lastHttpError = "begin fail";
       return -2;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.14");
+    http.addHeader("User-Agent", "ChaiyoLED/2.15");
     http.addHeader("Accept", "application/json");
     code = http.GET();
   }
@@ -510,7 +511,7 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
     fb.setTimeout(timeoutMs);
     fb.setReuse(false);
     if (fb.begin(url)) {
-      fb.addHeader("User-Agent", "ChaiyoLED/2.14");
+      fb.addHeader("User-Agent", "ChaiyoLED/2.15");
       fb.addHeader("Accept", "application/json");
       code = fb.GET();
       if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
@@ -594,12 +595,12 @@ void recordCommandPollResult(int httpCode) {
 
 void maybeRestartAfterPollFailures(uint32_t nowMs) {
   if (WiFi.status() != WL_CONNECTED) return;
-  if (g_pollFailStreak >= POLL_FAIL_STREAK_RESTART) {
+  if (POLL_FAIL_STREAK_RESTART > 0 && g_pollFailStreak >= POLL_FAIL_STREAK_RESTART) {
     Serial.printf("[Poll] fail streak %u — restarting ESP\n", g_pollFailStreak);
     ESP.restart();
   }
   if (g_lastPollSuccessMs > 0 && (nowMs - g_lastPollSuccessMs) >= POLL_STALE_RESTART_MS && g_pollFailStreak > 0) {
-    Serial.println("[Poll] no successful poll for 10 min — restarting ESP");
+    Serial.println("[Poll] no successful poll for 30 min — restarting ESP");
     ESP.restart();
   }
 }
@@ -1078,9 +1079,8 @@ String buildHeartbeatQuery() {
        + "&rssi=" + String(WiFi.RSSI())
        + "&uptime=" + String(millis() / 1000UL)
        + "&temp=" + String(g_internalTempC, 1);
-  if (g_pollResyncNext) {
+  if (g_needsPollResync || isTransientStatusText(currentText)) {
     q += "&resync=1";
-    g_pollResyncNext = false;
   }
   return q;
 }
@@ -1352,7 +1352,7 @@ void beginWifiWithBestAp() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
-bool connectWifi(bool hardReset, bool runBootSync) {
+bool connectWifi(bool hardReset, bool runBootSync, bool showOnDisplay) {
   WiFi.persistent(false);
   if (hardReset) {
     WiFi.disconnect(true);
@@ -1369,7 +1369,7 @@ bool connectWifi(bool hardReset, bool runBootSync) {
   Serial.printf("[WiFi] %s connect to \"%s\" ...\n", hardReset ? "Hard" : "Soft", WIFI_SSID);
   Serial.printf("[WiFi] MAC Address: %s\n", WiFi.macAddress().c_str());
 
-  if (dma_display) {
+  if (dma_display && showOnDisplay) {
     g_clockMode     = false;
     currentText     = "กำลังเชื่อมต่อ..";
     currentFontSize = 1;
@@ -1409,7 +1409,7 @@ bool connectWifi(bool hardReset, bool runBootSync) {
     applyPublicDns();
     syncNtpIfNeeded();
     refreshServerDns();
-    g_pollResyncNext = true;
+    g_needsPollResync = true;
     if (runBootSync) {
       bootSyncFromServerWithRetry();
     }
@@ -1575,9 +1575,11 @@ void pollTask(void* pv) {
         }
         if (WiFi.status() != WL_CONNECTED) {
           bool hardReset = (disconnectedFor >= WIFI_HARD_RESET_AFTER_MS);
-          connectWifi(hardReset, false);
-          if (WiFi.status() != WL_CONNECTED && !hardReset && disconnectedFor >= 60000) {
-            connectWifi(true, false);
+          if (disconnectedFor >= WIFI_FULL_RECONNECT_AFTER_MS) {
+            connectWifi(hardReset, false, false);
+            if (WiFi.status() != WL_CONNECTED && !hardReset && disconnectedFor >= 60000) {
+              connectWifi(true, false, false);
+            }
           }
         }
         if (WiFi.status() != WL_CONNECTED) {
@@ -1604,10 +1606,8 @@ void pollTask(void* pv) {
 
     if (justReconnected) {
       flushLedCommandQueue();
-      g_pollResyncNext = true;
-      if (!restoreDisplaySnapshot()) {
-        showSyncWaitingVisual();
-      }
+      g_needsPollResync = true;
+      restoreDisplaySnapshot();
       g_awaitingBootSync = true;
       g_bootSyncWaitingSinceMs = currentMs;
       applyPublicDns();
@@ -1617,6 +1617,27 @@ void pollTask(void* pv) {
     }
 
     if (g_serverUrl.isEmpty()) continue;
+
+    if (!isTransientStatusText(currentText)) {
+      static uint32_t lastSnapMs = 0;
+      if (lastSnapMs == 0 || currentMs - lastSnapMs >= 30000UL) {
+        saveDisplaySnapshot();
+        lastSnapMs = currentMs;
+      }
+    }
+
+    static uint32_t stuckTransientSinceMs = 0;
+    if (isTransientStatusText(currentText)) {
+      if (stuckTransientSinceMs == 0) stuckTransientSinceMs = currentMs;
+      else if (currentMs - stuckTransientSinceMs >= 15000UL) {
+        if (restoreDisplaySnapshot()) {
+          Serial.println("[Sync] stuck transient — restored snapshot");
+          stuckTransientSinceMs = 0;
+        }
+      }
+    } else {
+      stuckTransientSinceMs = 0;
+    }
 
     pollCycle++;
 
@@ -1645,6 +1666,7 @@ void pollTask(void* pv) {
           }
           g_awaitingBootSync = false;
           g_bootSyncWaitingSinceMs = 0;
+          g_needsPollResync = false;
           s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
           if (cmd.text[0] != '\0') skipSyncThisCycle = true;
         } else if (jerr) {
@@ -1668,30 +1690,39 @@ void pollTask(void* pv) {
         if (syncLedDisplayFromServer()) {
           g_awaitingBootSync = false;
           g_bootSyncWaitingSinceMs = 0;
+          g_needsPollResync = false;
           Serial.println("[Sync] boot sync recovered on extended attempt");
         } else if (restoreDisplaySnapshot()) {
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
           Serial.println("[Sync] boot sync timeout — restored snapshot");
-        } else if (currentText == "กำลังซิงก์..") {
-          Serial.println("[Sync] boot sync timeout — keep retrying");
-          showSyncWaitingVisual();
+        } else {
+          Serial.println("[Sync] boot sync timeout — keep resync poll");
+          g_needsPollResync = true;
         }
       } else if (currentMs - lastAwaitingSyncMs >= 4000) {
         lastAwaitingSyncMs = currentMs;
         if (syncLedDisplayFromServer()) {
           g_awaitingBootSync = false;
           g_bootSyncWaitingSinceMs = 0;
+          g_needsPollResync = false;
         }
       }
     }
 
     if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
 
-    if ((g_requestStatusSync || g_clockMode || currentText == "กำลังซิงก์..") && !skipSyncThisCycle) {
+    if ((g_requestStatusSync || g_clockMode || isTransientStatusText(currentText)) && !skipSyncThisCycle) {
       static uint32_t lastResyncMs = 0;
-      if (g_requestStatusSync || currentMs - lastResyncMs >= 5000) {
+      uint32_t resyncGap = isTransientStatusText(currentText) ? 2000UL : 5000UL;
+      if (g_requestStatusSync || currentMs - lastResyncMs >= resyncGap) {
         g_requestStatusSync = false;
         lastResyncMs = currentMs;
-        syncLedDisplayFromServer();
+        if (syncLedDisplayFromServer()) {
+          g_needsPollResync = false;
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+        }
       }
     }
   }

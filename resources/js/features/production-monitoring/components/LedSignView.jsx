@@ -129,7 +129,12 @@ function parseLedConfigIps(ledIp) {
   return String(ledIp ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-/** ตรวจ /status บนป้ายโดยตรง (LAN) เมื่อ heartbeat จาก server ไม่มา */
+/** ป้ายกำลังอยู่ในสถานะชั่วคราว (ไม่ใช่ข้อความที่ user ตั้ง) */
+function isEspTransientDisplayText(text) {
+  const t = String(text ?? '');
+  return t.includes('กำลังซิงก์') || t.includes('กำลังเชื่อมต่อ') || t === 'WiFi Error';
+}
+
 async function probeLocalLedStatus(ips) {
   for (const ip of ips) {
     const ctrl = new AbortController();
@@ -2072,6 +2077,37 @@ const LedSignView = ({
       }
     };
   }, [sid]);
+
+  // ป้ายค้าง "กำลังซิงก์/เชื่อมต่อ" ทั้งที่ heartbeat ออนไลน์ — ส่งคำสั่งซ้ำอัตโนมัติ (เหมือนกดปุ่ม)
+  const stuckRecoverRef = useRef({});
+  useEffect(() => {
+    if (!sid) return undefined;
+    const tick = async () => {
+      if (wifiStatuses[sid] !== 'online') return;
+      const ips = [
+        ...(deviceLocalIps[sid] ? [deviceLocalIps[sid]] : []),
+        ...parseLedConfigIps(selectedMachine?.ledIp),
+      ].filter((ip, idx, arr) => ip && arr.indexOf(ip) === idx);
+      if (!ips.length) return;
+
+      const result = await probeLocalLedStatus(ips);
+      const displayText = result?.data?.text ?? '';
+      if (!isEspTransientDisplayText(displayText)) {
+        stuckRecoverRef.current[sid] = 0;
+        return;
+      }
+
+      const n = (stuckRecoverRef.current[sid] ?? 0) + 1;
+      stuckRecoverRef.current[sid] = n;
+      if (n >= 2) {
+        pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+      }
+    };
+
+    const id = setInterval(tick, 15000);
+    tick();
+    return () => clearInterval(id);
+  }, [sid, wifiStatuses[sid], selectedMachine?.ledIp, deviceLocalIps[sid]]);
 
   // ── Popup handlers ────────────────────────────────────────────────────────
   const handleOpenPopup = useCallback(() => {
