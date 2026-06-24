@@ -687,9 +687,11 @@ const statusShortLabel = (status) => {
 const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t, nowMs }) => {
   const rows = useMemo(() => machines, [machines]);
   const rowH = 30;
+  const ledRowH = 26;
   const fontSize = 11;
   const headerFont = 9;
   const cellPad = { padding: '4px 6px' };
+  const ledPad = { padding: '3px 6px' };
 
   return (
     <div className="rounded-xl border border-gray-800/60 bg-[#0a0a0a]">
@@ -702,40 +704,58 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t,
       <table className="w-full border-collapse table-fixed" style={{ fontSize }}>
         <thead className="bg-gray-900/95 text-gray-500" style={{ fontSize: headerFont }}>
           <tr className="uppercase tracking-wide">
-            <th className="w-[18%] text-left" style={cellPad}>{t('production.dashboardColMachine')}</th>
-            <th className="w-[8%] text-center" style={cellPad}>{t('production.dashboardColStatus')}</th>
-            <th className="w-[14%] text-right" style={cellPad}>{t('production.dashboardColGoodQty')}</th>
+            <th className="w-[20%] text-left" style={cellPad}>{t('production.dashboardColMachine')}</th>
+            <th className="w-[10%] text-center" style={cellPad}>{t('production.dashboardColStatus')}</th>
+            <th className="w-[16%] text-right" style={cellPad}>{t('production.dashboardColGoodQty')}</th>
             <th className="min-w-0 text-left" style={cellPad}>{t('production.dashboardColProduct')}</th>
-            <th className="w-[5%] bg-black" style={cellPad} aria-hidden />
           </tr>
         </thead>
         <tbody>
           {rows.map((machine) => {
             const row = getDashboardRowData(machine, allStates, getMachineState, ledData, t, nowMs);
             const { state, led, status, produced, ledLabel, staleAlert } = row;
+            const ledDisplayText = led.noIp ? t('production.ledStatusNoIp') : ledLabel;
 
             return (
-              <tr
-                key={machine.id}
-                className={`border-b border-black/10 ${status.rowClass}`}
-                style={{ height: rowH }}
-                title={`${machine.label} · ${status.label} · ${ledLabel}`}
-              >
-                <td className="truncate font-bold align-middle" style={cellPad}>{machine.label}</td>
-                <td className="text-center align-middle font-bold" style={cellPad}>{statusShortLabel(status)}</td>
-                <td className="truncate text-right align-middle font-mono tabular-nums" style={cellPad}>{fmtNum(produced)}</td>
-                <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
-                  {state.productCode || state.productName || '—'}
-                  {staleAlert && (
-                    <span className={IDLE_BADGE_INLINE_CLASS}>
-                      {t('production.dashboardStatusIdle')}
-                    </span>
-                  )}
-                </td>
-                <td className="bg-black text-center align-middle" style={cellPad}>
-                  <LedDot led={led} t={t} size={6} />
-                </td>
-              </tr>
+              <React.Fragment key={machine.id}>
+                <tr
+                  className={status.rowClass}
+                  style={{ height: rowH }}
+                  title={`${machine.label} · ${status.label} · ${ledLabel}`}
+                >
+                  <td className="truncate font-bold align-middle" style={cellPad}>{machine.label}</td>
+                  <td className="text-center align-middle font-bold" style={cellPad}>{statusShortLabel(status)}</td>
+                  <td className="truncate text-right align-middle font-mono tabular-nums" style={cellPad}>{fmtNum(produced)}</td>
+                  <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
+                    {state.productCode || state.productName || '—'}
+                    {staleAlert && (
+                      <span className={IDLE_BADGE_INLINE_CLASS}>
+                        {t('production.dashboardStatusIdle')}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-800/80">
+                  <td colSpan={4} className="bg-black align-middle" style={ledPad}>
+                    <div className="flex min-w-0 items-center gap-1.5" style={{ height: ledRowH - 6 }}>
+                      <LedDot led={led} t={t} size={7} />
+                      <span
+                        className="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-gray-500"
+                        aria-hidden
+                      >
+                        {t('production.dashboardColLed')}
+                      </span>
+                      <LedMarqueeText
+                        text={ledDisplayText}
+                        fontSize={fontSize}
+                        color={led.color ?? '#e5e7eb'}
+                        rowKey={`mobile_${machine.id}`}
+                        isClock={Boolean(led.showClock)}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              </React.Fragment>
             );
           })}
         </tbody>
