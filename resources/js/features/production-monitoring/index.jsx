@@ -7,6 +7,7 @@ import LanguageSwitcher from '../../components/LanguageSwitcher';
 import MaintenanceNavSuite from '../maintenance-requests/MaintenanceNavSuite';
 import {
   queueLedCommand,
+  queueLedCommandWithLanFallback,
   LED_BREAKDOWN_PAYLOAD,
   LED_PREP_PAYLOAD,
   buildProductionLedCommand,
@@ -437,8 +438,6 @@ const ProductionMonitoring = () => {
 
         if (sess.mode === 'live') {
           applyDbSessionUpdate({ machineId: mid, session: sess });
-          const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
-          if (cmd) queueLedCommand(mid, cmd).catch(() => {});
         }
       } catch { /* รอ tick ถัดไป */ }
     };
@@ -782,14 +781,21 @@ const ProductionMonitoring = () => {
     // (ในกรณีที่ SSE session_updated ส่งไม่ถึงก่อน confirmed)
     dbGetSession(machineId).then((res) => {
       if (!res?.session) return;
-      const sess = res.session;
-      applyDbSessionUpdate({ machineId, session: sess });
-      if (sess.mode === 'live') {
-        const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
-        if (cmd) queueLedCommand(machineId, cmd).catch(() => {});
-      }
+      applyDbSessionUpdate({ machineId, session: res.session });
     }).catch(() => {});
   }, [updateMachineState, selectedMachineId, applyDbSessionUpdate]);
+
+  /** ส่งชื่อสินค้า + actual/target ไปป้าย — เก็บ cache บน server + LAN fallback ไป ledIp */
+  const pushProductionLed = useCallback((machineId, stateLike, pipeCounter) => {
+    if (!machineId || stateLike?.mode !== 'live') return Promise.resolve();
+    const cmd = buildProductionLedCommand(stateLike, pipeCounter ?? stateLike?.pipeCounter ?? 0);
+    if (!cmd) return Promise.resolve();
+    const m = machines.find((x) => x.id === machineId);
+    const ips = [stateLike.ledIp, m?.ledIp]
+      .map((ip) => String(ip ?? '').trim())
+      .filter(Boolean);
+    return queueLedCommandWithLanFallback(machineId, cmd, { ips }).catch(() => {});
+  }, [machines]);
 
   /** อัปเดต pipeCounter/น้ำหนักจากตาชั่ง — ใช้ทั้ง Dashboard และ Live Monitor */
   const applyMachineWeightEvent = useCallback((machineId, type, weight, ev) => {
@@ -880,10 +886,9 @@ const ProductionMonitoring = () => {
     // SSE อาจ drop ทำให้ LED ไม่อัปเดต — ส่ง LED command หลังทุก good event
     if (type === 'good' && snapBefore?.mode === 'live') {
       const newCount = Math.max((snapBefore.pipeCounter ?? 0) + 1, (snapBefore.goodEvents?.length ?? 0) + 1);
-      const cmd = buildProductionLedCommand(snapBefore, newCount);
-      if (cmd) queueLedCommand(machineId, cmd).catch(() => {});
+      void pushProductionLed(machineId, snapBefore, newCount);
     }
-  }, [updateMachineState, canManageProduction]);
+  }, [updateMachineState, canManageProduction, pushProductionLed]);
 
   // SSE handler for scale_weight events (real-time weight from scale ESP32)
   const handleSseScaleWeight = useCallback(({ machineId, event: ev }) => {
@@ -987,15 +992,6 @@ const ProductionMonitoring = () => {
         }
       }
 
-      // ── ส่ง LED command ทันทีเมื่อ session เป็น live ──────────────────────────
-      // กรณี QueueRow ถูก unmount ก่อนที่ polling จะตรวจเจอ scale confirm
-      // ทำให้ onStartProduction ไม่ถูกเรียก — ต้องส่ง LED จากที่นี่แทน
-      if (sess?.mode === 'live') {
-        const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
-        if (cmd) {
-          queueLedCommand(mid, cmd).catch(() => {});
-        }
-      }
     },
     [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState, hasScaleEventsHydrated],
   );
@@ -1202,18 +1198,20 @@ const ProductionMonitoring = () => {
     const alreadyRequested = ledRequeueRef.current[selectedMachineId];
     if (alreadyRequested) return;
     ledRequeueRef.current[selectedMachineId] = true;
-    const cmd = buildProductionLedCommand(st, st.pipeCounter ?? 0);
-    if (cmd) {
-      queueLedCommand(selectedMachineId, cmd)
-        .catch(() => { ledRequeueRef.current[selectedMachineId] = false; });
-    }
-  }, [isLedPage, selectedMachineId, getMachineState]);
+    void pushProductionLed(selectedMachineId, st)
+      .catch(() => { ledRequeueRef.current[selectedMachineId] = false; });
+  }, [isLedPage, selectedMachineId, getMachineState, pushProductionLed]);
 
   /** ส่งป้าย "เตรียมการ" เมื่อ Pause / Finished Order */
   const pushPrepLed = useCallback((machineId) => {
     if (!machineId) return;
-    queueLedCommand(machineId, LED_PREP_PAYLOAD).catch(() => {});
-  }, []);
+    const m = machines.find((x) => x.id === machineId);
+    const st = getMachineState(machineId);
+    const ips = [st?.ledIp, m?.ledIp]
+      .map((ip) => String(ip ?? '').trim())
+      .filter(Boolean);
+    queueLedCommandWithLanFallback(machineId, LED_PREP_PAYLOAD, { ips }).catch(() => {});
+  }, [machines, getMachineState]);
 
   /** Pause จาก Live Monitor → setup + ป้าย "เตรียมการ" */
   const pauseLiveToSetup = useCallback(
@@ -1224,11 +1222,27 @@ const ProductionMonitoring = () => {
     [pauseOrder, pushPrepLed]
   );
 
+  // เมื่อเครื่องเข้า/ออกโหมด live — ส่งป้ายให้ตรงสถานะ (ครอบคลุม SSE / safety-net)
+  const livePrevRef = useRef({});
+  useEffect(() => {
+    Object.entries(allStates).forEach(([mid, st]) => {
+      const live = st?.mode === 'live';
+      const prev = livePrevRef.current[mid];
+      livePrevRef.current[mid] = live;
+      if (prev === true && !live) {
+        pushPrepLed(mid);
+        return;
+      }
+      if (!live) return;
+      if (prev === undefined || prev === false) {
+        void pushProductionLed(mid, st);
+      }
+    });
+  }, [allStates, pushProductionLed, pushPrepLed]);
+
   const queueProductionLedForMachine = useCallback((machineId, orderLike, pipeCounter) => {
-    const cmd = buildProductionLedCommand(orderLike, pipeCounter);
-    if (!cmd || !machineId) return Promise.resolve();
-    return queueLedCommand(machineId, cmd);
-  }, []);
+    return pushProductionLed(machineId, { ...orderLike, mode: 'live' }, pipeCounter);
+  }, [pushProductionLed]);
 
   const resumeOrderWithLed = useCallback(
     async (machineId) => {

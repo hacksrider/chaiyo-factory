@@ -11,6 +11,7 @@ import {
   fetchMachineLogReporters,
   storeMachineLogReporter,
   deleteMachineLogReporter,
+  LED_PREP_PAYLOAD,
 } from '../api/productionApi';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ const WIFI_FAILS_BEFORE_OFFLINE = 2;
 
 const DEFAULT_CONFIG = { text: '', colorHex: '#00ffff', fontSize: 1, scrollSpeed: 10 };
 const IDLE_PANEL_COUNTERS = { actual: '0', target: '0' };
+const PREP_LED_HEX = rgbToHex(LED_PREP_PAYLOAD.r, LED_PREP_PAYLOAD.g, LED_PREP_PAYLOAD.b);
 
 function buildLedConfigSignature(cfg) {
   if (!cfg) return '';
@@ -1611,6 +1613,7 @@ const LedSignView = ({
   const allMachineStatesRef = useRef(allMachineStates);
   useEffect(() => { allMachineStatesRef.current = allMachineStates; }, [allMachineStates]);
   const pushLedDisplayToDeviceRef = useRef(null);
+  const lastQueuedSigRef = useRef({});
 
   // Reset textOverride เมื่อ orderId เปลี่ยน (เริ่มงานใหม่) — ป้องกันข้อความเก่าค้าง
   const prevOrderIdRef = useRef({});
@@ -1629,7 +1632,31 @@ const LedSignView = ({
     }
   }, [sid, allMachineStates]);
 
-  const lastQueuedSigRef = useRef({});
+  const applyPrepLedToUi = useCallback((machineId) => {
+    const prep = LED_PREP_PAYLOAD;
+    setLedStates((prev) => ({
+      ...prev,
+      [machineId]: {
+        ...prep,
+        showClock: false,
+        textOverride: false,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+    setConfigs((prev) => ({
+      ...prev,
+      [machineId]: {
+        ...(prev[machineId] ?? DEFAULT_CONFIG),
+        text: prep.text,
+        colorHex: PREP_LED_HEX,
+      },
+    }));
+    lastQueuedSigRef.current = {
+      ...lastQueuedSigRef.current,
+      [machineId]: serverStateToSignature(prep),
+    };
+  }, []);
+
   /** จอแผ่นที่ 4: เลขผลิตเฉพาะ live + ไม่ override ข้อความ — นอกนั้นส่ง 0 เพื่อแสดงชื่อเครื่อง */
   const getPanelCounterPayload = useCallback((machineId, isTextOverridden = false) => {
     if (isTextOverridden) return IDLE_PANEL_COUNTERS;
@@ -1692,6 +1719,11 @@ const LedSignView = ({
         displayG = 255;
         displayB = 0;
       }
+    } else if (!isOverridden && mState?.mode !== 'live') {
+      displayText = LED_PREP_PAYLOAD.text;
+      displayR = LED_PREP_PAYLOAD.r;
+      displayG = LED_PREP_PAYLOAD.g;
+      displayB = LED_PREP_PAYLOAD.b;
     } else {
       const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
       displayR = r;
@@ -1728,6 +1760,25 @@ const LedSignView = ({
   useEffect(() => {
     pushLedDisplayToDeviceRef.current = pushLedDisplayToDevice;
   }, [pushLedDisplayToDevice]);
+
+  const machineLivePrevRef = useRef({});
+  // เมื่อจบ/ยกเลิก Live → อัปเดต preview + ส่งป้าย "ออเดอร์ครบ/รอออเดอร์"
+  // เมื่อเข้า Live → บังคับ push ไปป้ายจริง (preview มักถูกก่อนป้าย ESP poll ทัน)
+  useEffect(() => {
+    if (!sid) return;
+    const live = allMachineStates[sid]?.mode === 'live';
+    const prev = machineLivePrevRef.current[sid];
+    machineLivePrevRef.current[sid] = live;
+
+    if (prev === true && !live) {
+      applyPrepLedToUi(sid);
+      queueLedForMachine(sid, LED_PREP_PAYLOAD).catch(() => {});
+      return;
+    }
+    if (live && (prev === false || prev === undefined) && canAutoPushQtyToLed) {
+      pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+    }
+  }, [sid, allMachineStates, canAutoPushQtyToLed, applyPrepLedToUi, queueLedForMachine]);
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
@@ -2443,6 +2494,18 @@ const LedSignView = ({
     ? canSendLedCommand(selectedMachine, effectiveWifiStatus)
     : false;
   const effectiveShowClock = isLedPreviewClock(ledStates[sid], config);
+  const displayConfig = (() => {
+    const base = configs[sid] ?? DEFAULT_CONFIG;
+    if (effectiveShowClock) return base;
+    if (isTextOverridden) return base;
+    if (isLiveMachine && liveProductText) {
+      return { ...base, text: liveProductText, colorHex: '#00ff00' };
+    }
+    if (!isLiveMachine) {
+      return { ...base, text: LED_PREP_PAYLOAD.text, colorHex: PREP_LED_HEX };
+    }
+    return base;
+  })();
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900/20">
@@ -2525,7 +2588,7 @@ const LedSignView = ({
             )}
             <ControlPanel
               machine={selectedMachine}
-              config={config}
+              config={displayConfig}
               onChange={setConfigField}
               onSpeedChange={handleSpeedChange}
               onOpenPopup={handleOpenPopup}

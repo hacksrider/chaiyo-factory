@@ -824,6 +824,9 @@ class ProductionMonitorController extends Controller
         }
         if ($fresh) {
             $state = $fresh->toFrontendState();
+            if ($fresh->status === 'live') {
+                $this->queueProductionLedFromSession($fresh);
+            }
             $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
             $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
         }
@@ -882,6 +885,9 @@ class ProductionMonitorController extends Controller
                 $this->ensureActiveGasOrderForSession($fresh);
                 if ($fresh) {
                     $state = $fresh->toFrontendState();
+                    if ($fresh->status === 'live') {
+                        $this->queueProductionLedFromSession($fresh);
+                    }
                     $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
                     $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
                 }
@@ -2442,6 +2448,61 @@ private function publishEvent(string $type, array $data): void
         $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
 
         return response()->json(['success' => true, 'session' => $state]);
+    }
+
+    /**
+     * ส่งชื่อสินค้า + actual/target ไปป้ายเมื่อ session live (ตาชั่งยืนยันแล้ว — ไม่พึ่ง browser)
+     */
+    private function queueProductionLedFromSession(ProductionSession $session): void
+    {
+        if ((string) ($session->status ?? '') !== 'live') {
+            return;
+        }
+
+        $machineId = (string) $session->machine_id;
+        $code      = trim((string) ($session->product_code ?? ''));
+        $name      = trim((string) ($session->product_name ?? ''));
+        $orderId   = trim((string) ($session->order_id ?? ''));
+
+        if ($code !== '' && $name !== '') {
+            $text = "{$code} — {$name}";
+        } elseif ($code !== '') {
+            $text = $code;
+        } elseif ($name !== '') {
+            $text = $name;
+        } else {
+            $text = $orderId;
+        }
+
+        if ($text === '') {
+            return;
+        }
+
+        $remaining = (int) ($session->remaining_qty ?? 0);
+        $target    = (int) ($session->target_qty ?? 0);
+        $ledTarget = $remaining > 0 ? $remaining : $target;
+
+        $ledState = [
+            'text'         => $text,
+            'showClock'    => false,
+            'r'            => 0,
+            'g'            => 255,
+            'b'            => 0,
+            'fontSize'     => 1,
+            'speed'        => 50,
+            'textOverride' => false,
+            'actual'       => (string) ((int) ($session->pipe_counter ?? 0)),
+            'target'       => (string) $ledTarget,
+            'updatedAt'    => now()->toISOString(),
+        ];
+
+        $ledState = $this->normalizeLedPanelCounters($machineId, $ledState);
+        Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
+        Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
+        $this->publishEvent('led_state', [
+            'machineId' => $machineId,
+            'state'     => $ledState,
+        ]);
     }
 
     /**
