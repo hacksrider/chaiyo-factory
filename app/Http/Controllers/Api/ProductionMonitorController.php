@@ -381,10 +381,7 @@ class ProductionMonitorController extends Controller
      */
     public function getLedStatus(string $machineId): JsonResponse
     {
-        $state = Cache::get("led_state_{$machineId}");
-        if (is_array($state)) {
-            $state = $this->normalizeLedPanelCounters($machineId, $state);
-        }
+        $state = $this->resolveAuthoritativeLedState($machineId, null);
 
         return response()->json([
             'success'   => true,
@@ -410,10 +407,10 @@ class ProductionMonitorController extends Controller
 
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
-        $command = Cache::pull("led_cmd_{$machineId}");
+        $command = Cache::get("led_cmd_{$machineId}");
 
         if ($command) {
-            $command = $this->normalizeLedPanelCounters($machineId, $command);
+            $command = $this->resolveAuthoritativeLedState($machineId, $command);
 
             return response()->json(array_merge(['pending' => true], $command));
         }
@@ -423,10 +420,9 @@ class ProductionMonitorController extends Controller
         if (is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120) {
             $bootKey = "led_esp_boot_synced_{$machineId}";
             if (! Cache::get($bootKey)) {
-                $state = Cache::get("led_state_{$machineId}");
+                $state = $this->resolveAuthoritativeLedState($machineId, null);
                 if (is_array($state)) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
-                    $state = $this->normalizeLedPanelCounters($machineId, $state);
 
                     return response()->json(array_merge(['pending' => true], $state));
                 }
@@ -436,10 +432,8 @@ class ProductionMonitorController extends Controller
         // WiFi กลับมาหลัง offline (heartbeat ขาด) หรือ ESP ขอ resync เอง — ส่ง state กลับทันที
         $resync = filter_var($request->query('resync'), FILTER_VALIDATE_BOOL);
         if ($wasOffline || $resync) {
-            $state = Cache::get("led_state_{$machineId}");
+            $state = $this->resolveAuthoritativeLedState($machineId, null);
             if (is_array($state)) {
-                $state = $this->normalizeLedPanelCounters($machineId, $state);
-
                 return response()->json(array_merge(['pending' => true], $state));
             }
             if ($resync) {
@@ -1345,48 +1339,14 @@ class ProductionMonitorController extends Controller
         $remainingFromDb  = $sessionAfter ? (int) $sessionAfter->remaining_qty : -1;
 
         if (($payload['type'] ?? '') === 'good' && $sessionAfter) {
-            $ledState = Cache::get("led_state_{$machineId}");
-
-            $orderIdLc     = $sessionAfter->order_id ?? '';
-            $productCodeLc = $sessionAfter->product_code ?? '';
-            $productNameLc = $sessionAfter->product_name ?? '';
-            $ledTarget = ($remainingFromDb >= 0)
-                ? $remainingFromDb
-                : (($sessionAfter->remaining_qty ?? $sessionAfter->target_qty) ?? 0);
-            $displayText = ($productCodeLc !== '' && $productNameLc !== '')
-                ? "{$productCodeLc} — {$productNameLc}"
-                : ($productCodeLc !== '' ? $productCodeLc : ($productNameLc !== '' ? $productNameLc : "Order: {$orderIdLc}"));
-
-            if (! $ledState) {
-                $ledState = [
-                    'text'      => $displayText,
-                    'r'         => 0,
-                    'g'         => 255,
-                    'b'         => 255,
-                    'fontSize'  => 1,
-                    'speed'     => 50,
-                    'textOverride' => false,
-                    'actual'    => (string) $pipeFromDb,
-                    'target'    => (string) $ledTarget,
-                ];
-            } else {
-                $ledState['actual'] = (string) $pipeFromDb;
-                if ($remainingFromDb >= 0) {
-                    $ledState['target'] = (string) $remainingFromDb;
-                }
-                $isOverriddenText = (bool) ($ledState['textOverride'] ?? false);
-                // อัปเดต text จาก session data เสมอ (ไม่ใช่แค่เมื่อ text ว่าง)
-                // เพื่อให้แสดงชื่อสินค้าแม้ led_state เดิมจะมี machine name เก่าอยู่
-                if (! $isOverriddenText && $displayText !== '') {
-                    $ledState['text'] = $displayText;
-                    $ledState['r']    = 0;
-                    $ledState['g']    = 255;
-                    $ledState['b']    = 0;
-                }
+            $ledState = $this->buildLedStateFromSession(
+                $sessionAfter,
+                Cache::get("led_state_{$machineId}")
+            );
+            if ($ledState !== null) {
+                Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
+                Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
             }
-            $ledState['updatedAt'] = now()->toISOString();
-            Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
-            Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
         }
 
         return response()->json([
@@ -2517,9 +2477,36 @@ private function publishEvent(string $type, array $data): void
         }
 
         $machineId = (string) $session->machine_id;
-        $code      = trim((string) ($session->product_code ?? ''));
-        $name      = trim((string) ($session->product_name ?? ''));
-        $orderId   = trim((string) ($session->order_id ?? ''));
+        $ledState  = $this->buildLedStateFromSession($session, Cache::get("led_state_{$machineId}"));
+        if ($ledState === null) {
+            return;
+        }
+
+        Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
+        Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
+        $this->publishEvent('led_state', [
+            'machineId' => $machineId,
+            'state'     => $ledState,
+        ]);
+    }
+
+    /**
+     * สร้าง LED state จาก production_sessions (ชื่อสินค้า + actual/target ล่าสุด)
+     *
+     * @return array<string, mixed>|null
+     */
+    private function buildLedStateFromSession(ProductionSession $session, ?array $base = null): ?array
+    {
+        $machineId = (string) $session->machine_id;
+        $base      = is_array($base) ? $base : [];
+
+        if ((bool) ($base['textOverride'] ?? false)) {
+            return $this->normalizeLedPanelCounters($machineId, $base);
+        }
+
+        $code    = trim((string) ($session->product_code ?? ''));
+        $name    = trim((string) ($session->product_name ?? ''));
+        $orderId = trim((string) ($session->order_id ?? ''));
 
         if ($code !== '' && $name !== '') {
             $text = "{$code} — {$name}";
@@ -2532,34 +2519,56 @@ private function publishEvent(string $type, array $data): void
         }
 
         if ($text === '') {
-            return;
+            return null;
         }
 
         $remaining = (int) ($session->remaining_qty ?? 0);
         $target    = (int) ($session->target_qty ?? 0);
         $ledTarget = $remaining > 0 ? $remaining : $target;
 
-        $ledState = [
+        $ledState = array_merge($base, [
             'text'         => $text,
             'showClock'    => false,
             'r'            => 0,
             'g'            => 255,
             'b'            => 0,
-            'fontSize'     => 1,
-            'speed'        => 50,
+            'fontSize'     => $base['fontSize'] ?? 1,
+            'speed'        => $base['speed'] ?? 50,
             'textOverride' => false,
             'actual'       => (string) ((int) ($session->pipe_counter ?? 0)),
             'target'       => (string) $ledTarget,
             'updatedAt'    => now()->toISOString(),
-        ];
-
-        $ledState = $this->normalizeLedPanelCounters($machineId, $ledState);
-        Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
-        Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
-        $this->publishEvent('led_state', [
-            'machineId' => $machineId,
-            'state'     => $ledState,
         ]);
+
+        return $this->normalizeLedPanelCounters($machineId, $ledState);
+    }
+
+    /**
+     * รวม cache + DB session เป็นสถานะเดียวที่ป้ายควรแสดง (กัน reconnect แล้วขึ้นนาฬิกา)
+     *
+     * @return array<string, mixed>|null
+     */
+    private function resolveAuthoritativeLedState(string $machineId, ?array $base): ?array
+    {
+        $cached = is_array($base) ? $base : Cache::get("led_state_{$machineId}");
+        $cached = is_array($cached) ? $cached : [];
+
+        $session = ProductionSession::where('machine_id', $machineId)
+            ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
+            ->first();
+
+        if ($session) {
+            $fromSession = $this->buildLedStateFromSession($session, $cached);
+            if ($fromSession !== null) {
+                return $fromSession;
+            }
+        }
+
+        if ($cached !== []) {
+            return $this->normalizeLedPanelCounters($machineId, $cached);
+        }
+
+        return null;
     }
 
     /**

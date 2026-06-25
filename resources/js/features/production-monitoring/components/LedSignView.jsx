@@ -78,6 +78,15 @@ function shouldPushClockOnly(cfg, ledState) {
   return Boolean(ledState?.showClock);
 }
 
+/** ป้ายกลับมาออนไลน์ — ส่งสิ่งที่หน้าเว็บแสดง (live / ข้อความ / นาฬิกาที่ตั้งไว้) */
+function shouldAutoPushLedDisplay(mState, cfg, ledState) {
+  if (mState?.mode === 'live') return true;
+  if (Boolean(ledState?.textOverride)) return true;
+  if (hasLedDisplayText(cfg)) return true;
+  if (hasServerLedText(ledState)) return true;
+  return shouldPushClockOnly(cfg, ledState);
+}
+
 function canReachLedViaServer(wifiStatus) {
   return wifiStatus === 'online' || wifiStatus === 'local_only';
 }
@@ -1727,6 +1736,10 @@ const LedSignView = ({
     }
 
     if (!displayText) {
+      if (mState?.mode === 'live') {
+        // อย่าส่งนาฬิกาทับตอน live — รอชื่อสินค้าจาก session
+        return;
+      }
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex ?? '#00ff00');
       if (!force && lastQueuedSigRef.current[machineId] === sig) return;
@@ -1967,9 +1980,7 @@ const LedSignView = ({
     const mState = allMachineStatesRef.current[sid];
     const ls = ledStatesRef.current[sid];
     const cfg = configsRef.current[sid] ?? DEFAULT_CONFIG;
-    const mayPush = mState?.mode === 'live'
-      || Boolean(ls?.textOverride)
-      || shouldPushClockOnly(cfg, ls);
+    const mayPush = shouldAutoPushLedDisplay(mState, cfg, ls);
     if (mayPush && (recovered || (bootedFresh && pollCode === 200 && prev == null))) {
       pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
     }
@@ -1998,11 +2009,8 @@ const LedSignView = ({
         const mState = allMachineStatesRef.current[machine.id];
         const ls = ledStatesRef.current[machine.id];
         const cfg = configsRef.current[machine.id] ?? DEFAULT_CONFIG;
-        const isLive = mState?.mode === 'live';
-        const isOverride = Boolean(ls?.textOverride);
-        const isClock = shouldPushClockOnly(cfg, ls);
-        // อย่า auto-push ตอน idle — กัน deploy แล้วทุกป้ายถูกทับเป็น "ออเดอร์ครบ"
-        if (!isLive && !isOverride && !isClock) continue;
+        const mayPush = shouldAutoPushLedDisplay(mState, cfg, ls);
+        if (!mayPush) continue;
         try {
           await pushLedDisplayToDeviceRef.current?.(machine.id);
         } catch {
@@ -2065,9 +2073,7 @@ const LedSignView = ({
         const mState = allMachineStatesRef.current[sid];
         const ls = ledStatesRef.current[sid];
         const cfg = configsRef.current[sid] ?? DEFAULT_CONFIG;
-        const mayPush = mState?.mode === 'live'
-          || Boolean(ls?.textOverride)
-          || shouldPushClockOnly(cfg, ls);
+        const mayPush = shouldAutoPushLedDisplay(mState, cfg, ls);
         if (mayPush && ((hadPriorStatus && !wasOnline) || pollResumed)) {
           pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
         }

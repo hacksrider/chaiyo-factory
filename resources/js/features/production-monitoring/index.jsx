@@ -26,6 +26,8 @@ import {
   dbGetSession,
   dbCancelSession,
   fetchScaleWeights,
+  getLedHeartbeat,
+  getLedStatus,
 } from './api/productionApi';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { SSE_EVENTS } from './SSE_EVENTS';
@@ -1238,6 +1240,81 @@ const ProductionMonitoring = () => {
       if (live && prev === false) {
         void pushProductionLed(mid, st);
       }
+    });
+  }, [allStates, pushProductionLed]);
+
+  // ป้าย LED กลับมาออนไลน์ — re-queue state จาก server อัตโนมัติ (ทุกเครื่อง ไม่ต้องกดซิงก์)
+  const ledOnlinePrevRef = useRef({});
+  useEffect(() => {
+    if (!canManageProduction || machines.length === 0) return undefined;
+
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      for (const m of machines) {
+        const mid = m.id;
+        try {
+          const hb = await getLedHeartbeat(mid);
+          if (cancelled) return;
+          const isOn = Boolean(hb?.online);
+          const prev = ledOnlinePrevRef.current[mid];
+          ledOnlinePrevRef.current[mid] = isOn;
+          if (prev === undefined || !isOn || prev !== false) continue;
+
+          const res = await getLedStatus(mid);
+          const state = res?.state;
+          if (!state || typeof state !== 'object') continue;
+
+          const st = allStatesRef.current[mid];
+          const ips = [st?.ledIp, m?.ledIp, hb?.deviceLocalIp]
+            .map((ip) => String(ip ?? '').trim())
+            .filter(Boolean);
+          const payload = {
+            text: state.text ?? '',
+            showClock: Boolean(state.showClock),
+            r: state.r ?? 0,
+            g: state.g ?? 255,
+            b: state.b ?? 255,
+            fontSize: state.fontSize ?? 1,
+            speed: state.speed ?? 50,
+            textOverride: Boolean(state.textOverride),
+            actual: state.actual != null ? String(state.actual) : '0',
+            target: state.target != null ? String(state.target) : '0',
+          };
+          void queueLedCommandWithLanFallback(mid, payload, { ips });
+        } catch {
+          /* retry next tick */
+        }
+      }
+    };
+
+    void tick();
+    const id = setInterval(tick, 4_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [machines, canManageProduction]);
+
+  // อัปเดตป้ายทันทีเมื่อ pipeCounter เปลี่ยนระหว่าง live (debounce สั้น)
+  const ledQtyPushRef = useRef({});
+  const ledQtySigRef = useRef({});
+  useEffect(() => {
+    Object.entries(allStates).forEach(([mid, st]) => {
+      if (st?.mode !== 'live') {
+        ledQtySigRef.current[mid] = null;
+        return;
+      }
+      const sig = `${st.pipeCounter ?? 0}|${st.remainingQty ?? 0}|${st.orderId ?? ''}`;
+      if (ledQtySigRef.current[mid] === sig) return;
+      ledQtySigRef.current[mid] = sig;
+      if (ledQtyPushRef.current[mid]) clearTimeout(ledQtyPushRef.current[mid]);
+      ledQtyPushRef.current[mid] = setTimeout(() => {
+        const fresh = allStatesRef.current[mid];
+        if (fresh?.mode === 'live') {
+          void pushProductionLed(mid, fresh, fresh.pipeCounter ?? 0);
+        }
+      }, 250);
     });
   }, [allStates, pushProductionLed]);
 
