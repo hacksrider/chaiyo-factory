@@ -1156,6 +1156,9 @@ String buildHeartbeatQuery() {
   if (isTransientStatusText(currentText)) {
     q += "&stuck=1";
   }
+  if (s_ledStateFingerprint.length() > 0) {
+    q += "&ack=" + encodeMachineIdForPath(s_ledStateFingerprint);
+  }
   return q;
 }
 

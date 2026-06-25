@@ -1171,8 +1171,8 @@ const DeviceStat = ({ label, value, valueClass = 'text-white', hint = null }) =>
 // ─── ControlPanel ─────────────────────────────────────────────────────────────
 const ControlPanel = ({
   machine, config, onChange, onSpeedChange, onOpenPopup, onOpenQuick, onClearLed,
-  onReboot, onForceSync, sendStatus, pingStatus, pingMsg, errorMsg,
-  wifiStatus = 'noip', syncStatus = 'idle', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
+  onReboot, sendStatus, pingStatus, pingMsg, errorMsg,
+  wifiStatus = 'noip', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
   deviceLocalIp = null, heartbeatSecondsAgo = null, deviceRssi = null, deviceTemp = null,
   localPollHint = null,
   showClock = false, rebooting = false,
@@ -1219,14 +1219,6 @@ const ControlPanel = ({
       ? 'border-red-500/15 bg-gradient-to-br from-gray-900/90 via-gray-900/80 to-red-950/20'
       : 'border-gray-700/50 bg-gray-900/70';
 
-  const syncBtnCls = syncStatus === 'syncing'
-    ? 'border-gray-600/30 bg-gray-700/40 text-gray-500 cursor-wait'
-    : syncStatus === 'ok'
-      ? 'border-green-500/30 bg-green-500/15 text-green-400'
-      : syncStatus === 'error'
-        ? 'border-red-500/30 bg-red-500/15 text-red-400'
-        : 'border-indigo-500/25 bg-indigo-500/10 text-indigo-300 hover:border-indigo-400/40 hover:bg-indigo-500/20';
-
   return (
     <div className="flex flex-col gap-3 sm:gap-4 lg:gap-5">
 
@@ -1250,20 +1242,6 @@ const ControlPanel = ({
               canReboot={hasIp || !!deviceLocalIp}
               compact
             />
-            {canSend && config.text && (
-              <button
-                type="button"
-                onClick={onForceSync}
-                disabled={syncStatus === 'syncing'}
-                title={t('production.ledForceSyncTitle')}
-                className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition-all ${syncBtnCls}`}
-              >
-                {syncStatus === 'syncing' ? t('production.ledSyncSyncing') :
-                 syncStatus === 'ok'      ? t('production.ledSyncOk') :
-                 syncStatus === 'error'   ? t('production.ledSyncError') :
-                 t('production.ledSyncIdle')}
-              </button>
-            )}
           </div>
         </div>
 
@@ -1794,6 +1772,25 @@ const LedSignView = ({
     }
   }, [sid, allMachineStates, canAutoPushQtyToLed, applyPrepLedToUi]);
 
+  // อัปเดตเลขของดีบนป้ายทันทีเมื่อ pipeCounter เปลี่ยน (ทุกเครื่องที่ live)
+  const prevPipeByMachineRef = useRef({});
+  useEffect(() => {
+    if (!canAutoPushQtyToLed) return;
+    validMachines.forEach((m) => {
+      const mid = m.id;
+      const mState = allMachineStates[mid];
+      if (mState?.mode !== 'live') {
+        prevPipeByMachineRef.current[mid] = undefined;
+        return;
+      }
+      if (Boolean(ledStatesRef.current[mid]?.textOverride)) return;
+      const pc = mState.pipeCounter ?? 0;
+      if (prevPipeByMachineRef.current[mid] === pc) return;
+      prevPipeByMachineRef.current[mid] = pc;
+      pushLedDisplayToDeviceRef.current?.(mid, { force: true }).catch(() => {});
+    });
+  }, [allMachineStates, validMachines, canAutoPushQtyToLed]);
+
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
     const hasText = res?.hasState && state && String(state?.text ?? '').trim().length > 0;
@@ -2051,7 +2048,7 @@ const LedSignView = ({
         if (result?.stuckTransient && mayPush) {
           const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
           const now = Date.now();
-          if (now - lastPush >= 30_000) {
+          if (now - lastPush >= 15_000) {
             stuckRecoverPushAtRef.current[sid] = now;
             pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
           }
@@ -2147,7 +2144,7 @@ const LedSignView = ({
       if (n >= 1) {
         const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
         const now = Date.now();
-        if (now - lastPush >= 30_000) {
+        if (now - lastPush >= 15_000) {
           stuckRecoverPushAtRef.current[sid] = now;
           pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
         }
@@ -2390,20 +2387,6 @@ const LedSignView = ({
     setTimeout(() => setClearStatus('idle'), 4000);
   }, [sid, selectedMachine, configs]);
 
-  // Force sync
-  const [syncStatus, setSyncStatus] = useState('idle');
-  const handleForceSync = useCallback(async () => {
-    if (!selectedMachine?.id || !sid) return;
-    setSyncStatus('syncing');
-    try {
-      await pushLedDisplayToDevice(sid, { force: true });
-      setSyncStatus('ok');
-    } catch {
-      setSyncStatus('error');
-    }
-    setTimeout(() => setSyncStatus('idle'), 3000);
-  }, [sid, selectedMachine, pushLedDisplayToDevice]);
-
   const handleRestoreLiveProductText = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;
     const liveText = getLiveProductText(sid);
@@ -2472,7 +2455,7 @@ const LedSignView = ({
     const pollCode = localData.lastPollHttpCode;
     const syncCode = localData.lastSyncHttpCode;
     if (pollCode === 404 || syncCode === 404) {
-      return '⚠️ ป้าย poll server ได้ HTTP 404 — กด "ซิงค์ป้ายทันที" หรือส่งข้อความใหม่ (ระบบจะส่งผ่าน LAN โดยตรงด้วย)';
+      return '⚠️ ป้าย poll server ได้ HTTP 404 — ระบบจะส่งข้อความผ่าน LAN โดยตรงอัตโนมัติเมื่อเป็นไปได้';
     }
     if (effectiveWifiStatus === 'local_only') {
       return t('production.ledLocalPollHint', {
@@ -2588,7 +2571,6 @@ const LedSignView = ({
               clearStatus={clearStatus}
               onReboot={handleRebootBoard}
               rebooting={rebootingBoard}
-              onForceSync={handleForceSync}
               sendStatus={statuses[sid]      ?? 'idle'}
               pingStatus={pingStatuses[sid]  ?? 'idle'}
               pingMsg={pingMsgs[sid]         ?? ''}
@@ -2599,7 +2581,6 @@ const LedSignView = ({
               deviceRssi={displayRssi}
               deviceTemp={displayTemp}
               localPollHint={localPollHint}
-              syncStatus={syncStatus}
               speedForAll={speedForAll}
               onSpeedForAllChange={handleSpeedForAll}
               showClock={effectiveShowClock}

@@ -550,6 +550,26 @@ export const buildProductionLedCommand = (data, pipeCounter) => {
   };
 };
 
+/** Fingerprint สำหรับ dedup คำสั่ง LED (รูปแบบเดียวกับ ESP32) */
+export const buildLedCommandFingerprint = (cmd) => {
+  if (!cmd) return '';
+  if (cmd.showClock) {
+    const r = cmd.r ?? 0;
+    const g = cmd.g ?? 255;
+    const b = cmd.b ?? 255;
+    return `|CLOCK|${r},${g},${b}|1|50|0|0`;
+  }
+  const t = String(cmd.text ?? '').trim();
+  const r = cmd.r ?? 0;
+  const g = cmd.g ?? 255;
+  const b = cmd.b ?? 255;
+  const fs = cmd.fontSize ?? 1;
+  const sp = cmd.speed ?? 50;
+  const a = String(cmd.actual ?? '0');
+  const tg = String(cmd.target ?? '0');
+  return `${t}|${r},${g},${b}|${fs}|${sp}|${a}|${tg}`;
+};
+
 // ─── Machine Log ─────────────────────────────────────────────────────────────
 
 /**

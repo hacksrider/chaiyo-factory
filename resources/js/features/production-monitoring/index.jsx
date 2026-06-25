@@ -11,6 +11,7 @@ import {
   LED_BREAKDOWN_PAYLOAD,
   LED_PREP_PAYLOAD,
   buildProductionLedCommand,
+  buildLedCommandFingerprint,
   storeScaleLive,
   storeMachineSession,
   fetchAllMachineSessions,
@@ -551,6 +552,9 @@ const ProductionMonitoring = () => {
   // sessionSyncTsRef เก็บ _ts ล่าสุดที่ sync ขึ้น server
   // เพื่อป้องกัน sync loop: SSE push → merge → allStates เปลี่ยน → push กลับ → ∞
   const sessionSyncTsRef = useRef({});
+  /** ลายเซ็นคำสั่ง LED ล่าสุดต่อเครื่อง — กันยิงซ้ำโดยไม่จำเป็น */
+  const ledPushSigRef = useRef({});
+  const ledWatchRef = useRef({});
 
   const allStatesRef = useRef(allStates);
   useEffect(() => { allStatesRef.current = allStates; }, [allStates]);
@@ -793,10 +797,13 @@ const ProductionMonitoring = () => {
   }, [updateMachineState, selectedMachineId, applyDbSessionUpdate]);
 
   /** ส่งชื่อสินค้า + actual/target ไปป้าย — เก็บ cache บน server + LAN fallback ไป ledIp */
-  const pushProductionLed = useCallback((machineId, stateLike, pipeCounter) => {
+  const pushProductionLed = useCallback((machineId, stateLike, pipeCounter, { force = false } = {}) => {
     if (!machineId || stateLike?.mode !== 'live') return Promise.resolve();
     const cmd = buildProductionLedCommand(stateLike, pipeCounter ?? stateLike?.pipeCounter ?? 0);
     if (!cmd) return Promise.resolve();
+    const sig = buildLedCommandFingerprint(cmd);
+    if (!force && ledPushSigRef.current[machineId] === sig) return Promise.resolve();
+    ledPushSigRef.current[machineId] = sig;
     const m = machines.find((x) => x.id === machineId);
     const ips = [stateLike.ledIp, m?.ledIp]
       .map((ip) => String(ip ?? '').trim())
@@ -839,19 +846,25 @@ const ProductionMonitoring = () => {
     const snapBefore = allStatesRef.current[machineId];
 
     if (type === 'good') {
-      updateMachineState(machineId, (prev) => {
-        const goods = [...(prev.goodEvents ?? []), entry];
-        const pipeCounter = Math.max(prev.pipeCounter ?? 0, goods.length);
-        const sumListed = goods.reduce((s, g) => s + (parseFloat(g.weight) || 0), 0);
-        const totalGoodWeight = Math.max(prev.totalGoodWeight ?? 0, sumListed);
-        return {
-          pipeCounter,
-          totalGoodWeight,
-          lastGoodWeight: weight,
-          lastGoodAt:     pressedAt,
-          goodEvents:     goods,
-        };
+      const goods = [...(snapBefore.goodEvents ?? []), entry];
+      const pipeCounter = Math.max(snapBefore.pipeCounter ?? 0, goods.length);
+      const sumListed = goods.reduce((s, g) => s + (parseFloat(g.weight) || 0), 0);
+      const totalGoodWeight = Math.max(snapBefore.totalGoodWeight ?? 0, sumListed);
+      updateMachineState(machineId, {
+        pipeCounter,
+        totalGoodWeight,
+        lastGoodWeight: weight,
+        lastGoodAt:     pressedAt,
+        goodEvents:     goods,
       });
+      if (snapBefore.mode === 'live') {
+        pushProductionLed(
+          machineId,
+          { ...snapBefore, pipeCounter, totalGoodWeight },
+          pipeCounter,
+          { force: true },
+        );
+      }
     } else {
       updateMachineState(machineId, (prev) => {
         const ngs = [...(prev.ngEvents ?? []), entry];
@@ -1176,9 +1189,8 @@ const ProductionMonitoring = () => {
             const updatedState = { ...st, remainingQty: remaining };
             const cmd = buildProductionLedCommand(updatedState, updatedState.pipeCounter ?? 0);
             if (cmd) {
+              ledPushSigRef.current[mid] = '';
               queueLedCommand(mid, cmd).catch(() => {});
-              // อนุญาตให้ ledRequeueRef re-queue ได้อีกครั้งด้วยค่าใหม่
-              ledRequeueRef.current[mid] = false;
             }
           }
         })
@@ -1186,9 +1198,32 @@ const ProductionMonitoring = () => {
     });
   }, [allStates, updateMachineState]);
 
+  // ซิงก์ป้ายอัตโนมัติเมื่อสถานะ live เปลี่ยน (ทุกเครื่อง — ไม่ต้องเปิดหน้า LedSignView)
+  useEffect(() => {
+    if (!canManageProduction) return;
+    Object.entries(allStates).forEach(([mid, st]) => {
+      if (st?.mode !== 'live') {
+        ledWatchRef.current[mid] = '';
+        return;
+      }
+      const watchKey = [
+        st.orderId,
+        st.pipeCounter,
+        st.remainingQty,
+        st.productCode,
+        st.productName,
+      ].join('|');
+      if (ledWatchRef.current[mid] === watchKey) return;
+      ledWatchRef.current[mid] = watchKey;
+      pushProductionLed(mid, st, st.pipeCounter ?? 0, { force: true });
+    });
+  }, [allStates, canManageProduction, pushProductionLed]);
+
   /** ส่งป้าย "เตรียมการ" เมื่อ Pause / Finished Order */
   const pushPrepLed = useCallback((machineId) => {
     if (!machineId) return;
+    delete ledPushSigRef.current[machineId];
+    ledPushSigRef.current[machineId] = buildLedCommandFingerprint(LED_PREP_PAYLOAD);
     const m = machines.find((x) => x.id === machineId);
     const st = getMachineState(machineId);
     const ips = [st?.ledIp, m?.ledIp]
@@ -1206,10 +1241,42 @@ const ProductionMonitoring = () => {
     [pauseOrder, pushPrepLed]
   );
 
-  // ป้าย LED กลับมาออนไลน์ — re-queue state จาก server อัตโนมัติ (ทุกเครื่อง ไม่ต้องกดซิงก์)
+  // ป้าย LED กลับมาออนไลน์ / ค้างซิงก์ — re-queue อัตโนมัติทุกเครื่อง (ไม่ต้องกดซิงก์)
   const ledOnlinePrevRef = useRef({});
+  const ledReconcileTickRef = useRef({});
   useEffect(() => {
     if (!canManageProduction || machines.length === 0) return undefined;
+
+    const requeueLedForMachine = async (mid, m, hb) => {
+      const st = allStatesRef.current[mid];
+      if (st?.mode === 'live') {
+        await pushProductionLed(mid, st, st.pipeCounter ?? 0, { force: true });
+        return;
+      }
+      const res = await getLedStatus(mid);
+      const state = res?.state;
+      if (!state || typeof state !== 'object') return;
+
+      const ips = [st?.ledIp, m?.ledIp, hb?.deviceLocalIp]
+        .map((ip) => String(ip ?? '').trim())
+        .filter(Boolean);
+      const payload = {
+        text: state.text ?? '',
+        showClock: Boolean(state.showClock),
+        r: state.r ?? 0,
+        g: state.g ?? 255,
+        b: state.b ?? 255,
+        fontSize: state.fontSize ?? 1,
+        speed: state.speed ?? 50,
+        textOverride: Boolean(state.textOverride),
+        actual: state.actual != null ? String(state.actual) : '0',
+        target: state.target != null ? String(state.target) : '0',
+      };
+      const sig = buildLedCommandFingerprint(payload);
+      if (ledPushSigRef.current[mid] === sig) return;
+      ledPushSigRef.current[mid] = sig;
+      await queueLedCommandWithLanFallback(mid, payload, { ips });
+    };
 
     let cancelled = false;
     const tick = async () => {
@@ -1222,29 +1289,33 @@ const ProductionMonitoring = () => {
           const isOn = Boolean(hb?.online);
           const prev = ledOnlinePrevRef.current[mid];
           ledOnlinePrevRef.current[mid] = isOn;
-          if (prev === undefined || !isOn || prev !== false) continue;
+          const tickN = (ledReconcileTickRef.current[mid] ?? 0) + 1;
+          ledReconcileTickRef.current[mid] = tickN;
 
-          const res = await getLedStatus(mid);
-          const state = res?.state;
-          if (!state || typeof state !== 'object') continue;
+          if (!isOn) continue;
 
-          const st = allStatesRef.current[mid];
-          const ips = [st?.ledIp, m?.ledIp, hb?.deviceLocalIp]
-            .map((ip) => String(ip ?? '').trim())
-            .filter(Boolean);
-          const payload = {
-            text: state.text ?? '',
-            showClock: Boolean(state.showClock),
-            r: state.r ?? 0,
-            g: state.g ?? 255,
-            b: state.b ?? 255,
-            fontSize: state.fontSize ?? 1,
-            speed: state.speed ?? 50,
-            textOverride: Boolean(state.textOverride),
-            actual: state.actual != null ? String(state.actual) : '0',
-            target: state.target != null ? String(state.target) : '0',
-          };
-          void queueLedCommandWithLanFallback(mid, payload, { ips });
+          const justCameOnline = prev === false;
+          const stuck = Boolean(hb?.stuckTransient);
+          const periodic = tickN % 5 === 0;
+
+          if (justCameOnline) {
+            delete ledPushSigRef.current[mid];
+          }
+
+          if (justCameOnline || stuck) {
+            await requeueLedForMachine(mid, m, hb);
+          } else if (periodic) {
+            const st = allStatesRef.current[mid];
+            if (st?.mode === 'live') {
+              const cmd = buildProductionLedCommand(st, st.pipeCounter ?? 0);
+              const sig = cmd ? buildLedCommandFingerprint(cmd) : '';
+              if (sig && ledPushSigRef.current[mid] !== sig) {
+                await pushProductionLed(mid, st, st.pipeCounter ?? 0, { force: true });
+              }
+            } else {
+              await requeueLedForMachine(mid, m, hb);
+            }
+          }
         } catch {
           /* retry next tick */
         }
@@ -1257,7 +1328,7 @@ const ProductionMonitoring = () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [machines, canManageProduction]);
+  }, [machines, canManageProduction, pushProductionLed]);
 
   const queueProductionLedForMachine = useCallback((machineId, orderLike, pipeCounter) => {
     return pushProductionLed(machineId, { ...orderLike, mode: 'live' }, pipeCounter);

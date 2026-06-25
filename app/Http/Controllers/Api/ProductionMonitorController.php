@@ -356,8 +356,9 @@ class ProductionMonitorController extends Controller
         }
 
         $ledState = $this->normalizeLedPanelCounters($machineId, $ledState);
+        $ledState = $this->stampLedCommandFingerprint($ledState);
 
-        // Pending command — ESP32 ดึงแล้วลบทิ้ง (TTL 5 นาที)
+        // Pending command — ESP32 poll ซ้ำได้จนกว่าจะ ack (TTL 5 นาที)
         Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
 
         // Persistent state — ใช้แสดงใน UI ว่าป้ายไฟกำลังแสดงอะไร (TTL 30 วัน)
@@ -405,31 +406,43 @@ class ProductionMonitorController extends Controller
         $wasOffline = $this->espHeartbeatWasOffline("led_heartbeat_{$machineId}");
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
-        // ใช้ Cache::pull ดึงแล้วลบทิ้ง ESP32 จะไม่ได้รับคำสั่งเดิมซ้ำๆ จนบอร์ดรวน
-        $command = Cache::pull("led_cmd_{$machineId}");
-
-        if ($command) {
-            return response()->json(array_merge(['pending' => true], $command));
-        }
-
-        $uptime = $request->query('uptime');
-        if (is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120) {
-            $bootKey = "led_esp_boot_synced_{$machineId}";
-            if (! Cache::get($bootKey)) {
-                $state = $this->resolveAuthoritativeLedState($machineId, null);
-                if (is_array($state)) {
-                    Cache::put($bootKey, true, now()->addMinutes(10));
-                    return response()->json(array_merge(['pending' => true], $state));
-                }
+        // ESP ยืนยันรับคำสั่งแล้ว — ลบคิว (แทน Cache::pull ที่ทำให้คำสั่งหายก่อนนำไปใช้จริง)
+        $ackFp = trim((string) $request->query('ack', ''));
+        if ($ackFp !== '') {
+            $pending = Cache::get("led_cmd_{$machineId}");
+            if (is_array($pending) && (string) ($pending['_fp'] ?? '') === $ackFp) {
+                Cache::forget("led_cmd_{$machineId}");
             }
         }
 
-        $resync = filter_var($request->query('resync'), FILTER_VALIDATE_BOOL);
-        if ($wasOffline || $resync) {
+        $resync = filter_var($request->query('resync'), FILTER_VALIDATE_BOOL)
+            || filter_var($request->query('stuck'), FILTER_VALIDATE_BOOL);
+        $uptime   = $request->query('uptime');
+        $bootKey  = "led_esp_boot_synced_{$machineId}";
+        $freshBoot = is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120;
+
+        if ($wasOffline || $resync || ($freshBoot && ! Cache::get($bootKey))) {
             $state = $this->resolveAuthoritativeLedState($machineId, null);
             if (is_array($state)) {
+                $state = $this->stampLedCommandFingerprint($state);
+                Cache::put("led_cmd_{$machineId}", $state, now()->addMinutes(5));
+                Cache::put("led_state_{$machineId}", $state, now()->addDays(30));
+                if ($freshBoot) {
+                    Cache::put($bootKey, true, now()->addMinutes(10));
+                }
+
                 return response()->json(array_merge(['pending' => true], $state));
             }
+        }
+
+        $command = Cache::get("led_cmd_{$machineId}");
+        if (is_array($command)
+            && (trim((string) ($command['text'] ?? '')) !== '' || ! empty($command['showClock']))) {
+            $command = $this->normalizeLedPanelCounters($machineId, $command);
+            $command = $this->stampLedCommandFingerprint($command);
+            Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
+
+            return response()->json(array_merge(['pending' => true], $command));
         }
 
         return response()->json(['pending' => false]);
@@ -1326,6 +1339,7 @@ class ProductionMonitorController extends Controller
                 Cache::get("led_state_{$machineId}")
             );
             if ($ledState !== null) {
+                $ledState = $this->stampLedCommandFingerprint($ledState);
                 Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
                 Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
                 $this->publishEvent('led_state', [
@@ -2471,6 +2485,7 @@ private function publishEvent(string $type, array $data): void
             return;
         }
 
+        $ledState = $this->stampLedCommandFingerprint($ledState);
         Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
         Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
         $this->publishEvent('led_state', [
@@ -2542,28 +2557,57 @@ private function publishEvent(string $type, array $data): void
         $cached = is_array($base) ? $base : Cache::get("led_state_{$machineId}");
         $cached = is_array($cached) ? $cached : [];
 
-        // ลัดขั้นตอน: ถ้า cache มีข้อมูลครบ ให้ส่งกลับเลย ไม่ต้องดึง DB ทุกๆ 2 วินาที (แก้ป้ายไฟค้าง "กำลังซิงก์..")
-        if (!empty($cached) && (!empty($cached['text']) || !empty($cached['showClock']))) {
-            return $cached;
-        }
-
         $session = ProductionSession::where('machine_id', $machineId)
             ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
             ->first();
 
-        if ($session) {
+        // งานผลิต active ชนะ cache นาฬิกา/ข้อความเก่า — กัน reconnect แล้วขึ้นนาฬิกา
+        if ($session && in_array((string) $session->status, ['live', 'awaiting_scale'], true)) {
             $fromSession = $this->buildLedStateFromSession($session, $cached);
             if ($fromSession !== null) {
                 Cache::put("led_state_{$machineId}", $fromSession, now()->addDays(30));
-                return $fromSession;
+
+                return $this->stampLedCommandFingerprint($fromSession);
             }
         }
 
-        if ($cached !== []) {
-            return $this->normalizeLedPanelCounters($machineId, $cached);
+        if (! empty($cached) && (trim((string) ($cached['text'] ?? '')) !== '' || ! empty($cached['showClock']))) {
+            $normalized = $this->normalizeLedPanelCounters($machineId, $cached);
+
+            return $this->stampLedCommandFingerprint($normalized);
         }
 
         return null;
+    }
+
+    /**
+     * Fingerprint ให้ ESP ack หลังนำคำสั่งไปใช้ (รูปแบบเดียวกับ buildLedStateFingerprint บนบอร์ด)
+     *
+     * @param  array<string, mixed>  $ledState
+     * @return array<string, mixed>
+     */
+    private function stampLedCommandFingerprint(array $ledState): array
+    {
+        if (! empty($ledState['showClock'])) {
+            $r = (int) ($ledState['r'] ?? 0);
+            $g = (int) ($ledState['g'] ?? 255);
+            $b = (int) ($ledState['b'] ?? 255);
+            $ledState['_fp'] = "|CLOCK|{$r},{$g},{$b}|1|50|0|0";
+
+            return $ledState;
+        }
+
+        $t  = trim((string) ($ledState['text'] ?? ''));
+        $r  = (int) ($ledState['r'] ?? 0);
+        $g  = (int) ($ledState['g'] ?? 255);
+        $b  = (int) ($ledState['b'] ?? 255);
+        $fs = (int) ($ledState['fontSize'] ?? 1);
+        $sp = (int) ($ledState['speed'] ?? 50);
+        $a  = (string) ($ledState['actual'] ?? '0');
+        $tg = (string) ($ledState['target'] ?? '0');
+        $ledState['_fp'] = "{$t}|{$r},{$g},{$b}|{$fs}|{$sp}|{$a}|{$tg}";
+
+        return $ledState;
     }
 
     /**
@@ -2629,6 +2673,7 @@ private function publishEvent(string $type, array $data): void
             'showClock'    => false,
             'updatedAt'    => now()->toISOString(),
         ]);
+        $next = $this->stampLedCommandFingerprint($next);
 
         Cache::put("led_cmd_{$machineId}", $next, now()->addMinutes(5));
         Cache::put("led_state_{$machineId}", $next, now()->addDays(30));
