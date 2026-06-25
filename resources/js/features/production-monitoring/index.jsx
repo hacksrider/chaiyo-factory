@@ -722,7 +722,12 @@ const ProductionMonitoring = () => {
       const ts = Number(state._ts) || 0;
       if (ts > 0) sessionSyncTsRef.current[machineId] = ts;
       window.dispatchEvent(new CustomEvent('sse:production_updated', {
-        detail: { machineId, state },
+        detail: {
+          machineId,
+          state,
+          qty_good: state.pipeCounter,
+          qty_remaining: state.remainingQty,
+        },
       }));
       return;
     }
@@ -884,11 +889,17 @@ const ProductionMonitoring = () => {
       });
     }
 
-    // ── อัปเดตป้ายไฟทันทีเมื่อนับของดี (ไม่รอ SSE machine_state) ──────────
-    // SSE อาจ drop ทำให้ LED ไม่อัปเดต — ส่ง LED command หลังทุก good event
+    // ── ป้ายไฟ: อัปเดตจาก session_updated (DB) เท่านั้น — อย่า +1 ซ้ำใน scale_weight ──
     if (type === 'good' && snapBefore?.mode === 'live') {
-      const newCount = Math.max((snapBefore.pipeCounter ?? 0) + 1, (snapBefore.goodEvents?.length ?? 0) + 1);
-      void pushProductionLed(machineId, snapBefore, newCount);
+      const dbCount = Number(ev?.actualCount ?? ev?.qty_good ?? 0);
+      queueMicrotask(() => {
+        const st = allStatesRef.current[machineId];
+        if (st?.mode !== 'live') return;
+        const count = dbCount > 0 ? dbCount : (st.pipeCounter ?? 0);
+        if (count > 0) {
+          void pushProductionLed(machineId, st, count);
+        }
+      });
     }
   }, [updateMachineState, canManageProduction, pushProductionLed]);
 
@@ -982,6 +993,9 @@ const ProductionMonitoring = () => {
       applyDbSessionUpdate(payload);
       const sess = payload.session;
       const mid = payload.machineId;
+      if (sess?.mode === 'live') {
+        void pushProductionLed(mid, { ...sess, mode: 'live' }, sess.pipeCounter ?? 0);
+      }
       if (sess?.mode === 'live' && sess.sessionRunUlid && sess._db) {
         const hk = `${mid}:${sess.sessionRunUlid}`;
         if (!hasScaleEventsHydrated(hk)) {
@@ -995,7 +1009,7 @@ const ProductionMonitoring = () => {
       }
 
     },
-    [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState, hasScaleEventsHydrated],
+    [applyDbSessionUpdate, hydrateLiveWeightEventsFromDb, resetMachineState, hasScaleEventsHydrated, pushProductionLed],
   );
 
   // DB-aware add-to-queue: write to DB first, update local state on success
@@ -1314,7 +1328,7 @@ const ProductionMonitoring = () => {
         if (fresh?.mode === 'live') {
           void pushProductionLed(mid, fresh, fresh.pipeCounter ?? 0);
         }
-      }, 250);
+      }, 50);
     });
   }, [allStates, pushProductionLed]);
 

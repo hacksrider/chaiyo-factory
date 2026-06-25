@@ -393,6 +393,11 @@ export function postLedDirectLan(ips, params) {
   const list = [...new Set((ips ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
   if (list.length === 0) return Promise.resolve(false);
 
+  // หน้า HTTPS ห้ามเรียก http:// ESP โดยตรง (Mixed Content) — ใช้ server poll แทน
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    return Promise.resolve(false);
+  }
+
   const payload = {
     text: params.text ?? '',
     r: params.r ?? 0,
@@ -406,14 +411,20 @@ export function postLedDirectLan(ips, params) {
   if (params.target != null) payload.target = String(params.target);
 
   const body = JSON.stringify(payload);
-  const attempts = list.map((ip) =>
-    fetch(`http://${ip}/led`, {
+  const attempts = list.map((ip) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    return fetch(`http://${ip}/led`, {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'application/json' },
       body,
-    }).then(() => true).catch(() => false)
-  );
+      signal: ctrl.signal,
+    })
+      .then(() => true)
+      .catch(() => false)
+      .finally(() => clearTimeout(timer));
+  });
   return Promise.any(attempts).catch(() => false);
 }
 

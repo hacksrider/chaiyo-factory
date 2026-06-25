@@ -144,6 +144,9 @@ function isEspTransientDisplayText(text) {
 }
 
 async function probeLocalLedStatus(ips) {
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    return null;
+  }
   for (const ip of ips) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 4000);

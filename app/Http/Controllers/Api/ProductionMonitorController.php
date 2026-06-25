@@ -407,6 +407,24 @@ class ProductionMonitorController extends Controller
 
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
+        $cachedState = Cache::get("led_state_{$machineId}");
+        $cachedState = is_array($cachedState) ? $cachedState : [];
+        $textOverridden = (bool) ($cachedState['textOverride'] ?? false);
+
+        // Live: ดึงเลขจาก DB ทุก poll — กันค้างเลขเมื่อกดของดี (ไม่พึ่ง cache เก่า)
+        $liveSession = ProductionSession::where('machine_id', $machineId)
+            ->whereIn('status', ['live', 'awaiting_scale'])
+            ->first();
+        if ($liveSession && ! $textOverridden) {
+            $fresh = $this->buildLedStateFromSession($liveSession, $cachedState);
+            if ($fresh) {
+                Cache::put("led_cmd_{$machineId}", $fresh, now()->addMinutes(5));
+                Cache::put("led_state_{$machineId}", $fresh, now()->addDays(30));
+
+                return response()->json(array_merge(['pending' => true], $fresh));
+            }
+        }
+
         $command = Cache::get("led_cmd_{$machineId}");
 
         if ($command) {
@@ -1316,8 +1334,13 @@ class ProductionMonitorController extends Controller
             ]);
         }
 
+        $pipeFromDb      = $sessionAfter ? (int) $sessionAfter->pipe_counter : (int) ($payload['actualCount'] ?? 0);
+        $remainingFromDb = $sessionAfter ? (int) $sessionAfter->remaining_qty : -1;
+
         // ความจริงอยู่ที่ DB เท่านั้น — ไม่ mirror events ใน cache
         $payloadOut = $payload + ($createdEventId !== null ? ['eventId' => $createdEventId] : []);
+        $payloadOut['actualCount'] = $pipeFromDb;
+        $payloadOut['qty_good']    = $pipeFromDb;
 
         // ยิง session_updated ก่อน scale_weight — ให้เว็บได้ pipeCounter/น้ำหนักจาก DB ก่อน แล้วค่อย merge รายการกด
         // (กันค่า +1 บน client ซ้อนกับค่าที่ merge จาก session แล้ว → เลขดีเบิ้ล)
@@ -1335,9 +1358,6 @@ class ProductionMonitorController extends Controller
         ]);
 
         // ซิงก์เลขจาก DB เข้ากับป้ายไฟ (ESP ยัง poll led_cmd queue)
-        $pipeFromDb       = $sessionAfter ? (int) $sessionAfter->pipe_counter : (int) ($payload['actualCount'] ?? 0);
-        $remainingFromDb  = $sessionAfter ? (int) $sessionAfter->remaining_qty : -1;
-
         if (($payload['type'] ?? '') === 'good' && $sessionAfter) {
             $ledState = $this->buildLedStateFromSession(
                 $sessionAfter,
@@ -1346,6 +1366,10 @@ class ProductionMonitorController extends Controller
             if ($ledState !== null) {
                 Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
                 Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
+                $this->publishEvent('led_state', [
+                    'machineId' => $machineId,
+                    'state'     => $ledState,
+                ]);
             }
         }
 
