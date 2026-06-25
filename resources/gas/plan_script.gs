@@ -997,11 +997,6 @@ function getProductDetails() {
       pn:          findIdx(['ค่ารับแรงดัน', 'pn']),
       brand:       findIdx(['ตรา', 'brand']),
       colorStripe: findIdx(['แถบสี', 'colorstripe']),
-      // weight columns: ไม่ใช้ header detection เพราะ header อาจเลื่อนกับข้อมูลจริง
-      // ข้อมูลจริงใน Sheet: col I(8)=stdWeight, J(9)=Min, K(10)=Max
-      stdWeight:   8,
-      minWeight:   9,
-      maxWeight:   10,
     };
 
     // fallback ตามตำแหน่ง column จริงใน Sheet Product
@@ -1015,28 +1010,39 @@ function getProductDetails() {
     if (IDX.brand       < 0) IDX.brand       = 7;
     if (IDX.colorStripe < 0) IDX.colorStripe = 8;
 
+    var idxStd = findIdx(['น้ำหนักมาตรฐาน', 'stdweight', 'std weight']);
+    var idxMin = findIdx(['min']);
+    var idxMax = findIdx(['max']);
+    IDX.stdWeight = idxStd >= 0 ? idxStd : 9;
+    IDX.minWeight = idxMin >= 0 ? idxMin : 10;
+    IDX.maxWeight = idxMax >= 0 ? idxMax : 11;
+
     var result = {};
     for (var i = 1; i < data.length; i++) {
       var row  = data[i];
       var code = String(row[IDX.code] || '').trim();
       if (!code) continue;
 
-      var toNum = function(v) {
+      var toProductNum = function(v, maxAbs) {
+        maxAbs = maxAbs || 9999;
+        if (v === null || v === undefined || v === '') return null;
+        if (Object.prototype.toString.call(v) === '[object Date]') return null;
         var n = Number(v);
-        return isNaN(n) ? null : n;
+        if (isNaN(n) || !isFinite(n) || Math.abs(n) > maxAbs) return null;
+        return n;
       };
 
       result[code] = {
         name:        String(row[IDX.name]        || '').trim(),
         peType:      String(row[IDX.peType]      || '').trim(),
-        size:        toNum(row[IDX.size]),
-        length:      toNum(row[IDX.length]),
-        pn:          toNum(row[IDX.pn]),
+        size:        toProductNum(row[IDX.size], 9999),
+        length:      toProductNum(row[IDX.length], 9999),
+        pn:          toProductNum(row[IDX.pn], 9999),
         brand:       String(row[IDX.brand]       || '').trim(),
         colorStripe: String(row[IDX.colorStripe] || '').trim(),
-        stdWeight:   toNum(row[IDX.stdWeight]),
-        minWeight:   toNum(row[IDX.minWeight]),
-        maxWeight:   toNum(row[IDX.maxWeight]),
+        stdWeight:   toProductNum(row[IDX.stdWeight], 999),
+        minWeight:   toProductNum(row[IDX.minWeight], 999),
+        maxWeight:   toProductNum(row[IDX.maxWeight], 999),
       };
     }
     return result;

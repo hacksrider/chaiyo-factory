@@ -2112,14 +2112,14 @@ private function publishEvent(string $type, array $data): void
             'led_ip'       => $data['ledIp'] ?? '',
             'queue_key'    => $data['queueKey'] ?? null,
             'pe_type'      => $data['peType'] ?? null,
-            'size'         => isset($data['size']) ? (float) $data['size'] : null,
-            'length'       => isset($data['length']) ? (float) $data['length'] : null,
-            'pn'           => isset($data['pn']) ? (float) $data['pn'] : null,
+            'size'         => $this->sanitizeProductMeasure($data['size'] ?? null),
+            'length'       => $this->sanitizeProductMeasure($data['length'] ?? null),
+            'pn'           => $this->sanitizeProductMeasure($data['pn'] ?? null),
             'brand'        => $data['brand'] ?? null,
             'color_stripe' => $data['colorStripe'] ?? null,
-            'std_weight'   => isset($data['stdWeight']) ? (float) $data['stdWeight'] : null,
-            'min_weight'   => isset($data['minWeight']) ? (float) $data['minWeight'] : null,
-            'max_weight'   => isset($data['maxWeight']) ? (float) $data['maxWeight'] : null,
+            'std_weight'   => $this->sanitizeProductMeasure($data['stdWeight'] ?? null, 999.9999),
+            'min_weight'   => $this->sanitizeProductMeasure($data['minWeight'] ?? null, 999.9999),
+            'max_weight'   => $this->sanitizeProductMeasure($data['maxWeight'] ?? null, 999.9999),
             'status'       => 'queued',
         ]);
 
@@ -2341,14 +2341,14 @@ private function publishEvent(string $type, array $data): void
             'sheet_name'        => $data['sheetName'] ?? '',
             'led_ip'            => $data['ledIp'] ?? '',
             'pe_type'           => $data['peType'] ?? null,
-            'size'              => isset($data['size']) ? (float) $data['size'] : null,
-            'length'            => isset($data['length']) ? (float) $data['length'] : null,
-            'pn'                => isset($data['pn']) ? (float) $data['pn'] : null,
+            'size'              => $this->sanitizeProductMeasure($data['size'] ?? null),
+            'length'            => $this->sanitizeProductMeasure($data['length'] ?? null),
+            'pn'                => $this->sanitizeProductMeasure($data['pn'] ?? null),
             'brand'             => $data['brand'] ?? null,
             'color_stripe'      => $data['colorStripe'] ?? null,
-            'std_weight'        => isset($data['stdWeight']) ? (float) $data['stdWeight'] : null,
-            'min_weight'        => isset($data['minWeight']) ? (float) $data['minWeight'] : null,
-            'max_weight'        => isset($data['maxWeight']) ? (float) $data['maxWeight'] : null,
+            'std_weight'        => $this->sanitizeProductMeasure($data['stdWeight'] ?? null, 999.9999),
+            'min_weight'        => $this->sanitizeProductMeasure($data['minWeight'] ?? null, 999.9999),
+            'max_weight'        => $this->sanitizeProductMeasure($data['maxWeight'] ?? null, 999.9999),
             'status'            => $newStatus,
             'source'            => 'web',
             'started_at'        => ($continuing && $existing->started_at) ? $existing->started_at : $now,
@@ -2569,6 +2569,25 @@ private function publishEvent(string $type, array $data): void
         }
 
         return null;
+    }
+
+    /**
+     * กรองค่าตัวเลขจาก Sheet — ปฏิเสธ timestamp/ms ที่หลุดมาแทนขนาดท่อ
+     */
+    private function sanitizeProductMeasure(mixed $value, float $max = 9999.99): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (! is_numeric($value)) {
+            return null;
+        }
+        $n = (float) $value;
+        if (! is_finite($n) || abs($n) > $max) {
+            return null;
+        }
+
+        return $n;
     }
 
     /**

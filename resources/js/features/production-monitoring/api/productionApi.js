@@ -737,7 +737,29 @@ export const fetchProductDetails = async () => {
   }
 };
 
-// ─── Scale ESP32 ─────────────────────────────────────────────────────────────
+// ─── Product measure sanitization ─────────────────────────────────────────────
+
+/** ปฏิเสธ timestamp/ms ที่หลุดมาแทนขนาดท่อ (decimal 10,2 ใน DB) */
+export function sanitizeProductMeasure(value, max = 9999.99) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || Math.abs(n) > max) return null;
+  return n;
+}
+
+function sanitizeSessionProductPayload(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  return {
+    ...payload,
+    size: sanitizeProductMeasure(payload.size),
+    length: sanitizeProductMeasure(payload.length),
+    pn: sanitizeProductMeasure(payload.pn),
+    stdWeight: sanitizeProductMeasure(payload.stdWeight, 999.9999),
+    minWeight: sanitizeProductMeasure(payload.minWeight, 999.9999),
+    maxWeight: sanitizeProductMeasure(payload.maxWeight, 999.9999),
+  };
+}
+
 
 /**
  * POST /api/production-monitor/scale-command/{machineId}
@@ -909,7 +931,7 @@ export const storeScaleSessionConfirm = (machineId, payload) =>
  * เพิ่มรายการผลิตเข้าคิว DB
  */
 export const dbEnqueueItem = (machineId, payload) =>
-  post(`/queue/${encodeURIComponent(machineId)}`, payload);
+  post(`/queue/${encodeURIComponent(machineId)}`, sanitizeSessionProductPayload(payload));
 
 /**
  * GET /api/production-monitor/queue/{machineId}
@@ -937,7 +959,7 @@ export const dbGetSession = (machineId) =>
  * StartNow: สร้าง live session ใน DB
  */
 export const dbStartSession = (machineId, payload) =>
-  post(`/start/${encodeURIComponent(machineId)}`, payload);
+  post(`/start/${encodeURIComponent(machineId)}`, sanitizeSessionProductPayload(payload));
 
 /**
  * POST /api/production-monitor/pause/{machineId}
