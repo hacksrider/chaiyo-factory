@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.17
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.18
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -13,6 +13,8 @@
      ไม่ทันใน 8 รอบแรก ปล่อยให้ pollTask ลองต่อจนครบ BOOT_SYNC_GIVE_UP_MS ก่อน
   3) WiFi reconnect loop — เพิ่ม WiFi.disconnect() ก่อน WiFi.reconnect() ทุกครั้ง กัน
      กรณี driver ค้าง internal state ทำให้ reconnect() ไม่ทำงานจริงแม้สัญญาณ AP ดี
+  v2.18 — ack หลังแสดงจริง: ส่ง ack ไป server เมื่อป้าย apply คำสั่งแล้วเท่านั้น
+     (คู่กับ Laravel ที่เก็บคิวจนกว่า ESP จะ ack — ข้อความจาก LedSignView ไม่หายก่อนแสดง)
 */
 
 #include <WiFi.h>
@@ -1772,12 +1774,15 @@ void pollTask(void* pv) {
           if (cmd.text[0] != '\0') flushLedCommandQueue();
           if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
             Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
+            g_awaitingBootSync = false;
+            g_bootSyncWaitingSinceMs = 0;
+            g_needsPollResync = false;
+            // fingerprint + ack ตั้งใน applyLedCommandFromQueue() หลังแสดงจริง — กันส่ง ack ก่อนป้ายอัปเดต
+            skipSyncThisCycle = true;
+          } else {
+            g_needsPollResync = true;
+            Serial.println("[Poll] cmdQueue full — จะ poll ซ้ำ");
           }
-          g_awaitingBootSync = false;
-          g_bootSyncWaitingSinceMs = 0;
-          g_needsPollResync = false;
-          s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
-          skipSyncThisCycle = true;
         } else if (jerr) {
           Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
         }

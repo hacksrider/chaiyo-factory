@@ -555,6 +555,8 @@ const ProductionMonitoring = () => {
   /** ลายเซ็นคำสั่ง LED ล่าสุดต่อเครื่อง — กันยิงซ้ำโดยไม่จำเป็น */
   const ledPushSigRef = useRef({});
   const ledWatchRef = useRef({});
+  /** หน้า LedSignView ตั้งข้อความเอง — ห้าม index ส่งชื่อสินค้า live มาทับ */
+  const ledTextOverrideRef = useRef({});
 
   const allStatesRef = useRef(allStates);
   useEffect(() => { allStatesRef.current = allStates; }, [allStates]);
@@ -572,6 +574,76 @@ const ProductionMonitoring = () => {
   // Keep a ref to the currently selected machineId for use inside callbacks
   const selectedMachineIdRef = useRef(selectedMachineId);
   useEffect(() => { selectedMachineIdRef.current = selectedMachineId; }, [selectedMachineId]);
+
+  const rememberLedServerState = useCallback((machineId, state) => {
+    if (!machineId || !state) return;
+    ledTextOverrideRef.current[machineId] = Boolean(state.textOverride);
+    const payload = {
+      text: state.text ?? '',
+      showClock: Boolean(state.showClock),
+      r: state.r ?? 0,
+      g: state.g ?? 255,
+      b: state.b ?? 255,
+      fontSize: state.fontSize ?? 1,
+      speed: state.speed ?? 50,
+      textOverride: Boolean(state.textOverride),
+      actual: state.actual != null ? String(state.actual) : '0',
+      target: state.target != null ? String(state.target) : '0',
+    };
+    ledPushSigRef.current[machineId] = buildLedCommandFingerprint(payload);
+  }, []);
+
+  const requeueLedPayloadFromState = useCallback(async (mid, m, hb, state) => {
+    if (!state || typeof state !== 'object') return;
+    rememberLedServerState(mid, state);
+    const st = allStatesRef.current[mid];
+    const ips = [st?.ledIp, m?.ledIp, hb?.deviceLocalIp]
+      .map((ip) => String(ip ?? '').trim())
+      .filter(Boolean);
+    const payload = {
+      text: state.text ?? '',
+      showClock: Boolean(state.showClock),
+      r: state.r ?? 0,
+      g: state.g ?? 255,
+      b: state.b ?? 255,
+      fontSize: state.fontSize ?? 1,
+      speed: state.speed ?? 50,
+      textOverride: Boolean(state.textOverride),
+      actual: state.actual != null ? String(state.actual) : '0',
+      target: state.target != null ? String(state.target) : '0',
+    };
+    await queueLedCommandWithLanFallback(mid, payload, { ips });
+  }, [rememberLedServerState]);
+
+  // โหลด textOverride จาก server ตอนเปิดหน้า (กัน index ทับข้อความที่ตั้งไว้ก่อน SSE ทัน)
+  useEffect(() => {
+    if (!canManageProduction || machines.length === 0) return undefined;
+    let cancelled = false;
+    (async () => {
+      await Promise.allSettled(
+        machines.map(async (m) => {
+          try {
+            const res = await getLedStatus(m.id);
+            if (cancelled || !res?.state) return;
+            rememberLedServerState(m.id, res.state);
+          } catch { /* ignore */ }
+        }),
+      );
+    })();
+    return () => { cancelled = true; };
+  }, [machines, canManageProduction, rememberLedServerState]);
+
+  // LedSignView ส่งข้อความใหม่ — จำ override ทันที (ก่อน SSE กลับมา)
+  useEffect(() => {
+    const onOverride = (e) => {
+      const { machineId, state } = e.detail ?? {};
+      if (!machineId) return;
+      if (state) rememberLedServerState(machineId, state);
+      else ledTextOverrideRef.current[machineId] = Boolean(e.detail?.textOverride);
+    };
+    window.addEventListener('led:override_set', onOverride);
+    return () => window.removeEventListener('led:override_set', onOverride);
+  }, [rememberLedServerState]);
 
   /**
    * โหลดรายการ production_weight_events ใส่ goodEvents/ngEvents (ไม่ใช้ +1 pipeCounter — เก็บตรง DB แล้ว)
@@ -799,6 +871,7 @@ const ProductionMonitoring = () => {
   /** ส่งชื่อสินค้า + actual/target ไปป้าย — เก็บ cache บน server + LAN fallback ไป ledIp */
   const pushProductionLed = useCallback((machineId, stateLike, pipeCounter, { force = false } = {}) => {
     if (!machineId || stateLike?.mode !== 'live') return Promise.resolve();
+    if (ledTextOverrideRef.current[machineId]) return Promise.resolve();
     const cmd = buildProductionLedCommand(stateLike, pipeCounter ?? stateLike?.pipeCounter ?? 0);
     if (!cmd) return Promise.resolve();
     const sig = buildLedCommandFingerprint(cmd);
@@ -857,7 +930,7 @@ const ProductionMonitoring = () => {
         lastGoodAt:     pressedAt,
         goodEvents:     goods,
       });
-      if (snapBefore.mode === 'live') {
+      if (snapBefore.mode === 'live' && !ledTextOverrideRef.current[machineId]) {
         pushProductionLed(
           machineId,
           { ...snapBefore, pipeCounter, totalGoodWeight },
@@ -948,6 +1021,7 @@ const ProductionMonitoring = () => {
   const [sseLedByMachine, setSseLedByMachine] = useState({});
   const handleSseLedState = useCallback(({ machineId, state }) => {
     if (!machineId || !state) return;
+    rememberLedServerState(machineId, state);
     setSseLedByMachine((prev) => ({
       ...prev,
       [machineId]: {
@@ -961,7 +1035,7 @@ const ProductionMonitoring = () => {
     window.dispatchEvent(new CustomEvent('sse:led_state', {
       detail: { machineId, state },
     }));
-  }, []);
+  }, [rememberLedServerState]);
 
   // SSE handler for led_updated — another browser changed LED config
   const handleSseLedUpdated = useCallback(({ machineId, ledConfig, state }) => {
@@ -988,13 +1062,14 @@ const ProductionMonitoring = () => {
     (payload) => {
       if (!payload?.machineId) return;
       if (payload.cleared === true || payload.session == null) {
+        delete ledTextOverrideRef.current[payload.machineId];
         resetMachineState(payload.machineId);
         return;
       }
       applyDbSessionUpdate(payload);
       const sess = payload.session;
       const mid = payload.machineId;
-      if (sess?.mode === 'live') {
+      if (sess?.mode === 'live' && !ledTextOverrideRef.current[mid]) {
         void pushProductionLed(mid, { ...sess, mode: 'live' }, sess.pipeCounter ?? 0);
       }
       if (sess?.mode === 'live' && sess.sessionRunUlid && sess._db) {
@@ -1206,6 +1281,7 @@ const ProductionMonitoring = () => {
         ledWatchRef.current[mid] = '';
         return;
       }
+      if (ledTextOverrideRef.current[mid]) return;
       const watchKey = [
         st.orderId,
         st.pipeCounter,
@@ -1222,6 +1298,7 @@ const ProductionMonitoring = () => {
   /** ส่งป้าย "เตรียมการ" เมื่อ Pause / Finished Order */
   const pushPrepLed = useCallback((machineId) => {
     if (!machineId) return;
+    ledTextOverrideRef.current[machineId] = false;
     delete ledPushSigRef.current[machineId];
     ledPushSigRef.current[machineId] = buildLedCommandFingerprint(LED_PREP_PAYLOAD);
     const m = machines.find((x) => x.id === machineId);
@@ -1248,6 +1325,11 @@ const ProductionMonitoring = () => {
     if (!canManageProduction || machines.length === 0) return undefined;
 
     const requeueLedForMachine = async (mid, m, hb) => {
+      if (ledTextOverrideRef.current[mid]) {
+        const res = await getLedStatus(mid);
+        if (res?.state) await requeueLedPayloadFromState(mid, m, hb, res.state);
+        return;
+      }
       const st = allStatesRef.current[mid];
       if (st?.mode === 'live') {
         await pushProductionLed(mid, st, st.pipeCounter ?? 0, { force: true });
@@ -1256,26 +1338,7 @@ const ProductionMonitoring = () => {
       const res = await getLedStatus(mid);
       const state = res?.state;
       if (!state || typeof state !== 'object') return;
-
-      const ips = [st?.ledIp, m?.ledIp, hb?.deviceLocalIp]
-        .map((ip) => String(ip ?? '').trim())
-        .filter(Boolean);
-      const payload = {
-        text: state.text ?? '',
-        showClock: Boolean(state.showClock),
-        r: state.r ?? 0,
-        g: state.g ?? 255,
-        b: state.b ?? 255,
-        fontSize: state.fontSize ?? 1,
-        speed: state.speed ?? 50,
-        textOverride: Boolean(state.textOverride),
-        actual: state.actual != null ? String(state.actual) : '0',
-        target: state.target != null ? String(state.target) : '0',
-      };
-      const sig = buildLedCommandFingerprint(payload);
-      if (ledPushSigRef.current[mid] === sig) return;
-      ledPushSigRef.current[mid] = sig;
-      await queueLedCommandWithLanFallback(mid, payload, { ips });
+      await requeueLedPayloadFromState(mid, m, hb, state);
     };
 
     let cancelled = false;
@@ -1306,7 +1369,7 @@ const ProductionMonitoring = () => {
             await requeueLedForMachine(mid, m, hb);
           } else if (periodic) {
             const st = allStatesRef.current[mid];
-            if (st?.mode === 'live') {
+            if (st?.mode === 'live' && !ledTextOverrideRef.current[mid]) {
               const cmd = buildProductionLedCommand(st, st.pipeCounter ?? 0);
               const sig = cmd ? buildLedCommandFingerprint(cmd) : '';
               if (sig && ledPushSigRef.current[mid] !== sig) {
@@ -1328,7 +1391,7 @@ const ProductionMonitoring = () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [machines, canManageProduction, pushProductionLed]);
+  }, [machines, canManageProduction, pushProductionLed, requeueLedPayloadFromState]);
 
   const queueProductionLedForMachine = useCallback((machineId, orderLike, pipeCounter) => {
     return pushProductionLed(machineId, { ...orderLike, mode: 'live' }, pipeCounter);

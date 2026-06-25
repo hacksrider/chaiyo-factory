@@ -172,6 +172,14 @@ function serverStateToSignature(st) {
   return `${t}|${r},${g},${b}|${fs}|${ms}`;
 }
 
+/** แจ้ง index.jsx ทันทีว่าป้ายถูกตั้งข้อความเอง — กันโหมด live ส่งชื่อสินค้ามาทับ */
+function notifyLedOverrideState(machineId, state) {
+  if (!machineId || !state) return;
+  window.dispatchEvent(new CustomEvent('led:override_set', {
+    detail: { machineId, state },
+  }));
+}
+
 function speedMsToScrollIndex(ms) {
   const n = Number(ms) || 50;
   const i = SPEED_MS.findIndex((v) => v === n);
@@ -2190,6 +2198,7 @@ const LedSignView = ({
 
       // Send LED command
       await queueLedForMachine(selectedMachine.id, ledPayload);
+      notifyLedOverrideState(selectedMachine.id, ledPayload);
 
       // Update local config
       const newColorHex = formData.colorHex ?? config.colorHex;
@@ -2263,6 +2272,16 @@ const LedSignView = ({
         speed: speedMs,
         textOverride: true,
         ...IDLE_PANEL_COUNTERS,
+      });
+      notifyLedOverrideState(selectedMachine.id, {
+        text: fullText,
+        showClock: false,
+        r, g, b,
+        fontSize: cfg.fontSize ?? 1,
+        speed: speedMs,
+        textOverride: true,
+        actual: '0',
+        target: '0',
       });
 
       // อัปเดต local config และ signature (ใช้ fullText ที่ต่อท้ายชื่อ/วันที่/เวลาแล้ว)
@@ -2374,6 +2393,7 @@ const LedSignView = ({
     try {
       await queueLedForMachine(selectedMachine.id, payload);
       const cleared = { ...payload, textOverride: false, updatedAt: new Date().toISOString() };
+      notifyLedOverrideState(selectedMachine.id, cleared);
       setLedStates((prev) => ({ ...prev, [sid]: cleared }));
       setConfigs((prev) => ({
         ...prev,
@@ -2396,20 +2416,23 @@ const LedSignView = ({
     // บังคับสีเขียวเสมอตอน restore ป้ายจากการรันงาน
     const GREEN_HEX = '#00ff00';
     const { r, g, b } = hexToRgb(GREEN_HEX);
+    const counters = getPanelCounterPayload(sid, false);
+    const restorePayload = {
+      text: liveText,
+      showClock: false,
+      r, g, b,
+      fontSize: cfg.fontSize ?? 1,
+      speed: speedMs,
+      textOverride: false,
+      ...counters,
+    };
     try {
       if (onRestoreProductionLed) {
         await Promise.resolve(onRestoreProductionLed(sid));
       } else {
-        await queueLedForMachine(selectedMachine.id, {
-          text: liveText,
-          showClock: false,
-          r, g, b,
-          fontSize: cfg.fontSize ?? 1,
-          speed: speedMs,
-          textOverride: false,
-          ...getPanelCounterPayload(sid, false),
-        });
+        await queueLedForMachine(selectedMachine.id, restorePayload);
       }
+      notifyLedOverrideState(selectedMachine.id, restorePayload);
       setLedStates((prev) => ({
         ...prev,
         [sid]: {

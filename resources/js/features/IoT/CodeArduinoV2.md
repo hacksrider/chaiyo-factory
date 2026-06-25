@@ -659,6 +659,25 @@ void applyDefaultLedVisual() {
   applyClockVisual();
 }
 
+String encodeQueryValue(const String& value) {
+  String out;
+  out.reserve(value.length() + 8);
+  for (unsigned i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+        || c == '-' || c == '_' || c == '.' || c == '~') {
+      out += c;
+    } else if (c == ' ') {
+      out += "%20";
+    } else {
+      char hex[4];
+      snprintf(hex, sizeof(hex), "%%%02X", (uint8_t)c);
+      out += hex;
+    }
+  }
+  return out;
+}
+
 // ======================================================================
 //  syncLedDisplayFromServer — ดึง led_state จาก Laravel ให้ตรงกับหน้าเว็บ
 //  เรียกหลัง WiFi เชื่อมสำเร็จ (บูต / reconnect)
@@ -1065,7 +1084,15 @@ void pollTask(void* pv) {
     String mid = String(MACHINE_ID);
     mid.replace(" ", "%20");
     String url = g_serverUrl + "/api/production-monitor/led-command/" + mid
-               + "?localIp=" + WiFi.localIP().toString();
+               + "?localIp=" + WiFi.localIP().toString()
+               + "&rssi=" + String(WiFi.RSSI())
+               + "&uptime=" + String(millis() / 1000UL);
+    if (s_ledStateFingerprint.length() == 0) {
+      url += "&resync=1";
+    }
+    if (s_ledStateFingerprint.length() > 0) {
+      url += "&ack=" + encodeQueryValue(s_ledStateFingerprint);
+    }
     http.begin(url);
     http.setTimeout(1800); // timeout ของ HTTP request (ไม่ block loop() เพราะอยู่ task แยก)
 
