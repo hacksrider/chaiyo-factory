@@ -1697,43 +1697,27 @@ class ProductionMonitorController extends Controller
     // Server-Sent Events (SSE) — real-time push to all browsers
     // ──────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Allocate monotonic SSE event id (file/database cache safe).
-     *
-     * Cache::increment() often returns 0/false on file driver — clients then never
-     * receive events because stream filters with id > lastId.
-     */
-    private function nextSseEventId(): int
-    {
-        return (int) Cache::lock('sse_counter_lock', 5)->block(3, function () {
-            $current = (int) Cache::get('sse_counter', 0);
+   /**
+ * Allocate next SSE event id AND append to queue — ทำในขั้นตอนเดียวภายใต้ lock เดียวกัน
+ *
+ * เดิม nextSseEventId() กับ publishEvent() แยกกัน 2 ฟังก์ชัน — การจอง id ใช้ lock
+ * ปลอดภัย แต่การอ่าน-แก้-เขียน sse_queue ทำนอก lock ทำให้ถ้า 2 request เรียกพร้อมกัน
+ * (เช่น 2 เครื่องส่ง scale_weight มาพร้อมกัน) อาจ overwrite กันจนมี event หายไปจาก queue
+ * (race condition / lost update) — รวมเป็นฟังก์ชันเดียวภายใต้ lock เดียวกันจึงปลอดภัย 100%
+ */
+private function publishEvent(string $type, array $data): void
+{
+    Cache::lock('sse_counter_lock', 5)->block(3, function () use ($type, $data) {
+        $current = (int) Cache::get('sse_counter', 0);
+        $events  = Cache::get('sse_queue', []);
 
-            if ($current <= 0) {
-                $maxFromQueue = 0;
-                foreach (Cache::get('sse_queue', []) as $ev) {
-                    $maxFromQueue = max($maxFromQueue, (int) ($ev['id'] ?? 0));
-                }
-                $current = $maxFromQueue;
+        if ($current <= 0) {
+            foreach ($events as $ev) {
+                $current = max($current, (int) ($ev['id'] ?? 0));
             }
+        }
 
-            $next = $current + 1;
-            Cache::put('sse_counter', $next, now()->addHours(24));
-
-            return $next;
-        });
-    }
-
-    /**
-     * Append an event to the SSE broadcast queue.
-     *
-     * ทุกครั้งที่ state เปลี่ยน (machine_session / led_state / scale_weight)
-     * เรียก publishEvent() เพื่อให้ browsers ที่เชื่อม /stream รับได้ทันที
-     * แทนการรอ poll รอบถัดไป (ลด latency จาก 2-5s → <300ms)
-     */
-    private function publishEvent(string $type, array $data): void
-    {
-        $id     = $this->nextSseEventId();
-        $events = Cache::get('sse_queue', []);
+        $id = $current + 1;
 
         $events[] = [
             'id'   => $id,
@@ -1747,8 +1731,10 @@ class ProductionMonitorController extends Controller
             $events = array_slice($events, -1000);
         }
 
+        Cache::put('sse_counter', $id, now()->addHours(24));
         Cache::put('sse_queue', $events, now()->addMinutes(30));
-    }
+    });
+}
 
     /**
      * GET /api/production-monitor/stream
