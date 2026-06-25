@@ -1883,39 +1883,6 @@ const LedSignView = ({
     };
   }, [handleSseLedState, handleSseLedUpdated]);
 
-  // ── SSE: re-push LED when production qty changes for the active machine ──
-  // Listens to sse:production_updated from index.jsx (window event)
-  const prevProductionQtyRef = useRef({});
-  useEffect(() => {
-    const handler = (e) => {
-      if (!canAutoPushQtyToLed) return;
-      const { machineId: mid, qty_good, qty_remaining, state: sseState } = e.detail ?? {};
-      if (!mid) return;
-
-      const mState = sseState ?? allMachineStatesRef.current[mid];
-      const pipeCounter = typeof qty_good === 'number' ? qty_good : mState?.pipeCounter;
-      const remainingQty = typeof qty_remaining === 'number' && qty_remaining > 0
-        ? qty_remaining
-        : mState?.remainingQty;
-
-      const prevGood = prevProductionQtyRef.current[mid]?.qty_good;
-      const prevRem  = prevProductionQtyRef.current[mid]?.qty_remaining;
-
-      const goodChanged = typeof pipeCounter === 'number' && pipeCounter !== prevGood;
-      const remChanged  = typeof remainingQty === 'number' && remainingQty !== prevRem;
-
-      prevProductionQtyRef.current[mid] = { qty_good: pipeCounter, qty_remaining: remainingQty };
-
-      if (!goodChanged && !remChanged) return;
-      if (mid !== sid) return;
-
-      pushLedDisplayToDeviceRef.current?.(mid, { force: true }).catch(() => {});
-    };
-
-    window.addEventListener('sse:production_updated', handler);
-    return () => window.removeEventListener('sse:production_updated', handler);
-  }, [sid, canAutoPushQtyToLed]);
-
   // ── Fallback poll every 10s (was 3s) — SSE is now primary ────────────────
   const ledPollRef = useRef(null);
   useEffect(() => {

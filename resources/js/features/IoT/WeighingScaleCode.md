@@ -1360,8 +1360,6 @@ void loop() {
         lcd.print(g_lastStatus);
             bool goodOk = sendWeightToServer("good");
         if (!goodOk) {
-          g_btnLockUntil = 0;
-          // WiFi หลุด แต่ event ถูก queue แล้ว — แจ้ง user
           if (!g_wifiOk) {
             lcd.setCursor(0, 3);
             String qMsg = "!WiFi Lost Q:" + String(g_pendingCount) + "        ";
@@ -1389,7 +1387,6 @@ void loop() {
         lcd.print(g_lastStatus);
         bool ngOk = sendWeightToServer("ng");
         if (!ngOk) {
-          g_btnLockUntil = 0;
           if (!g_wifiOk) {
             lcd.setCursor(0, 3);
             String qMsg = "!WiFi Lost Q:" + String(g_pendingCount) + "        ";

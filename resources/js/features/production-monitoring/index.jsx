@@ -889,18 +889,6 @@ const ProductionMonitoring = () => {
       });
     }
 
-    // ── ป้ายไฟ: อัปเดตจาก session_updated (DB) เท่านั้น — อย่า +1 ซ้ำใน scale_weight ──
-    if (type === 'good' && snapBefore?.mode === 'live') {
-      const dbCount = Number(ev?.actualCount ?? ev?.qty_good ?? 0);
-      queueMicrotask(() => {
-        const st = allStatesRef.current[machineId];
-        if (st?.mode !== 'live') return;
-        const count = dbCount > 0 ? dbCount : (st.pipeCounter ?? 0);
-        if (count > 0) {
-          void pushProductionLed(machineId, st, count);
-        }
-      });
-    }
   }, [updateMachineState, canManageProduction, pushProductionLed]);
 
   // SSE handler for scale_weight events (real-time weight from scale ESP32)
@@ -1198,26 +1186,6 @@ const ProductionMonitoring = () => {
     });
   }, [allStates, updateMachineState]);
 
-  // ── Fix ปัญหา LED แสดง เป้า/กะ แทน ค้างผลิต ────────────────────────────────
-  // เมื่อเปิดหน้าป้ายไฟ และเครื่องอยู่ในโหมด live พร้อม remainingQty
-  // re-queue LED command เพื่ออัปเดต target บนป้ายให้ถูกต้อง
-  const ledRequeueRef = useRef({});
-  useEffect(() => {
-    // reset เมื่อออกจากหน้า LED เพื่อให้กลับมาใหม่แล้ว re-queue ทุกครั้ง
-    if (!isLedPage) {
-      ledRequeueRef.current = {};
-      return;
-    }
-    if (!selectedMachineId) return;
-    const st = getMachineState(selectedMachineId);
-    if (st?.mode !== 'live') return;
-    const alreadyRequested = ledRequeueRef.current[selectedMachineId];
-    if (alreadyRequested) return;
-    ledRequeueRef.current[selectedMachineId] = true;
-    void pushProductionLed(selectedMachineId, st)
-      .catch(() => { ledRequeueRef.current[selectedMachineId] = false; });
-  }, [isLedPage, selectedMachineId, getMachineState, pushProductionLed]);
-
   /** ส่งป้าย "เตรียมการ" เมื่อ Pause / Finished Order */
   const pushPrepLed = useCallback((machineId) => {
     if (!machineId) return;
@@ -1237,25 +1205,6 @@ const ProductionMonitoring = () => {
     },
     [pauseOrder, pushPrepLed]
   );
-
-  // เมื่อเครื่องเข้าโหมด live จริงๆ (ไม่ใช่ตอน hydrate ครั้งแรก) — ส่งป้ายชื่อสินค้า
-  // ห้าม pushPrep ที่นี่ — ทำให้ทุกป้ายขึ้น "ออเดอร์ครบ" ตอน deploy/hydrate ผิดๆ
-  const livePrevRef = useRef({});
-  useEffect(() => {
-    Object.entries(allStates).forEach(([mid, st]) => {
-      const live = st?.mode === 'live';
-      const prev = livePrevRef.current[mid];
-      if (prev === undefined) {
-        livePrevRef.current[mid] = live;
-        return;
-      }
-      if (prev === live) return;
-      livePrevRef.current[mid] = live;
-      if (live && prev === false) {
-        void pushProductionLed(mid, st);
-      }
-    });
-  }, [allStates, pushProductionLed]);
 
   // ป้าย LED กลับมาออนไลน์ — re-queue state จาก server อัตโนมัติ (ทุกเครื่อง ไม่ต้องกดซิงก์)
   const ledOnlinePrevRef = useRef({});
@@ -1309,28 +1258,6 @@ const ProductionMonitoring = () => {
       clearInterval(id);
     };
   }, [machines, canManageProduction]);
-
-  // อัปเดตป้ายทันทีเมื่อ pipeCounter เปลี่ยนระหว่าง live (debounce สั้น)
-  const ledQtyPushRef = useRef({});
-  const ledQtySigRef = useRef({});
-  useEffect(() => {
-    Object.entries(allStates).forEach(([mid, st]) => {
-      if (st?.mode !== 'live') {
-        ledQtySigRef.current[mid] = null;
-        return;
-      }
-      const sig = `${st.pipeCounter ?? 0}|${st.remainingQty ?? 0}|${st.orderId ?? ''}`;
-      if (ledQtySigRef.current[mid] === sig) return;
-      ledQtySigRef.current[mid] = sig;
-      if (ledQtyPushRef.current[mid]) clearTimeout(ledQtyPushRef.current[mid]);
-      ledQtyPushRef.current[mid] = setTimeout(() => {
-        const fresh = allStatesRef.current[mid];
-        if (fresh?.mode === 'live') {
-          void pushProductionLed(mid, fresh, fresh.pipeCounter ?? 0);
-        }
-      }, 50);
-    });
-  }, [allStates, pushProductionLed]);
 
   const queueProductionLedForMachine = useCallback((machineId, orderLike, pipeCounter) => {
     return pushProductionLed(machineId, { ...orderLike, mode: 'live' }, pipeCounter);
@@ -1919,7 +1846,6 @@ const ProductionMonitoring = () => {
                       applyMachineWeightEvent(selectedMachineId, type, weight, ev);
                     }}
                     onCloseOrder={() => {
-                      pushPrepLed(selectedMachineId);
                       resetMachineState(selectedMachineId);
                       logPauseOrClose({
                         machineId:    selectedMachineId,
@@ -1954,7 +1880,6 @@ const ProductionMonitoring = () => {
                         } catch {
                           /* session cancel is best-effort */
                         }
-                        pushPrepLed(mid);
                         resetMachineState(mid);
                         if (pushDebounceRef.current[mid]) clearTimeout(pushDebounceRef.current[mid]);
                         setTimeout(() => {

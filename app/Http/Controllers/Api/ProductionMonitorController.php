@@ -402,38 +402,16 @@ class ProductionMonitorController extends Controller
      */
     public function fetchLedCommand(Request $request, string $machineId): JsonResponse
     {
-        // ตรวจ gap ก่อนอัปเดต heartbeat — poll แรกหลัง WiFi หลุดจะได้ led_state กลับทันที
         $wasOffline = $this->espHeartbeatWasOffline("led_heartbeat_{$machineId}");
-
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
-        $cachedState = Cache::get("led_state_{$machineId}");
-        $cachedState = is_array($cachedState) ? $cachedState : [];
-        $textOverridden = (bool) ($cachedState['textOverride'] ?? false);
-
-        // Live: ดึงเลขจาก DB ทุก poll — กันค้างเลขเมื่อกดของดี (ไม่พึ่ง cache เก่า)
-        $liveSession = ProductionSession::where('machine_id', $machineId)
-            ->whereIn('status', ['live', 'awaiting_scale'])
-            ->first();
-        if ($liveSession && ! $textOverridden) {
-            $fresh = $this->buildLedStateFromSession($liveSession, $cachedState);
-            if ($fresh) {
-                Cache::put("led_cmd_{$machineId}", $fresh, now()->addMinutes(5));
-                Cache::put("led_state_{$machineId}", $fresh, now()->addDays(30));
-
-                return response()->json(array_merge(['pending' => true], $fresh));
-            }
-        }
-
-        $command = Cache::get("led_cmd_{$machineId}");
+        // ใช้ Cache::pull ดึงแล้วลบทิ้ง ESP32 จะไม่ได้รับคำสั่งเดิมซ้ำๆ จนบอร์ดรวน
+        $command = Cache::pull("led_cmd_{$machineId}");
 
         if ($command) {
-            $command = $this->resolveAuthoritativeLedState($machineId, $command);
-
             return response()->json(array_merge(['pending' => true], $command));
         }
 
-        // ป้ายเพิ่งเปิด (uptime ต่ำ) — ส่ง led_state ล่าสุดให้ซิงก์กับหน้าเว็บทันที
         $uptime = $request->query('uptime');
         if (is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120) {
             $bootKey = "led_esp_boot_synced_{$machineId}";
@@ -441,32 +419,16 @@ class ProductionMonitorController extends Controller
                 $state = $this->resolveAuthoritativeLedState($machineId, null);
                 if (is_array($state)) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
-
                     return response()->json(array_merge(['pending' => true], $state));
                 }
             }
         }
 
-        // WiFi กลับมาหลัง offline (heartbeat ขาด) หรือ ESP ขอ resync เอง — ส่ง state กลับทันที
         $resync = filter_var($request->query('resync'), FILTER_VALIDATE_BOOL);
         if ($wasOffline || $resync) {
             $state = $this->resolveAuthoritativeLedState($machineId, null);
             if (is_array($state)) {
                 return response()->json(array_merge(['pending' => true], $state));
-            }
-            if ($resync) {
-                return response()->json([
-                    'pending'    => true,
-                    'text'       => '',
-                    'showClock'  => true,
-                    'r'          => 0,
-                    'g'          => 255,
-                    'b'          => 0,
-                    'fontSize'   => 1,
-                    'speed'      => 50,
-                    'actual'     => '0',
-                    'target'     => '0',
-                ]);
             }
         }
 
@@ -2482,6 +2444,9 @@ private function publishEvent(string $type, array $data): void
             'ts'           => (int) (now()->timestamp * 1000),
         ]);
 
+        // เพิ่มบรรทัดนี้: คืนป้ายไฟเป็น "ออเดอร์ครบ/รออเดอร์" อัตโนมัติเมื่อหยุดงาน
+        $this->resetLedToWaitingState($machineId);
+
         $state = $session->fresh()->toFrontendState();
 
         $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
@@ -2577,6 +2542,11 @@ private function publishEvent(string $type, array $data): void
         $cached = is_array($base) ? $base : Cache::get("led_state_{$machineId}");
         $cached = is_array($cached) ? $cached : [];
 
+        // ลัดขั้นตอน: ถ้า cache มีข้อมูลครบ ให้ส่งกลับเลย ไม่ต้องดึง DB ทุกๆ 2 วินาที (แก้ป้ายไฟค้าง "กำลังซิงก์..")
+        if (!empty($cached) && (!empty($cached['text']) || !empty($cached['showClock']))) {
+            return $cached;
+        }
+
         $session = ProductionSession::where('machine_id', $machineId)
             ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
             ->first();
@@ -2584,6 +2554,7 @@ private function publishEvent(string $type, array $data): void
         if ($session) {
             $fromSession = $this->buildLedStateFromSession($session, $cached);
             if ($fromSession !== null) {
+                Cache::put("led_state_{$machineId}", $fromSession, now()->addDays(30));
                 return $fromSession;
             }
         }
