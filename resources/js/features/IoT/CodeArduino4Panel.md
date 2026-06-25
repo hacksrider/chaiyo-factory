@@ -1,9 +1,18 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.16 (ไม่ค้าง "กำลังซิงก์.." / ฟื้นตัวอัตโนมัติ)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.17
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
   - ดูอุณหภูมิผ่านหน้าเว็บโดยพิมพ์: http://<IP_ADDRESS>/temp
+
+  v2.17 — แก้ไข 3 บั๊ก:
+  1) exitSyncWaitingWithFallback() — ลอง sync จาก server ก่อนเสมอ (server เก็บ state
+     ไว้ 30 วัน) แทนที่จะพึ่ง RAM snapshot อย่างเดียว ป้องกัน "ตื่นเช้ามาเป็นนาฬิกาหมดทุกจอ"
+     หลัง ESP32 reboot (ไฟตก/watchdog restart ทำให้ RAM snapshot หายไป)
+  2) bootSyncFromServerWithRetry() — ไม่ fallback เป็นนาฬิกาเร็วเกินไปตอน boot ถ้า sync
+     ไม่ทันใน 8 รอบแรก ปล่อยให้ pollTask ลองต่อจนครบ BOOT_SYNC_GIVE_UP_MS ก่อน
+  3) WiFi reconnect loop — เพิ่ม WiFi.disconnect() ก่อน WiFi.reconnect() ทุกครั้ง กัน
+     กรณี driver ค้าง internal state ทำให้ reconnect() ไม่ทำงานจริงแม้สัญญาณ AP ดี
 */
 
 #include <WiFi.h>
@@ -74,7 +83,7 @@ void maybeRestartAfterPollFailures(uint32_t nowMs);
 // ======================================================================
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
-#define MACHINE_ID  "EM 08"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
+#define MACHINE_ID  "EM 9A"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
 
 // ── WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น) ──────────
 // IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
@@ -711,17 +720,32 @@ void showSyncWaitingVisual() {
   updateTextProperties();
 }
 
-/** ออกจากหน้าซิงก์/เชื่อมต่อ — คืนจอจาก snapshot หรือนาฬิกา (ไม่ค้างทั้งวัน) */
+/**
+ * ออกจากหน้าซิงก์/เชื่อมต่อ — ไม่ค้างทั้งวัน
+ * ลำดับความสำคัญ: 1) ลองขอ state จริงจาก server ก่อนเสมอ (เก็บไว้ 30 วัน ไม่ใช่ RAM)
+ *                  2) snapshot ใน RAM (เร็วกว่า ถ้ามี — เผื่อ server ตอบช้า)
+ *                  3) นาฬิกา (ทางเลือกสุดท้ายจริงๆ)
+ * เหตุผล: snapshot ใน RAM หายไปทุกครั้งที่ ESP32 reboot (ไฟตก/watchdog restart
+ * ตอนกลางคืน) ถ้า fallback ไปนาฬิกาทันทีโดยไม่ลอง server ก่อน จะทำให้จอกลายเป็น
+ * นาฬิกาทุกครั้งที่บอร์ด reboot แม้ server ยังมีข้อความที่ถูกต้องรออยู่
+ */
 void exitSyncWaitingWithFallback() {
   g_awaitingBootSync = false;
   g_bootSyncWaitingSinceMs = 0;
   g_needsPollResync = true;
-  if (restoreDisplaySnapshot()) {
-    Serial.println("[Sync] fallback — restored snapshot");
+
+  if (syncLedDisplayFromServer()) {
+    Serial.println("[Sync] fallback — synced from server");
     return;
   }
+
+  if (restoreDisplaySnapshot()) {
+    Serial.println("[Sync] fallback — restored RAM snapshot (server sync failed)");
+    return;
+  }
+
   applyClockVisual(0, 255, 0);
-  Serial.println("[Sync] fallback — clock mode");
+  Serial.println("[Sync] fallback — clock mode (server + snapshot both unavailable)");
 }
 
 bool isTransientStatusText(const String& txt) {
@@ -1349,13 +1373,22 @@ bool syncLedDisplayFromServer() {
 }
 
 bool bootSyncFromServerWithRetry() {
+  uint32_t retryDelay = BOOT_SYNC_RETRY_MS;
   for (int attempt = 1; attempt <= BOOT_SYNC_MAX_ATTEMPTS; attempt++) {
     Serial.printf("[BootSync] attempt %d/%d\n", attempt, BOOT_SYNC_MAX_ATTEMPTS);
     if (syncLedDisplayFromServer()) return true;
-    if (attempt < BOOT_SYNC_MAX_ATTEMPTS) vTaskDelay(pdMS_TO_TICKS(BOOT_SYNC_RETRY_MS));
+    if (attempt < BOOT_SYNC_MAX_ATTEMPTS) {
+      vTaskDelay(pdMS_TO_TICKS(retryDelay));
+      // เพิ่ม delay ทีละนิด — กันเซิร์ฟเวอร์ถูกถามถี่เกินไปตอนหลายบอร์ด boot พร้อมกัน
+      // (เช่นไฟกลับมาทีเดียวตอนเช้า ทุกจอ sync พร้อมกันหมด)
+      retryDelay = min(retryDelay + 500, (uint32_t)4000);
+    }
   }
-  exitSyncWaitingWithFallback();
-  Serial.println("[BootSync] ยังซิงก์ไม่ได้ — ใช้ fallback รอ poll/resync");
+  // BOOT_SYNC_MAX_ATTEMPTS ครั้งไม่พอ — ยังไม่ยอมแพ้ทันที ปล่อยให้ g_awaitingBootSync
+  // ค้างไว้ ให้ loop ใน pollTask() ลอง sync ต่อทุก 4s จนกว่าจะครบ BOOT_SYNC_GIVE_UP_MS
+  // (ดู pollTask) ก่อนจะค่อย fallback เป็นนาฬิกาจริงๆ — ป้องกันนาฬิกาขึ้นเร็วเกินไป
+  // ตอนเช้าที่เน็ตติดขัดชั่วคราว
+  Serial.println("[BootSync] ยังซิงก์ไม่ได้ใน budget แรก — ปล่อยให้ pollTask ลองต่อก่อน fallback");
   return false;
 }
 
@@ -1624,6 +1657,11 @@ void pollTask(void* pv) {
 
       if (!wifiImmediateRecoverTried) {
         wifiImmediateRecoverTried = true;
+        // WiFi.reconnect() เฉยๆ บางครั้งไม่ทำอะไรเลยถ้า internal state ของ driver
+        // ไม่ใช่ idle (เช่น AP สัญญาณแกว่งแต่ไม่ขาดสนิท) — disconnect() ก่อน
+        // เพื่อบีบให้ driver กลับสู่ idle แล้วค่อย reconnect จริง
+        WiFi.disconnect(false);
+        vTaskDelay(pdMS_TO_TICKS(100));
         WiFi.reconnect();
         for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(200));
         if (WiFi.status() == WL_CONNECTED) continue;
@@ -1633,6 +1671,8 @@ void pollTask(void* pv) {
         lastReconnectMs = now;
         uint32_t disconnectedFor = now - disconnectedSince;
         if (disconnectedFor < 60000) {
+          WiFi.disconnect(false);
+          vTaskDelay(pdMS_TO_TICKS(100));
           WiFi.reconnect();
           for (int i = 0; i < 16 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(500));
         }

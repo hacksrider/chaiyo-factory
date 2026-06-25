@@ -5,6 +5,7 @@ import {
   storeScaleCommand,
   fetchScaleConfirm,
   dbStartSession,
+  dbGetSession,
   dbCancelSession,
   storeScaleLive,
 } from '../api/productionApi';
@@ -278,6 +279,13 @@ const QueueRow = ({
       if (sess && typeof sess === 'object') onScaleSessionStarted?.(sess);
     } catch (err) {
       setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
+      // DB อาจ commit แล้วแต่ response 500 (เช่น SSE publish ล้ม) — ดึง session กลับมา sync parent
+      try {
+        const recover = await dbGetSession(machineId);
+        if (recover?.session) onScaleSessionStarted?.(recover.session);
+      } catch {
+        /* retry on next poll */
+      }
     }
 
     try {

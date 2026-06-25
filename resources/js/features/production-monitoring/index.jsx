@@ -415,32 +415,30 @@ const ProductionMonitoring = () => {
   const machineState = selectedMachineId ? getMachineState(selectedMachineId) : null;
   const isLive = machineState?.mode === 'live';
 
-  // ── Safety-net poll while waitingScale ──────────────────────────────────────
-  // QueueRow's built-in poll stops when the component unmounts (queue item removed).
-  // This independent effect keeps polling dbGetSession every 3 s while the selected
-  // machine is in awaiting_scale, so the page always transitions to live mode even
-  // when SSE is unavailable.
-  const awaitingScaleRef = useRef(false);
+  // ── Safety-net poll while awaiting_scale ─────────────────────────────────────
+  // QueueRow poll หยุดเมื่อคิวหาย (mark started ใน DB) — poll จาก parent แทน
+  // รันเมื่อเครื่องที่เลือกยังไม่ live (ไม่พึ่ง waitingScale ใน state อย่างเดียว)
   useEffect(() => {
     const mid = selectedMachineId;
-    const isWaiting = Boolean(machineState?.waitingScale) && !isLive;
-    awaitingScaleRef.current = isWaiting;
-    if (!mid || !isWaiting) return undefined;
+    if (!mid || isLive) return undefined;
 
     let cancelled = false;
     const poll = async () => {
-      if (cancelled || awaitingScaleRef.current === false) return;
+      if (cancelled) return;
       try {
         const res = await dbGetSession(mid);
         if (cancelled) return;
-        if (!res?.session) return;
-        const sess = res.session;
-        if (sess.mode === 'live' || sess.waitingScale === false) {
+        const sess = res?.session;
+        if (!sess) return;
+
+        if (sess.waitingScale) {
           applyDbSessionUpdate({ machineId: mid, session: sess });
-          if (sess.mode === 'live') {
-            const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
-            if (cmd) queueLedCommand(mid, cmd).catch(() => {});
-          }
+        }
+
+        if (sess.mode === 'live') {
+          applyDbSessionUpdate({ machineId: mid, session: sess });
+          const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
+          if (cmd) queueLedCommand(mid, cmd).catch(() => {});
         }
       } catch { /* รอ tick ถัดไป */ }
     };
@@ -452,7 +450,7 @@ const ProductionMonitoring = () => {
       clearInterval(id);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMachineId, Boolean(machineState?.waitingScale), isLive]);
+  }, [selectedMachineId, isLive]);
 
   const liveScalePollResumeSinceId =
     selectedMachineId && machineState?.sessionRunUlid
@@ -766,8 +764,10 @@ const ProductionMonitoring = () => {
     const current = allStatesRef.current[machineId];
     if (shift || employee_id) {
       updateMachineState(machineId, {
-        shift:      shift      ?? current?.shift,
-        employeeId: employee_id ?? current?.employeeId,
+        shift:        shift        ?? current?.shift,
+        employeeId:   employee_id  ?? current?.employeeId,
+        mode:         'live',
+        waitingScale: false,
       });
     }
     window.dispatchEvent(new CustomEvent('sse:session_confirmed', {
@@ -1987,6 +1987,7 @@ const ProductionMonitoring = () => {
                         shift:        data.shift      || '',
                         employeeId:   data.employeeId || '',
                         mode:         'live',
+                        waitingScale: false,
                         pipeCounter:  0,
                         lastWeight:   null,
                         lastWeightAt: null,

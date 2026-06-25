@@ -1707,33 +1707,38 @@ class ProductionMonitorController extends Controller
  */
 private function publishEvent(string $type, array $data): void
 {
-    Cache::lock('sse_counter_lock', 5)->block(3, function () use ($type, $data) {
-        $current = (int) Cache::get('sse_counter', 0);
-        $events  = Cache::get('sse_queue', []);
+    try {
+        Cache::lock('sse_counter_lock', 5)->block(3, function () use ($type, $data) {
+            $current = (int) Cache::get('sse_counter', 0);
+            $events  = Cache::get('sse_queue', []);
 
-        if ($current <= 0) {
-            foreach ($events as $ev) {
-                $current = max($current, (int) ($ev['id'] ?? 0));
+            if ($current <= 0) {
+                foreach ($events as $ev) {
+                    $current = max($current, (int) ($ev['id'] ?? 0));
+                }
             }
-        }
 
-        $id = $current + 1;
+            $id = $current + 1;
 
-        $events[] = [
-            'id'   => $id,
-            'type' => $type,
-            'data' => $data,
-            'ts'   => now()->toISOString(),
-        ];
+            $events[] = [
+                'id'   => $id,
+                'type' => $type,
+                'data' => $data,
+                'ts'   => now()->toISOString(),
+            ];
 
-        // Keep last 1000 events in the ring buffer (~5 min at 3 events/s)
-        if (count($events) > 1000) {
-            $events = array_slice($events, -1000);
-        }
+            // Keep last 1000 events in the ring buffer (~5 min at 3 events/s)
+            if (count($events) > 1000) {
+                $events = array_slice($events, -1000);
+            }
 
-        Cache::put('sse_counter', $id, now()->addHours(24));
-        Cache::put('sse_queue', $events, now()->addMinutes(30));
-    });
+            Cache::put('sse_counter', $id, now()->addHours(24));
+            Cache::put('sse_queue', $events, now()->addMinutes(30));
+        });
+    } catch (\Throwable $e) {
+        // SSE queue failure must not fail the HTTP request — DB/session is already committed.
+        Log::warning("publishEvent failed ({$type}): " . $e->getMessage());
+    }
 }
 
     /**
