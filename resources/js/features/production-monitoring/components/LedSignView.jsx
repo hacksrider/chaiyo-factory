@@ -1719,11 +1719,6 @@ const LedSignView = ({
         displayG = 255;
         displayB = 0;
       }
-    } else if (!isOverridden && mState?.mode !== 'live') {
-      displayText = LED_PREP_PAYLOAD.text;
-      displayR = LED_PREP_PAYLOAD.r;
-      displayG = LED_PREP_PAYLOAD.g;
-      displayB = LED_PREP_PAYLOAD.b;
     } else {
       const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
       displayR = r;
@@ -1762,23 +1757,26 @@ const LedSignView = ({
   }, [pushLedDisplayToDevice]);
 
   const machineLivePrevRef = useRef({});
-  // เมื่อจบ/ยกเลิก Live → อัปเดต preview + ส่งป้าย "ออเดอร์ครบ/รอออเดอร์"
-  // เมื่อเข้า Live → บังคับ push ไปป้ายจริง (preview มักถูกก่อนป้าย ESP poll ทัน)
+  // อัปเดต preview เมื่อจบ Live (ไม่ส่งไปป้าย — backend/finish handler จัดการแล้ว)
   useEffect(() => {
     if (!sid) return;
     const live = allMachineStates[sid]?.mode === 'live';
     const prev = machineLivePrevRef.current[sid];
+    if (prev === undefined) {
+      machineLivePrevRef.current[sid] = live;
+      return;
+    }
+    if (prev === live) return;
     machineLivePrevRef.current[sid] = live;
 
     if (prev === true && !live) {
       applyPrepLedToUi(sid);
-      queueLedForMachine(sid, LED_PREP_PAYLOAD).catch(() => {});
       return;
     }
-    if (live && (prev === false || prev === undefined) && canAutoPushQtyToLed) {
+    if (live && prev === false && canAutoPushQtyToLed) {
       pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
     }
-  }, [sid, allMachineStates, canAutoPushQtyToLed, applyPrepLedToUi, queueLedForMachine]);
+  }, [sid, allMachineStates, canAutoPushQtyToLed, applyPrepLedToUi]);
 
   const mergeLedStatusIntoUi = useCallback((machineId, res) => {
     const state = res?.state ?? null;
@@ -1966,10 +1964,16 @@ const LedSignView = ({
     prevPollCodeRef.current[sid] = pollCode;
     const recovered = prev != null && prev !== 200 && pollCode === 200;
     const bootedFresh = localEspStatus?.data?.uptimeSec != null && Number(localEspStatus.data.uptimeSec) < 180;
-    if (recovered || (bootedFresh && pollCode === 200 && prev == null)) {
+    const mState = allMachineStatesRef.current[sid];
+    const ls = ledStatesRef.current[sid];
+    const cfg = configsRef.current[sid] ?? DEFAULT_CONFIG;
+    const mayPush = mState?.mode === 'live'
+      || Boolean(ls?.textOverride)
+      || shouldPushClockOnly(cfg, ls);
+    if (mayPush && (recovered || (bootedFresh && pollCode === 200 && prev == null))) {
       pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
     }
-  }, [sid, localEspStatus?.data?.lastPollHttpCode, localEspStatus?.data?.uptimeSec]);
+  }, [sid, localEspStatus?.data?.lastPollHttpCode, localEspStatus?.data?.uptimeSec, allMachineStates]);
 
   const getEffectiveWifiStatusForMachine = useCallback((machineId) => {
     const hb = wifiStatuses[machineId] ?? 'checking';
@@ -1991,6 +1995,14 @@ const LedSignView = ({
           : [];
 
       for (const machine of targets) {
+        const mState = allMachineStatesRef.current[machine.id];
+        const ls = ledStatesRef.current[machine.id];
+        const cfg = configsRef.current[machine.id] ?? DEFAULT_CONFIG;
+        const isLive = mState?.mode === 'live';
+        const isOverride = Boolean(ls?.textOverride);
+        const isClock = shouldPushClockOnly(cfg, ls);
+        // อย่า auto-push ตอน idle — กัน deploy แล้วทุกป้ายถูกทับเป็น "ออเดอร์ครบ"
+        if (!isLive && !isOverride && !isClock) continue;
         try {
           await pushLedDisplayToDeviceRef.current?.(machine.id);
         } catch {
@@ -2050,11 +2062,17 @@ const LedSignView = ({
         setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
         // offline→online หรือ poll กลับมาหลังหยุดช่วงสั้นๆ (<35s) — ส่งคำสั่งซ้ำเหมือนกดซิงก์ป้าย
         const pollResumed = prevAgo != null && prevAgo >= 10 && ago <= 8;
-        if ((hadPriorStatus && !wasOnline) || pollResumed) {
+        const mState = allMachineStatesRef.current[sid];
+        const ls = ledStatesRef.current[sid];
+        const cfg = configsRef.current[sid] ?? DEFAULT_CONFIG;
+        const mayPush = mState?.mode === 'live'
+          || Boolean(ls?.textOverride)
+          || shouldPushClockOnly(cfg, ls);
+        if (mayPush && ((hadPriorStatus && !wasOnline) || pollResumed)) {
           pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
         }
         // ป้าย poll server ได้แต่ค้าง "กำลังซิงก์.." — ส่งคำสั่งซ้ำอัตโนมัติ (ไม่ต้องกดปุ่ม)
-        if (result?.stuckTransient) {
+        if (result?.stuckTransient && mayPush) {
           const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
           const now = Date.now();
           if (now - lastPush >= 30_000) {
@@ -2500,9 +2518,6 @@ const LedSignView = ({
     if (isTextOverridden) return base;
     if (isLiveMachine && liveProductText) {
       return { ...base, text: liveProductText, colorHex: '#00ff00' };
-    }
-    if (!isLiveMachine) {
-      return { ...base, text: LED_PREP_PAYLOAD.text, colorHex: PREP_LED_HEX };
     }
     return base;
   })();

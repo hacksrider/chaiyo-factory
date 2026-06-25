@@ -254,6 +254,7 @@ const QueueRow = ({
     setNotice(null);
 
     // สร้างเซสชันใน DB ก่อน — GET scale-confirm อ่านจาก production_sessions เท่านั้น
+    let sessionReady = false;
     try {
       const startRes = await dbStartSession(machineId, {
         queueItemId:  item.id ?? null,
@@ -276,15 +277,22 @@ const QueueRow = ({
         maxWeight:    item.maxWeight ?? null,
       });
       const sess = startRes?.session ?? startRes;
-      if (sess && typeof sess === 'object') onScaleSessionStarted?.(sess);
+      if (sess && typeof sess === 'object') {
+        sessionReady = true;
+        onScaleSessionStarted?.(sess);
+      }
     } catch (err) {
-      setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
       // DB อาจ commit แล้วแต่ response 500 (เช่น SSE publish ล้ม) — ดึง session กลับมา sync parent
       try {
         const recover = await dbGetSession(machineId);
-        if (recover?.session) onScaleSessionStarted?.(recover.session);
+        if (recover?.session) {
+          sessionReady = true;
+          onScaleSessionStarted?.(recover.session);
+        } else {
+          setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
+        }
       } catch {
-        /* retry on next poll */
+        setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
       }
     }
 
@@ -301,7 +309,34 @@ const QueueRow = ({
         productLen:  item.length      ?? 0,
       });
     } catch (err) {
-      setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
+      if (!sessionReady) {
+        setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
+      }
+      // session พร้อมแล้ว — ตาชั่ง poll ซ้ำได้; ลองส่งคำสั่งอีกครั้ง
+      try {
+        const scaleTarget = (item.remainingQty > 0) ? item.remainingQty : item.targetQty;
+        await storeScaleCommand(machineId, {
+          orderId:     item.orderId,
+          productCode: item.productCode || '',
+          targetQty:   scaleTarget,
+          sheetName,
+          stdWeight:   item.stdWeight   ?? 0,
+          minWeight:   item.minWeight   ?? 0,
+          maxWeight:   item.maxWeight   ?? 0,
+          productLen:  item.length      ?? 0,
+        });
+      } catch {
+        if (sessionReady) {
+          setNotice({ type: 'warn', text: t('production.scaleSendFailed', { msg: err.message }) });
+        }
+      }
+    }
+
+    if (!sessionReady) {
+      setPhase('idle');
+      setStarting(false);
+      startLockRef.current = false;
+      return;
     }
 
     waitEndsAtRef.current = Date.now() + SCALE_CONFIRM_WAIT_MS;

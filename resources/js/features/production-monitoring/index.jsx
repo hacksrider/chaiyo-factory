@@ -1222,23 +1222,24 @@ const ProductionMonitoring = () => {
     [pauseOrder, pushPrepLed]
   );
 
-  // เมื่อเครื่องเข้า/ออกโหมด live — ส่งป้ายให้ตรงสถานะ (ครอบคลุม SSE / safety-net)
+  // เมื่อเครื่องเข้าโหมด live จริงๆ (ไม่ใช่ตอน hydrate ครั้งแรก) — ส่งป้ายชื่อสินค้า
+  // ห้าม pushPrep ที่นี่ — ทำให้ทุกป้ายขึ้น "ออเดอร์ครบ" ตอน deploy/hydrate ผิดๆ
   const livePrevRef = useRef({});
   useEffect(() => {
     Object.entries(allStates).forEach(([mid, st]) => {
       const live = st?.mode === 'live';
       const prev = livePrevRef.current[mid];
-      livePrevRef.current[mid] = live;
-      if (prev === true && !live) {
-        pushPrepLed(mid);
+      if (prev === undefined) {
+        livePrevRef.current[mid] = live;
         return;
       }
-      if (!live) return;
-      if (prev === undefined || prev === false) {
+      if (prev === live) return;
+      livePrevRef.current[mid] = live;
+      if (live && prev === false) {
         void pushProductionLed(mid, st);
       }
     });
-  }, [allStates, pushProductionLed, pushPrepLed]);
+  }, [allStates, pushProductionLed]);
 
   const queueProductionLedForMachine = useCallback((machineId, orderLike, pipeCounter) => {
     return pushProductionLed(machineId, { ...orderLike, mode: 'live' }, pipeCounter);
@@ -1960,11 +1961,19 @@ const ProductionMonitoring = () => {
                       const mid = selectedMachineId;
                       if (!mid || !sess) return;
                       applyDbSessionUpdate({ machineId: mid, session: sess });
-                      // ส่ง LED ทันทีเมื่อ session เป็น waiting_scale (scale รับคำสั่งแล้ว)
-                      // เพื่อให้ป้ายไฟแสดงชื่อสินค้าได้เร็วขึ้น
-                      if (sess?.mode === 'live') {
-                        const cmd = buildProductionLedCommand(sess, sess.pipeCounter ?? 0);
-                        if (cmd) queueLedCommand(mid, cmd).catch(() => {});
+                      // ส่งป้ายชื่อสินค้าตั้งแต่ awaiting_scale (รอตาชั่ง) หรือ live
+                      if (sess?.mode === 'live' || sess?.waitingScale) {
+                        const cmd = buildProductionLedCommand(
+                          { ...sess, mode: 'live' },
+                          sess.pipeCounter ?? 0,
+                        );
+                        if (cmd) {
+                          const m = machines.find((x) => x.id === mid);
+                          const ips = [sess.ledIp, m?.ledIp]
+                            .map((ip) => String(ip ?? '').trim())
+                            .filter(Boolean);
+                          queueLedCommandWithLanFallback(mid, cmd, { ips }).catch(() => {});
+                        }
                       }
                       try {
                         const res = await dbGetQueue(mid);

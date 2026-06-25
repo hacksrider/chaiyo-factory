@@ -882,7 +882,11 @@ class ProductionMonitorController extends Controller
                 Cache::forget("scale_cmd_{$machineId}");
 
                 $fresh = $session->fresh();
-                $this->ensureActiveGasOrderForSession($fresh);
+                try {
+                    $this->ensureActiveGasOrderForSession($fresh);
+                } catch (\Throwable $e) {
+                    Log::warning("sessionConfirm ensureActiveGasOrder failed for {$machineId}: " . $e->getMessage());
+                }
                 if ($fresh) {
                     $state = $fresh->toFrontendState();
                     if ($fresh->status === 'live') {
@@ -2315,6 +2319,22 @@ private function publishEvent(string $type, array $data): void
      */
     public function startSession(Request $request, string $machineId): JsonResponse
     {
+        try {
+            return $this->startSessionImpl($request, $machineId);
+        } catch (\Throwable $e) {
+            Log::error("startSession failed for {$machineId}: " . $e->getMessage(), [
+                'exception' => $e,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    private function startSessionImpl(Request $request, string $machineId): JsonResponse
+    {
         $data = $request->only([
             'queueItemId', 'orderId', 'productCode', 'productName',
             'targetQty', 'remainingQty', 'planDate', 'sheetName', 'ledIp',
@@ -2403,8 +2423,44 @@ private function publishEvent(string $type, array $data): void
 
         $frontendState = $session ? $session->toFrontendState() : [];
 
+        // คิวคำสั่งไปตาชั่งฝั่ง server — กัน frontend storeScaleCommand ล้มแล้วตาชั่งไม่ได้รับงาน
+        if ($session && in_array((string) ($session->status ?? ''), ['live', 'awaiting_scale'], true)) {
+            $remaining = (int) ($session->remaining_qty ?? 0);
+            $target    = (int) ($session->target_qty ?? 0);
+            $scaleTarget = $remaining > 0 ? $remaining : $target;
+            Cache::forget("scale_pending_revoked_{$machineId}");
+            Cache::put("scale_cmd_{$machineId}", [
+                'orderId'     => (string) ($session->order_id ?? ''),
+                'productCode' => (string) ($session->product_code ?? ''),
+                'targetQty'   => $scaleTarget,
+                'sheetName'   => (string) ($session->sheet_name ?? ''),
+                'stdWeight'   => (float) ($session->std_weight ?? 0),
+                'minWeight'   => (float) ($session->min_weight ?? 0),
+                'maxWeight'   => (float) ($session->max_weight ?? 0),
+                'productLen'  => (float) ($session->length ?? 0),
+            ], now()->addMinutes(10));
+            if (! $continuing) {
+                Cache::put("scale_count_{$machineId}", 0, now()->addHours(24));
+                Cache::forget("scale_events_{$machineId}");
+                Cache::put("scale_session_start_{$machineId}", now()->toIso8601String(), now()->addHours(24));
+            }
+        }
+
         // Async dual-write: เมื่อมีกะ+รหัสครบและสถานะ live เท่านั้น (ครอบคลุมเมื่อ sessionConfirm ทำก่อนรอบสองของ start)
-        $this->ensureActiveGasOrderForSession($session);
+        try {
+            $this->ensureActiveGasOrderForSession($session);
+        } catch (\Throwable $e) {
+            Log::warning("startSession ensureActiveGasOrder failed for {$machineId}: " . $e->getMessage());
+        }
+
+        // ส่งชื่อสินค้าไปป้ายทันทีตั้งแต่ awaiting_scale (ไม่พึ่ง browser)
+        if ($session && in_array((string) ($session->status ?? ''), ['live', 'awaiting_scale'], true)) {
+            try {
+                $this->queueProductionLedFromSession($session);
+            } catch (\Throwable $e) {
+                Log::warning("startSession queueProductionLed failed for {$machineId}: " . $e->getMessage());
+            }
+        }
 
         // Broadcast as production_updated to match existing frontend SSE handler
         $this->publishEvent('production_updated', [
@@ -2455,7 +2511,8 @@ private function publishEvent(string $type, array $data): void
      */
     private function queueProductionLedFromSession(ProductionSession $session): void
     {
-        if ((string) ($session->status ?? '') !== 'live') {
+        if ((string) ($session->status ?? '') !== 'live'
+            && (string) ($session->status ?? '') !== 'awaiting_scale') {
             return;
         }
 
