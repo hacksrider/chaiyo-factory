@@ -2197,8 +2197,9 @@ const ProductionMonitoring = () => {
                       const mid = selectedMachineId;
                       if (!mid || !sess) return;
                       applyDbSessionUpdate({ machineId: mid, session: sess });
-                      // ส่งป้ายชื่อสินค้าตั้งแต่ awaiting_scale (รอตาชั่ง) หรือ live
-                      if (sess?.mode === 'live' || sess?.waitingScale) {
+                      // ส่งป้ายชื่อสินค้าเฉพาะเมื่อ live เท่านั้น (ตาชั่งกด D ยืนยันแล้ว)
+                      // awaiting_scale = ยังรอกด D → ห้ามเปลี่ยนป้ายไฟ เพราะกดยกเลิกได้
+                      if (sess?.mode === 'live') {
                         const cmd = buildProductionLedCommand(
                           { ...sess, mode: 'live' },
                           sess.pipeCounter ?? 0,

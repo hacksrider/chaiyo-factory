@@ -2501,6 +2501,16 @@ private function publishEvent(string $type, array $data): void
      */
     public function cancelSession(string $machineId): JsonResponse
     {
+        try {
+            return $this->cancelSessionImpl($machineId);
+        } catch (\Throwable $e) {
+            Log::error("cancelSession failed for {$machineId}: " . $e->getMessage(), ['exception' => $e]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    private function cancelSessionImpl(string $machineId): JsonResponse
+    {
         $session = ProductionSession::where('machine_id', $machineId)
             ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
             ->first();
@@ -2509,7 +2519,8 @@ private function publishEvent(string $type, array $data): void
         $ts  = (int) round(microtime(true) * 1000);
 
         if ($session) {
-            $wasAwaiting = ((string) ($session->status ?? '')) === 'awaiting_scale';
+            $runUlid      = $session->session_run_ulid;
+            $wasAwaiting  = ((string) ($session->status ?? '')) === 'awaiting_scale';
             $queueOrderId = (string) ($session->order_id ?? '');
 
             DB::transaction(function () use ($session, $machineId, $now, $ts, $runUlid, $wasAwaiting, $queueOrderId) {
@@ -2727,8 +2738,9 @@ private function publishEvent(string $type, array $data): void
             Log::warning("startSession ensureActiveGasOrder failed for {$machineId}: " . $e->getMessage());
         }
 
-        // ส่งชื่อสินค้าไปป้ายทันทีตั้งแต่ awaiting_scale (ไม่พึ่ง browser)
-        if ($session && in_array((string) ($session->status ?? ''), ['live', 'awaiting_scale'], true)) {
+        // ส่งชื่อสินค้าไปป้ายเฉพาะเมื่อ live เท่านั้น (ตาชั่งยืนยันกะ+รหัสแล้ว)
+        // awaiting_scale = รอกด D — ยังไม่ควรเปลี่ยนป้ายไฟ เพราะผู้ใช้อาจกดยกเลิกได้
+        if ($session && (string) ($session->status ?? '') === 'live') {
             try {
                 $this->queueProductionLedFromSession($session);
             } catch (\Throwable $e) {
@@ -2757,30 +2769,34 @@ private function publishEvent(string $type, array $data): void
      */
     public function pauseSession(Request $request, string $machineId): JsonResponse
     {
-        $session = ProductionSession::where('machine_id', $machineId)
-            ->where('status', 'live')
-            ->first();
+        try {
+            $session = ProductionSession::where('machine_id', $machineId)
+                ->where('status', 'live')
+                ->first();
 
-        if (!$session) {
-            return response()->json(['success' => false, 'message' => 'no live session'], 404);
+            if (!$session) {
+                return response()->json(['success' => false, 'message' => 'no live session'], 404);
+            }
+
+            $session->update([
+                'status'       => 'paused',
+                'paused_at'    => now(),
+                'paused_order' => $request->input('pausedOrder'),
+                'ts'           => (int) round(microtime(true) * 1000),
+            ]);
+
+            $this->resetLedToWaitingState($machineId);
+
+            $state = $session->fresh()->toFrontendState();
+
+            $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
+            $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
+
+            return response()->json(['success' => true, 'session' => $state]);
+        } catch (\Throwable $e) {
+            Log::error("pauseSession failed for {$machineId}: " . $e->getMessage(), ['exception' => $e]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
-
-        $session->update([
-            'status'       => 'paused',
-            'paused_at'    => now(),
-            'paused_order' => $request->input('pausedOrder'),
-            'ts'           => (int) round(microtime(true) * 1000),
-        ]);
-
-        // เพิ่มบรรทัดนี้: คืนป้ายไฟเป็น "ออเดอร์ครบ/รออเดอร์" อัตโนมัติเมื่อหยุดงาน
-        $this->resetLedToWaitingState($machineId);
-
-        $state = $session->fresh()->toFrontendState();
-
-        $this->publishEvent('session_updated', ['machineId' => $machineId, 'session' => $state]);
-        $this->publishEvent('production_updated', ['machineId' => $machineId, 'state' => $state]);
-
-        return response()->json(['success' => true, 'session' => $state]);
     }
 
     /**
@@ -3111,6 +3127,16 @@ private function publishEvent(string $type, array $data): void
      * Body: { goodCount?, ngCount?, totalGoodWeight?, totalNgWeight?, skipGasDispatch? }
      */
     public function finishSession(Request $request, string $machineId): JsonResponse
+    {
+        try {
+            return $this->finishSessionImpl($request, $machineId);
+        } catch (\Throwable $e) {
+            Log::error("finishSession failed for {$machineId}: " . $e->getMessage(), ['exception' => $e]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    private function finishSessionImpl(Request $request, string $machineId): JsonResponse
     {
         $session = ProductionSession::where('machine_id', $machineId)
             ->whereIn('status', ['live', 'paused', 'awaiting_scale'])
