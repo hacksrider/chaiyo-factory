@@ -197,7 +197,7 @@ QueueHandle_t cmdQueue = nullptr; // Queue ส่งคำสั่งจาก 
 
 // fingerprint ล่าสุดที่ “ตรงกับ state บน server” แล้ว (กันยิง queue ซ้ำ + reconcile รู้ว่าเมื่อไหร่ต้องดึงใหม่)
 static String s_ledStateFingerprint;
-static const int         RECONCILE_EVERY_N_POLLS        = 2;  // 2 × 2s = ~4s
+static const int         RECONCILE_EVERY_N_POLLS        = 4;  // 4 × 1s = ~4s
 // WiFi reconnect exponential backoff — เริ่ม 2s → สูงสุด 60s (± 20% jitter)
 static const uint32_t    WIFI_BACKOFF_MIN_MS            = 2000;
 static const uint32_t    WIFI_BACKOFF_MAX_MS            = 60000;
@@ -1129,7 +1129,7 @@ void loop() {
 //  ④ วนซ้ำตลอดไป ไม่มีเงื่อนไขหยุด
 // ======================================================================
 void pollTask(void* pv) {
-  const TickType_t pollInterval = pdMS_TO_TICKS(2000);
+  const TickType_t pollInterval = pdMS_TO_TICKS(1000);
 
   static uint32_t lastReconnectMs          = 0;
   static uint32_t wifiBackoffMs            = WIFI_BACKOFF_MIN_MS;
@@ -1150,8 +1150,6 @@ void pollTask(void* pv) {
   };
 
   for (;;) {
-    vTaskDelay(pollInterval);
-
     // ───── WiFi ไม่ได้เชื่อมอยู่ → พยายามเชื่อมตลอด ─────
     if (WiFi.status() != WL_CONNECTED) {
       uint32_t now = millis();
@@ -1204,6 +1202,7 @@ void pollTask(void* pv) {
           Serial.printf("[Poll] Next retry in %lums\n", wifiBackoffMs);
         }
       }
+      vTaskDelay(pollInterval); // ป้องกัน busy-loop ระหว่างรอ reconnect
       continue;
     }
 
@@ -1320,6 +1319,8 @@ void pollTask(void* pv) {
         stuckTransientSinceMs = 0;
       }
     }
+
+    vTaskDelay(pollInterval); // delay ที่ท้าย loop ให้รอบถัดไปเริ่มทันทีหลัง delay
   }
 }
 

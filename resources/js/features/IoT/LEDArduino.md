@@ -174,7 +174,7 @@ QueueHandle_t cmdQueue = nullptr;
 static String s_ledStateFingerprint;
 static const int         BOOT_SYNC_MAX_ATTEMPTS         = 8;
 static const uint32_t    BOOT_SYNC_RETRY_MS             = 1500;
-static const int         RECONCILE_EVERY_N_POLLS        = 2;
+static const int         RECONCILE_EVERY_N_POLLS        = 4;  // 4 × 1s = ~4s
 static const uint32_t    WIFI_BACKOFF_MIN_MS            = 2000;
 static const uint32_t    WIFI_BACKOFF_MAX_MS            = 60000;
 static const uint32_t    WIFI_RECONNECT_INTERVAL_MS     = 5000;
@@ -1618,7 +1618,7 @@ void loop() {
 }
 
 void pollTask(void* pv) {
-  const TickType_t pollInterval = pdMS_TO_TICKS(2000);
+  const TickType_t pollInterval = pdMS_TO_TICKS(1000);
 
   static uint32_t lastReconnectMs          = 0;
   static uint32_t wifiBackoffMs            = WIFI_BACKOFF_MIN_MS; 
@@ -1636,8 +1636,6 @@ void pollTask(void* pv) {
   };
 
   for (;;) {
-    vTaskDelay(pollInterval);
-
     // ─── ➕ อ่านอุณหภูมิอัปเดตเข้าตัวแปรหลักและล็อก Serial ทุก 30 วินาที ───
     uint32_t currentMs = millis();
     if (currentMs - lastTempLogMs >= 30000 || lastTempLogMs == 0) {
@@ -1697,6 +1695,7 @@ void pollTask(void* pv) {
           wifiBackoffMs = (uint32_t)max((int32_t)WIFI_BACKOFF_MIN_MS, (int32_t)next + jitter);
         }
       }
+      vTaskDelay(pollInterval); // ป้องกัน busy-loop ระหว่างรอ reconnect
       continue;
     }
 
@@ -1836,6 +1835,8 @@ void pollTask(void* pv) {
         }
       }
     }
+
+    vTaskDelay(pollInterval); // delay ที่ท้าย loop ให้ command ที่มาใหม่ถูก poll ทันทีในรอบถัดไป
   }
 }
 

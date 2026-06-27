@@ -2651,6 +2651,13 @@ private function publishEvent(string $type, array $data): void
      */
     private function normalizeLedPanelCounters(string $machineId, array $ledState): array
     {
+        // textOverride หมายความว่า user กำหนดข้อความเองโดยตรง — ไม่ต้องแสดง counter จาก session
+        if ((bool) ($ledState['textOverride'] ?? false)) {
+            $ledState['actual'] = '0';
+            $ledState['target'] = '0';
+            return $ledState;
+        }
+
         $session = ProductionSession::where('machine_id', $machineId)->first();
         $activeSession = $session && in_array($session->status ?? '', ['live', 'paused', 'awaiting_scale'], true);
         $showCounters = $activeSession && ! (bool) ($ledState['textOverride'] ?? false);
