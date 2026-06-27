@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.19
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.20
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -18,6 +18,7 @@
   v2.19 — apply คำสั่ง pending ทันทีใน pollTask (ไม่พึ่ง cmdQueue อย่างเดียว)
      แก้กรณีป้ายค้างนาฬิกาแม้ server ส่งข้อความใหม่แล้ว — cmdQueue บน core อื่น
      อาจไม่ drain ทัน หรือ skipSyncThisCycle บล็อก /led-status sync
+  v2.20 — JSON buffer 8192 สำหรับข้อความไทย + fallback sync เมื่อ parse/apply ล้มเหลว
 */
 
 #include <WiFi.h>
@@ -89,6 +90,7 @@ void maybeRestartAfterPollFailures(uint32_t nowMs);
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
 #define MACHINE_ID  "EM 9A"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
+#define FIRMWARE_VERSION "2.20"
 
 // ── WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น) ──────────
 // IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
@@ -1173,6 +1175,7 @@ void handleStatus() {
   uint32_t pollAgo = g_lastPollAttemptMs > 0 ? (millis() - g_lastPollAttemptMs) / 1000UL : 999999UL;
   uint32_t pollOkAgo = g_lastPollSuccessMs > 0 ? (millis() - g_lastPollSuccessMs) / 1000UL : 999999UL;
   String resp = String("{\"ok\":true")
+              + ",\"firmwareVersion\":\"" + String(FIRMWARE_VERSION) + "\""
               + ",\"machineId\":\"" + jsonEscapeString(String(MACHINE_ID)) + "\""
               + ",\"ip\":\"" + jsonEscapeString(WiFi.localIP().toString()) + "\""
               + ",\"mac\":\"" + jsonEscapeString(WiFi.macAddress()) + "\""
@@ -1767,16 +1770,19 @@ void pollTask(void* pv) {
     bool skipSyncThisCycle = false;
     if (code == 200) {
       bool pending = false;
+      bool pollNeedsSync = false;
       {
-        StaticJsonDocument<2048> doc;
+        DynamicJsonDocument doc(8192);
         DeserializationError jerr = deserializeJson(doc, body);
         pending = (!jerr && doc["pending"].as<bool>());
-        if (!jerr && pending) {
+        if (jerr) {
+          Serial.printf("[Poll] JSON parse fail: %s (bodyLen=%u)\n", jerr.c_str(), body.length());
+          pollNeedsSync = g_clockMode;
+        } else if (pending) {
           JsonObject root = doc.as<JsonObject>();
           String serverFp = buildFingerprintFromStateJson(root);
           bool appliedDirect = false;
 
-          // fp ต่างจากที่แสดงอยู่ → apply ทันทีใน pollTask (sync path ใช้วิธีเดียวกัน)
           if (serverFp.length() > 0 && serverFp != s_ledStateFingerprint) {
             appliedDirect = applyLedStateFromServer(root);
             if (appliedDirect) {
@@ -1784,6 +1790,9 @@ void pollTask(void* pv) {
               g_awaitingBootSync = false;
               g_bootSyncWaitingSinceMs = 0;
               g_needsPollResync = false;
+            } else {
+              Serial.println("[Poll] Direct apply failed — will sync/queue");
+              pollNeedsSync = true;
             }
           }
 
@@ -1791,23 +1800,31 @@ void pollTask(void* pv) {
             LedCmd cmd = {};
             stateJsonToLedCmd(root, cmd);
             if (cmd.text[0] != '\0') flushLedCommandQueue();
-            if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
+            if (xQueueSend(cmdQueue, &cmd, pdMS_TO_TICKS(50)) == pdTRUE) {
               Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
               g_awaitingBootSync = false;
               g_bootSyncWaitingSinceMs = 0;
               g_needsPollResync = false;
               skipSyncThisCycle = true;
             } else {
-              g_needsPollResync = true;
-              Serial.println("[Poll] cmdQueue full — จะ poll ซ้ำ");
+              flushLedCommandQueue();
+              if (xQueueSend(cmdQueue, &cmd, pdMS_TO_TICKS(50)) == pdTRUE) {
+                skipSyncThisCycle = true;
+              } else {
+                g_needsPollResync = true;
+                pollNeedsSync = true;
+                Serial.println("[Poll] cmdQueue blocked — fallback sync");
+              }
             }
           }
-        } else if (jerr) {
-          Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
         }
       }
       if (!pending && (g_clockMode || isTransientStatusText(currentText))) {
         g_requestStatusSync = true;
+      }
+      if (pollNeedsSync) {
+        g_requestStatusSync = true;
+        skipSyncThisCycle = false;
       }
     }
 

@@ -395,11 +395,19 @@ class ProductionMonitorController extends Controller
     {
         $state = $this->resolveAuthoritativeLedState($machineId, null);
 
+        Log::warning('[LED-STATUS] getLedStatus', [
+            'machineId' => $machineId,
+            'hasState'  => $state !== null,
+            'text'      => $state ? substr((string) ($state['text'] ?? ''), 0, 40) : null,
+            'showClock' => is_array($state) ? ($state['showClock'] ?? null) : null,
+            'ip'        => request()->ip(),
+        ]);
+
         return response()->json([
             'success'   => true,
             'machineId' => $machineId,
             'hasState'  => $state !== null,
-            'state'     => $state,
+            'state'     => $this->ledEspPayloadFromState($state),
         ]);
     }
 
@@ -507,7 +515,7 @@ class ProductionMonitorController extends Controller
                 'forced'    => ! empty($command['_force']),
             ]);
 
-            return response()->json(array_merge(['pending' => true], $command));
+            return response()->json($this->ledEspPayloadFromState($command, true));
         }
 
         if ($wasOffline || $resync || ($freshBoot && ! Cache::get($bootKey))) {
@@ -2241,7 +2249,7 @@ private function publishEvent(string $type, array $data): void
                 $rawLines = array_reverse($rawLines);
                 // LED-specific lines
                 foreach ($reversed as $line) {
-                    if (str_contains($line, '[LED-') || str_contains($line, 'LED-ACK') || str_contains($line, 'LED-POLL') || str_contains($line, 'LED-REQ')) {
+                    if (str_contains($line, '[LED-') || str_contains($line, 'LED-ACK') || str_contains($line, 'LED-POLL') || str_contains($line, 'LED-REQ') || str_contains($line, 'LED-STATUS') || str_contains($line, 'LED-RESYNC')) {
                         $ledLines[] = trim($line);
                         if (count($ledLines) >= 40) break;
                     }
@@ -2827,12 +2835,6 @@ private function publishEvent(string $type, array $data): void
     }
 
     /**
-     * Fingerprint ให้ ESP ack หลังนำคำสั่งไปใช้ (รูปแบบเดียวกับ buildLedStateFingerprint บนบอร์ด)
-     *
-     * @param  array<string, mixed>  $ledState
-     * @return array<string, mixed>
-     */
-    /**
      * ส่ง state ให้ ESP แบบ one-shot: pending=true โดยไม่เขียน led_cmd_ (กันคิวค้าง)
      *
      * @param  array<string, mixed>|null  $state
@@ -2852,10 +2854,41 @@ private function publishEvent(string $type, array $data): void
             return response()->json(['pending' => false]);
         }
 
-        $payload = $this->stampLedCommandFingerprint($state);
-        unset($payload['_storedAt'], $payload['_force']);
+        return response()->json($this->ledEspPayloadFromState($state, true));
+    }
 
-        return response()->json(array_merge(['pending' => true], $payload));
+    /**
+     * ลด payload สำหรับ ESP — ตัด _fp (ซ้ำกับ text ทำให้ JSON ใหญ่เกิน) และบังคับ showClock
+     *
+     * @param  array<string, mixed>|null  $state
+     * @return array<string, mixed>
+     */
+    private function ledEspPayloadFromState(?array $state, bool $asPending = false): array
+    {
+        if (! is_array($state)) {
+            return $asPending ? ['pending' => false] : [];
+        }
+
+        $payload = $state;
+        unset($payload['_storedAt'], $payload['_force'], $payload['_fp'], $payload['updatedAt'], $payload['textOverride']);
+
+        if (trim((string) ($payload['text'] ?? '')) !== '') {
+            $payload['showClock'] = false;
+        }
+
+        $payload['fontSize'] = (int) ($payload['fontSize'] ?? 1);
+        $payload['speed']    = (int) ($payload['speed'] ?? 50);
+        $payload['r']        = (int) ($payload['r'] ?? 0);
+        $payload['g']        = (int) ($payload['g'] ?? 255);
+        $payload['b']        = (int) ($payload['b'] ?? 255);
+        $payload['actual']   = (string) ($payload['actual'] ?? '0');
+        $payload['target']   = (string) ($payload['target'] ?? '0');
+
+        if ($asPending) {
+            return array_merge(['pending' => true], $payload);
+        }
+
+        return $payload;
     }
 
     private function stampLedCommandFingerprint(array $ledState): array
