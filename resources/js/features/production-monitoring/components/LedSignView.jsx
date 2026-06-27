@@ -2262,9 +2262,9 @@ const LedSignView = ({
         ...IDLE_PANEL_COUNTERS,
       };
 
-      // Send LED command
-      await queueLedForMachine(selectedMachine.id, ledPayload);
+      // แจ้ง index.jsx ก่อน await — กันให้ pushProductionLed ส่งข้อมูล live ทับระหว่าง POST
       notifyLedOverrideState(selectedMachine.id, ledPayload);
+      await queueLedForMachine(selectedMachine.id, ledPayload);
 
       // Update local config
       const newColorHex = formData.colorHex ?? config.colorHex;
@@ -2330,16 +2330,7 @@ const LedSignView = ({
         ? ` |- ${defaultRecorderName} ${formatDateThaiShort(now)} - ${formatTimeThaiDot(now)}`
         : '';
       const fullText = text + nameSuffix;
-      await queueLedForMachine(selectedMachine.id, {
-        text: fullText,
-        showClock: false,
-        r, g, b,
-        fontSize: cfg.fontSize ?? 1,
-        speed: speedMs,
-        textOverride: true,
-        ...IDLE_PANEL_COUNTERS,
-      });
-      notifyLedOverrideState(selectedMachine.id, {
+      const overrideState = {
         text: fullText,
         showClock: false,
         r, g, b,
@@ -2348,7 +2339,10 @@ const LedSignView = ({
         textOverride: true,
         actual: '0',
         target: '0',
-      });
+      };
+      // แจ้ง index.jsx ก่อน await — กันให้ pushProductionLed ส่งข้อมูล live ทับระหว่าง POST
+      notifyLedOverrideState(selectedMachine.id, overrideState);
+      await queueLedForMachine(selectedMachine.id, overrideState);
 
       // อัปเดต local config และ signature (ใช้ fullText ที่ต่อท้ายชื่อ/วันที่/เวลาแล้ว)
       const newCfg = { ...cfg, text: fullText };
@@ -2457,9 +2451,9 @@ const LedSignView = ({
     const payload = { ...buildClockPayload(cfg.colorHex, cfg), textOverride: false };
     setClearStatus('clearing');
     try {
-      await queueLedForMachine(selectedMachine.id, payload);
       const cleared = { ...payload, textOverride: false, updatedAt: new Date().toISOString() };
       notifyLedOverrideState(selectedMachine.id, cleared);
+      await queueLedForMachine(selectedMachine.id, payload);
       setLedStates((prev) => ({ ...prev, [sid]: cleared }));
       setConfigs((prev) => ({
         ...prev,

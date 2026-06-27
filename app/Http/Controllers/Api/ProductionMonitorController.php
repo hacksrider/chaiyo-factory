@@ -357,6 +357,7 @@ class ProductionMonitorController extends Controller
 
         $ledState = $this->normalizeLedPanelCounters($machineId, $ledState, $session);
         $ledState = $this->stampLedCommandFingerprint($ledState);
+        $ledState['_storedAt'] = microtime(true);
 
         // Pending command — ESP32 poll ซ้ำได้จนกว่าจะ ack (TTL 5 นาที)
         Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
@@ -406,12 +407,17 @@ class ProductionMonitorController extends Controller
         $wasOffline = $this->espHeartbeatWasOffline("led_heartbeat_{$machineId}");
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
-        // ESP ยืนยันรับคำสั่งแล้ว — ลบคิว (แทน Cache::pull ที่ทำให้คำสั่งหายก่อนนำไปใช้จริง)
+        // ESP ยืนยันรับคำสั่งแล้ว — ลบคิวเฉพาะเมื่อ fingerprint ตรงกัน
+        // และคำสั่งถูกบันทึกไว้อย่างน้อย 2 วินาทีแล้ว (กัน ack จากคำสั่งเก่า ลบคำสั่งใหม่ที่ content เหมือนกัน)
         $ackFp = trim((string) $request->query('ack', ''));
         if ($ackFp !== '') {
             $pending = Cache::get("led_cmd_{$machineId}");
             if (is_array($pending) && (string) ($pending['_fp'] ?? '') === $ackFp) {
-                Cache::forget("led_cmd_{$machineId}");
+                $storedAt = $pending['_storedAt'] ?? 0;
+                $ageSeconds = is_numeric($storedAt) ? (microtime(true) - (float) $storedAt) : 999;
+                if ($ageSeconds >= 2.0) {
+                    Cache::forget("led_cmd_{$machineId}");
+                }
             }
         }
 
@@ -438,6 +444,7 @@ class ProductionMonitorController extends Controller
             $state = $this->resolveAuthoritativeLedState($machineId, null);
             if (is_array($state)) {
                 $state = $this->stampLedCommandFingerprint($state);
+                $state['_storedAt'] = microtime(true);
                 Cache::put("led_cmd_{$machineId}", $state, now()->addMinutes(5));
                 if ($freshBoot) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
