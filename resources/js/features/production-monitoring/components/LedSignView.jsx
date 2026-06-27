@@ -2044,7 +2044,7 @@ const LedSignView = ({
         setWifiStatuses((prev) => ({ ...prev, [sid]: 'online' }));
         setPingMsgs((prev) => ({ ...prev, [sid]: '' }));
         // offline→online หรือ poll กลับมาหลังหยุดช่วงสั้นๆ (<35s) — ส่งคำสั่งซ้ำเหมือนกดซิงก์ป้าย
-        const pollResumed = prevAgo != null && prevAgo >= 10 && ago <= 8;
+        const pollResumed = prevAgo != null && prevAgo >= 6 && ago <= 8;
         const mState = allMachineStatesRef.current[sid];
         const ls = ledStatesRef.current[sid];
         const cfg = configsRef.current[sid] ?? DEFAULT_CONFIG;
@@ -2056,7 +2056,7 @@ const LedSignView = ({
         if (result?.stuckTransient && mayPush) {
           const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
           const now = Date.now();
-          if (now - lastPush >= 15_000) {
+          if (now - lastPush >= 8_000) {
             stuckRecoverPushAtRef.current[sid] = now;
             pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
           }
@@ -2135,7 +2135,14 @@ const LedSignView = ({
       } else {
         try {
           const hb = await getLedHeartbeat(sid);
-          if (!hb?.online || !hb?.stuckTransient) {
+          if (!hb?.online) {
+            stuckRecoverRef.current[sid] = 0;
+            return;
+          }
+          // V2 boards ไม่ส่ง stuckTransient — fallback: ตรวจสอบว่า heartbeat เพิ่งกลับมาหลัง gap นาน
+          const prevAgoForStuck = prevHeartbeatAgoRef.current[sid] ?? 0;
+          const recentlyReconnected = prevAgoForStuck > 30 && (hb.secondsAgo ?? 99) < 15;
+          if (!hb?.stuckTransient && !recentlyReconnected) {
             stuckRecoverRef.current[sid] = 0;
             return;
           }
@@ -2152,14 +2159,14 @@ const LedSignView = ({
       if (n >= 1) {
         const lastPush = stuckRecoverPushAtRef.current[sid] ?? 0;
         const now = Date.now();
-        if (now - lastPush >= 15_000) {
+        if (now - lastPush >= 8_000) {
           stuckRecoverPushAtRef.current[sid] = now;
           pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
         }
       }
     };
 
-    const id = setInterval(tick, 15_000);
+    const id = setInterval(tick, 8_000);
     tick();
     return () => clearInterval(id);
   }, [sid, wifiStatuses[sid], selectedMachine?.ledIp, deviceLocalIps[sid]]);

@@ -1,8 +1,8 @@
 /* ช่วยแก้ไขไฟล์นี้ถ้ามีสิ่งที่ต้องแก้ไข จะ Copy ไปอัปโหลดลง Code */
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 3 จอ (96x16) — รุ่น 1/4 Scan
-  - โซน 1 (จอ 1-2): แสดงชื่อสินค้า (จำกัดการวาดไม่ให้ทะลุจอ 3)
-  - โซน 2 (จอ 3): แสดงยอดที่ผลิตได้และเป้าหมาย (ปรับขนาดฟอนต์ และจัดกึ่งกลางแกน X อัตโนมัติ)
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16) — รุ่น 1/4 Scan
+  - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
+  - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย / Machine ID
 
   การรับคำสั่ง (Polling + Reconcile อัตโนมัติ):
   - ESP32 เป็นฝ่าย poll ไปดึงคำสั่งคิว ทุก 2 วินาที
@@ -55,6 +55,14 @@
 // ลดโอกาสรีเซ็ตจากไฟตกตอนบูต (HUB75 กินกระแสสูง)
 #include "soc/rtc_cntl_reg.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint8_t temprature_sens_read(); // ฟังก์ชันอ่านอุณหภูมิภายในของ ESP32
+#ifdef __cplusplus
+}
+#endif
+
 // ======================================================================
 //  ⚙️  ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
@@ -81,6 +89,8 @@ const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
 
 // g_serverUrl ถูกกำหนดอัตโนมัติใน connectBestWifi() — ห้ามแก้มือที่นี่
 String g_serverUrl = "";
+float g_internalTempC = 0.0f;
+unsigned long g_lastTempSampleMs = 0;
 // ======================================================================
 
 // ======================================================================
@@ -88,7 +98,11 @@ String g_serverUrl = "";
 // ขนาดทางกายภาพของป้าย P10 (ต่อ 1 แผ่น)
 #define PHYSICAL_RES_X 32
 #define PHYSICAL_RES_Y 16
-#define PANEL_CHAIN 3
+#define PANEL_CHAIN 4
+#define NAME_PANELS     3
+#define NAME_ZONE_PX    (PHYSICAL_RES_X * NAME_PANELS)
+#define NUM_ZONE_X      (PHYSICAL_RES_X * NAME_PANELS)
+#define NUM_ZONE_W      PHYSICAL_RES_X
 
 // สำหรับจอ 1/4 Scan ต้องหลอกไลบรารีว่าเป็นจอ 64x8
 // เพื่อให้ ESP32 จ่ายสัญญาณ Clock ความยาว 64 บิตต่อรอบ (แก้ปัญหาจอแบ่งเป็น 2 ฝั่ง)
@@ -194,11 +208,14 @@ static Preferences s_prefs;
 static const char* PREF_NS = "chaiyo_led";
 
 bool jsonWantsClockMode(JsonObject o) {
-  if (o.isNull()) return true;
-  if (o["showClock"] | false) return true;
+  if (o.isNull()) return false;
   String t = o["text"].as<String>();
   t.trim();
-  return t.length() == 0;
+  // มีข้อความ = โหมดข้อความเสมอ (ไม่ให้ showClock ทับข้อความจาก server)
+  if (t.length() > 0) return false;
+  // ต้องระบุ showClock:true ชัดเจน — ไม่ default เป็นนาฬิกาเมื่อ field หาย
+  if (o.containsKey("showClock")) return o["showClock"].as<bool>();
+  return false;
 }
 
 void syncNtpIfNeeded() {
@@ -232,22 +249,22 @@ bool formatClockTime(char* buf, size_t len) {
 void updateClockTextProperties() {
   u8g2_for_gfx.setFont(u8g2_font_helvB08_tf);
   textWidth = u8g2_for_gfx.getUTF8Width(currentText.c_str());
-  cursor_x  = max(0, (64 - textWidth) / 2);
+  cursor_x  = max(0, (NAME_ZONE_PX - textWidth) / 2);
 }
 
-void applyClockVisual() {
+void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0) {
   if (!dma_display) return;
   g_clockMode = true;
   currentFontSize = 1;
   scrollSpeed     = 50;
-  currentColor    = dma_display->color565(0, 255, 0); // นาฬิกา — เขียว
+  currentColor    = dma_display->color565(r, g, b);
   actualCount     = "0";
   targetCount     = "0";
   char buf[16];
   formatClockTime(buf, sizeof(buf));
   currentText = String(buf);
   updateClockTextProperties();
-  s_ledStateFingerprint = "|CLOCK|0,255,0|1|50|0|0";
+  s_ledStateFingerprint = "|CLOCK|" + String(r) + "," + String(g) + "," + String(b) + "|1|50|0|0";
   g_lastClockTickMs = millis();
 }
 
@@ -266,23 +283,36 @@ void tickClockIfNeeded() {
   }
 }
 
+bool isTransientStatusText(const String& txt) {
+  return txt == "กำลังเชื่อมต่อ.." || txt == "กำลังซิงก์.." || txt == "WiFi Error";
+}
+
+void flushLedCommandQueue() {
+  if (!cmdQueue) return;
+  LedCmd discard;
+  while (xQueueReceive(cmdQueue, &discard, 0) == pdTRUE) {}
+}
+
 void applyLedCommandFromQueue(const LedCmd& cmd) {
-  if (cmd.showClock || cmd.text[0] == '\0') {
-    applyClockVisual();
-    Serial.println("[LED] Clock mode (HH : MM : SS)");
+  if (cmd.text[0] != '\0') {
+    flushLedCommandQueue();
+    g_clockMode     = false;
+    currentText     = String(cmd.text);
+    currentFontSize = cmd.fontSize;
+    if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
+    if (dma_display) currentColor = dma_display->color565(cmd.r, cmd.g, cmd.b);
+    if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
+    if (cmd.target[0] != '\0') targetCount = String(cmd.target);
+    updateTextProperties();
+    s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
+    Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
+    saveStateToPrefs();
     return;
   }
-  g_clockMode     = false;
-  currentText     = String(cmd.text);
-  currentFontSize = cmd.fontSize;
-  if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
-  if (dma_display) currentColor = dma_display->color565(cmd.r, cmd.g, cmd.b);
-  if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
-  if (cmd.target[0] != '\0') targetCount = String(cmd.target);
-  updateTextProperties();
-  s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
-  Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
-  saveStateToPrefs();
+  if (cmd.showClock) {
+    applyClockVisual(cmd.r, cmd.g, cmd.b);
+    Serial.println("[LED] Clock mode (HH : MM : SS)");
+  }
 }
 
 void saveStateToPrefs() {
@@ -344,7 +374,10 @@ String buildLedStateFingerprint(
 
 String buildFingerprintFromStateJson(JsonObject o) {
   if (o.isNull()) return String();
-  if (jsonWantsClockMode(o)) return "|CLOCK|0,255,0|1|50|0|0";
+  if (jsonWantsClockMode(o)) {
+    int r = o["r"] | 0, g = o["g"] | 255, b = o["b"] | 255;
+    return "|CLOCK|" + String(r) + "," + String(g) + "," + String(b) + "|1|50|0|0";
+  }
   String t = o["text"].as<String>();
   t.trim();
   int r   = o["r"]         | 0,   g   = o["g"]         | 255, b  = o["b"]         | 255;
@@ -523,7 +556,7 @@ void printThaiText(String text, int x, int y) {
     }
 
     if (isCombining) {
-      if (previous_x < 64 && previous_x > -16) {
+      if (previous_x < NAME_ZONE_PX && previous_x > -16) {
         int draw_y = y;
         if (isUpperV) has_upper_vowel = true;
         if (isTone && !has_upper_vowel) draw_y = y + 3;
@@ -536,7 +569,7 @@ void printThaiText(String text, int x, int y) {
       has_upper_vowel = false;
       previous_x = current_x;
       int c_width = u8g2_for_gfx.getUTF8Width(c.c_str());
-      if (current_x < 64 && (current_x + c_width) > -16) {
+      if (current_x < NAME_ZONE_PX && (current_x + c_width) > -16) {
         u8g2_for_gfx.setCursor(current_x, y);
         u8g2_for_gfx.print(c);
       }
@@ -567,7 +600,7 @@ void applyFont(int fs) {
 void updateTextProperties() {
   applyFont(currentFontSize);
   textWidth = getThaiTextWidth(currentText);
-  cursor_x  = (textWidth <= 64) ? (64 - textWidth) / 2 : 64;
+  cursor_x  = (textWidth <= NAME_ZONE_PX) ? (NAME_ZONE_PX - textWidth) / 2 : NAME_ZONE_PX;
 }
 
 // ======================================================================
@@ -612,8 +645,12 @@ void handleLed() {
   }
   bool wantClock = doc["showClock"] | false;
   currentText.trim();
-  if (wantClock || currentText.length() == 0) {
-    applyClockVisual();
+  if (currentText.length() > 0) {
+    g_clockMode = false;
+    updateTextProperties();
+  } else if (wantClock) {
+    int cr = doc["r"] | 0, cg = doc["g"] | 255, cb = doc["b"] | 255;
+    applyClockVisual((uint8_t)cr, (uint8_t)cg, (uint8_t)cb);
   } else {
     g_clockMode = false;
     updateTextProperties();
@@ -624,12 +661,66 @@ void handleLed() {
   server.send(200, "application/json", resp);
 }
 
+String jsonEscapeString(const String& s) {
+  String out;
+  out.reserve(s.length() + 16);
+  for (unsigned i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if ((unsigned char)c < 0x20) {
+      char buf[7];
+      snprintf(buf, sizeof(buf), "\\u%04X", (unsigned char)c);
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+String formatUptimeSec(unsigned long sec) {
+  unsigned long h = sec / 3600;
+  unsigned long m = (sec % 3600) / 60;
+  unsigned long s = sec % 60;
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", h, m, s);
+  return String(buf);
+}
+
+String rssiQualityLabel(int rssi) {
+  if (rssi >= -60) return "ดีมาก";
+  if (rssi >= -75) return "พอใช้";
+  return "อ่อน — เสี่ยงหลุด";
+}
+
+void sampleInternalTempIfNeeded(bool force = false) {
+  unsigned long now = millis();
+  if (!force && g_lastTempSampleMs > 0 && (now - g_lastTempSampleMs) < 30000UL) return;
+  g_lastTempSampleMs = now;
+  g_internalTempC = (temprature_sens_read() - 32) / 1.8f;
+}
+
 // GET /status — ใช้ตรวจสอบว่าออนไลน์อยู่
 void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
-              + "\",\"ip\":\"" + WiFi.localIP().toString()
-              + "\",\"text\":\"" + currentText + "\"}";
+  sampleInternalTempIfNeeded();
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  String resp = String("{\"ok\":true")
+              + ",\"machineId\":\"" + jsonEscapeString(String(MACHINE_ID)) + "\""
+              + ",\"ip\":\"" + jsonEscapeString(WiFi.localIP().toString()) + "\""
+              + ",\"mac\":\"" + jsonEscapeString(WiFi.macAddress()) + "\""
+              + ",\"wifiConnected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false")
+              + ",\"rssi\":" + String(rssi)
+              + ",\"rssiLabel\":\"" + jsonEscapeString(rssiQualityLabel(rssi)) + "\""
+              + ",\"uptimeSec\":" + String(millis() / 1000UL)
+              + ",\"uptime\":\"" + jsonEscapeString(formatUptimeSec(millis() / 1000UL)) + "\""
+              + ",\"cpuTemperatureC\":" + String(g_internalTempC, 1)
+              + ",\"clockMode\":" + String(g_clockMode ? "true" : "false")
+              + ",\"text\":\"" + jsonEscapeString(currentText) + "\"}";
   server.send(200, "application/json", resp);
 }
 
@@ -648,8 +739,65 @@ void handleMeasure() {
   String text = server.arg("text");
   applyFont(1); // etl14thai — ฟอนต์เดียวกับที่แสดงบนป้าย
   int px = getThaiTextWidth(text);
-  String resp = "{\"px\":" + String(px) + ",\"scrolls\":" + (px > 64 ? "true" : "false") + "}";
+  String resp = "{\"px\":" + String(px) + ",\"scrolls\":" + (px > NAME_ZONE_PX ? "true" : "false") + "}";
   server.send(200, "application/json", resp);
+}
+
+void handleTemp() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  sampleInternalTempIfNeeded();
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
+              + "\",\"ip\":\"" + WiFi.localIP().toString()
+              + "\",\"mac\":\"" + WiFi.macAddress()
+              + "\",\"rssi\":" + String(rssi)
+              + ",\"rssiLabel\":\"" + rssiQualityLabel(rssi) + "\""
+              + ",\"uptimeSec\":" + String(millis() / 1000UL)
+              + ",\"cpu_temperature_c\":" + String(g_internalTempC, 1) + "}";
+  server.send(200, "application/json", resp);
+}
+
+void handleReboot() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String resp = "{\"ok\":true,\"message\":\"rebooting\",\"machineId\":\"" + String(MACHINE_ID) + "\"}";
+  server.send(200, "application/json", resp);
+  delay(250);
+  ESP.restart();
+}
+
+void handleRoot() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  sampleInternalTempIfNeeded();
+  String ip  = WiFi.localIP().toString();
+  String mac = WiFi.macAddress();
+  int rssi   = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  String up  = formatUptimeSec(millis() / 1000UL);
+  String html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>LED Panel " + String(MACHINE_ID) + "</title>"
+    "<style>body{font-family:sans-serif;max-width:520px;margin:40px auto;padding:0 16px;}"
+    "h2{color:#333}table{border-collapse:collapse;width:100%}"
+    "td{padding:8px 12px;border:1px solid #ddd}td:first-child{font-weight:bold;background:#f5f5f5}"
+    "a{color:#0066cc}hr{margin:20px 0}</style></head><body>"
+    "<h2>&#128204; LED Panel: " + String(MACHINE_ID) + "</h2>"
+    "<table>"
+    "<tr><td>Machine ID</td><td>" + String(MACHINE_ID) + "</td></tr>"
+    "<tr><td>IP Address</td><td>" + ip + "</td></tr>"
+    "<tr><td>MAC Address</td><td><b>" + mac + "</b></td></tr>"
+    "<tr><td>WiFi RSSI</td><td><b>" + String(rssi) + " dBm</b> (" + rssiQualityLabel(rssi) + ")</td></tr>"
+    "<tr><td>Uptime</td><td>" + up + "</td></tr>"
+    "<tr><td>CPU Temp</td><td>" + String(g_internalTempC, 1) + " &deg;C</td></tr>"
+    "<tr><td>Text บนป้าย</td><td>" + currentText + "</td></tr>"
+    "</table>"
+    "<hr>"
+    "<p><a href='/status'>&#128200; Status JSON</a> &nbsp;|&nbsp; "
+    "<a href='/temp'>&#127777;&#65039; Temperature</a> &nbsp;|&nbsp; "
+    "<a href='/update'>&#128640; OTA Update</a> &nbsp;|&nbsp; "
+    "<a href='/reboot'>&#10227; Reboot</a></p>"
+    "</body></html>";
+  server.send(200, "text/html", html);
 }
 
 // ======================================================================
@@ -922,9 +1070,12 @@ void setup() {
   }
 
   // ---------- HTTP server ----------
+  server.on("/",        HTTP_ANY, handleRoot);
   server.on("/led",     HTTP_ANY, handleLed);
   server.on("/status",  HTTP_ANY, handleStatus);
   server.on("/measure", HTTP_ANY, handleMeasure);
+  server.on("/temp",    HTTP_ANY, handleTemp);
+  server.on("/reboot",  HTTP_ANY, handleReboot);
   // OTA firmware update ผ่านหน้าเว็บ: http://<ESP_IP>/update
   ElegantOTA.begin(&server);
   server.begin();
@@ -1063,12 +1214,15 @@ void pollTask(void* pv) {
 
     if (justReconnected) {
       vTaskDelay(pdMS_TO_TICKS(2000));
-      Serial.println("[Poll] WiFi เชื่อมสำเร็จ — Reconcile กับเว็บ (ไม่ต้องกดซิงก์)...");
+      Serial.println("[Poll] WiFi เชื่อมสำเร็จ — sync จาก server ทันที...");
       syncNtpIfNeeded();
       s_ledStateFingerprint = "";
-      reconcileLedStateWithWeb();
-      vTaskDelay(pdMS_TO_TICKS(1500));
-      reconcileLedStateWithWeb();
+      flushLedCommandQueue();
+      if (!syncLedDisplayFromServer()) {
+        reconcileLedStateWithWeb();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        reconcileLedStateWithWeb();
+      }
     }
 
     if (g_serverUrl.isEmpty()) continue;
@@ -1087,14 +1241,19 @@ void pollTask(void* pv) {
                + "?localIp=" + WiFi.localIP().toString()
                + "&rssi=" + String(WiFi.RSSI())
                + "&uptime=" + String(millis() / 1000UL);
-    if (s_ledStateFingerprint.length() == 0) {
+    sampleInternalTempIfNeeded();
+    url += "&temp=" + String(g_internalTempC, 1);
+    if (s_ledStateFingerprint.length() == 0 || isTransientStatusText(currentText)) {
       url += "&resync=1";
+    }
+    if (isTransientStatusText(currentText)) {
+      url += "&stuck=1";
     }
     if (s_ledStateFingerprint.length() > 0) {
       url += "&ack=" + encodeQueryValue(s_ledStateFingerprint);
     }
     http.begin(url);
-    http.setTimeout(1800); // timeout ของ HTTP request (ไม่ block loop() เพราะอยู่ task แยก)
+    http.setTimeout(5000); // timeout ของ HTTP request (ไม่ block loop() เพราะอยู่ task แยก)
 
     int code = http.GET();
 
@@ -1137,6 +1296,23 @@ void pollTask(void* pv) {
       Serial.printf("[Poll] Error %d — ตรวจสอบ SERVER_URL=%s\n", code, g_serverUrl.c_str());
     }
     http.end();
+
+    // ── ตรวจจับค้าง "กำลังเชื่อมต่อ.." หรือ transient text นาน > 30s → force sync ──
+    {
+      static uint32_t stuckTransientSinceMs = 0;
+      uint32_t nowMs = millis();
+      if (isTransientStatusText(currentText)) {
+        if (stuckTransientSinceMs == 0) stuckTransientSinceMs = nowMs;
+        else if (nowMs - stuckTransientSinceMs >= 30000UL) {
+          stuckTransientSinceMs = 0;
+          Serial.println("[Poll] stuck transient 30s — force syncLedDisplayFromServer");
+          s_ledStateFingerprint = "";
+          syncLedDisplayFromServer();
+        }
+      } else {
+        stuckTransientSinceMs = 0;
+      }
+    }
   }
 }
 
@@ -1191,7 +1367,7 @@ void processSerialCommand() {
     int px = getThaiTextWidth(txt);
     Serial.print("[measure] \""); Serial.print(txt);
     Serial.print("\" = "); Serial.print(px);
-    Serial.println(px > 64 ? "px (SCROLL)" : "px (static)");
+    Serial.println(px > NAME_ZONE_PX ? "px (SCROLL)" : "px (static)");
     return;
   }
 
@@ -1213,35 +1389,45 @@ void processSerialCommand() {
 // ======================================================================
 //  วาดและเลื่อนข้อความ
 // ======================================================================
-void drawAndScrollText() {
-  if (!dma_display || !p10_display) return;
-  if (millis() - lastScrollTime <= (unsigned long)scrollSpeed) return;
-  lastScrollTime = millis();
+void drawMachineIdOnLastPanel() {
+  const uint8_t* idFonts[] = { u8g2_font_helvB08_tf, u8g2_font_6x10_tf, u8g2_font_5x7_tf, u8g2_font_4x6_tf };
+  int idYOffsets[] = { 12, 12, 11, 11 };
+  int bestFontIdx = 3;
+  int idWidth = 0;
 
-  dma_display->clearScreen();
-  p10_display->fillRect(64, 0, 32, 16, dma_display->color565(0, 0, 0));
-
-  if (g_clockMode) {
-    u8g2_for_gfx.setFont(u8g2_font_helvB08_tf);
-    u8g2_for_gfx.setForegroundColor(currentColor);
-    u8g2_for_gfx.setCursor(cursor_x, 12);
-    u8g2_for_gfx.print(currentText);
-    dma_display->flipDMABuffer();
-    return;
+  for (int i = 0; i < 4; i++) {
+    u8g2_for_gfx.setFont(idFonts[i]);
+    int w = u8g2_for_gfx.getUTF8Width(MACHINE_ID);
+    if (w <= NUM_ZONE_W) {
+      bestFontIdx = i;
+      idWidth = w;
+      break;
+    }
   }
 
-  // ---------- โซน 1 (จอ 1-2) ----------
-  applyFont(currentFontSize);
-  u8g2_for_gfx.setForegroundColor(currentColor);
-  printThaiText(currentText, cursor_x, 14);
+  if (idWidth == 0) {
+    u8g2_for_gfx.setFont(idFonts[bestFontIdx]);
+    idWidth = u8g2_for_gfx.getUTF8Width(MACHINE_ID);
+  }
 
-  // ---------- โซน 2 (จอ 3) ----------
-  const uint8_t* numFonts[] = {
-    u8g2_font_helvB08_tf,
-    u8g2_font_6x10_tf,
-    u8g2_font_5x7_tf,
-    u8g2_font_4x6_tf
-  };
+  int startX = NUM_ZONE_X + ((NUM_ZONE_W - idWidth) / 2);
+  u8g2_for_gfx.setForegroundColor(dma_display->color565(255, 0, 0));
+  u8g2_for_gfx.setCursor(startX, idYOffsets[bestFontIdx]);
+  u8g2_for_gfx.print(MACHINE_ID);
+}
+
+bool shouldShowProductionCounters() {
+  if (g_clockMode) return false;
+  String act = actualCount;
+  String tgt = targetCount;
+  act.trim();
+  tgt.trim();
+  if (act.length() == 0 && tgt.length() == 0) return false;
+  return (act.toInt() != 0 || tgt.toInt() != 0);
+}
+
+void drawProductionCountersOnLastPanel() {
+  const uint8_t* numFonts[] = { u8g2_font_helvB08_tf, u8g2_font_6x10_tf, u8g2_font_5x7_tf, u8g2_font_4x6_tf };
   int numYOffsets[] = { 12, 12, 11, 11 };
   int bestFontIdx = 3;
   int gap = 2;
@@ -1250,7 +1436,10 @@ void drawAndScrollText() {
     u8g2_for_gfx.setFont(numFonts[i]);
     int w_actual = u8g2_for_gfx.getUTF8Width(actualCount.c_str());
     int w_target = u8g2_for_gfx.getUTF8Width(targetCount.c_str());
-    if (w_actual + w_target + gap <= 32) { bestFontIdx = i; break; }
+    if (w_actual + w_target + gap <= NUM_ZONE_W) {
+      bestFontIdx = i;
+      break;
+    }
   }
 
   u8g2_for_gfx.setFont(numFonts[bestFontIdx]);
@@ -1258,24 +1447,51 @@ void drawAndScrollText() {
   int w_actual = u8g2_for_gfx.getUTF8Width(actualCount.c_str());
   int w_target = u8g2_for_gfx.getUTF8Width(targetCount.c_str());
 
-  if (32 - (w_actual + w_target) >= 6)      gap = 4;
-  else if (32 - (w_actual + w_target) >= 4) gap = 3;
+  if (NUM_ZONE_W - (w_actual + w_target) >= 6)      gap = 4;
+  else if (NUM_ZONE_W - (w_actual + w_target) >= 4) gap = 3;
 
   int total_block_width = w_actual + gap + w_target;
-  int start_x = 64 + ((32 - total_block_width) / 2);
+  int start_x = NUM_ZONE_X + ((NUM_ZONE_W - total_block_width) / 2);
 
-  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 255)); // ผลิตได้ — Cyan
+  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 255));
   u8g2_for_gfx.setCursor(start_x, draw_y);
   u8g2_for_gfx.print(actualCount);
 
-  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 0)); // ค้างผลิต — เขียว
+  u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 0));
   u8g2_for_gfx.setCursor(start_x + w_actual + gap, draw_y);
   u8g2_for_gfx.print(targetCount);
+}
+
+void drawAndScrollText() {
+  if (!dma_display || !p10_display) return;
+  if (millis() - lastScrollTime <= (unsigned long)scrollSpeed) return;
+  lastScrollTime = millis();
+
+  dma_display->clearScreen();
+  p10_display->fillRect(NUM_ZONE_X, 0, NUM_ZONE_W, 16, dma_display->color565(0, 0, 0));
+
+  if (g_clockMode) {
+    u8g2_for_gfx.setFont(u8g2_font_helvB08_tf);
+    u8g2_for_gfx.setForegroundColor(currentColor);
+    u8g2_for_gfx.setCursor(cursor_x, 12);
+    u8g2_for_gfx.print(currentText);
+    drawMachineIdOnLastPanel();
+    dma_display->flipDMABuffer();
+    return;
+  }
+
+  // ---------- โซน 1 (จอ 1-3) ----------
+  applyFont(currentFontSize);
+  u8g2_for_gfx.setForegroundColor(currentColor);
+  printThaiText(currentText, cursor_x, 14);
+
+  if (shouldShowProductionCounters()) drawProductionCountersOnLastPanel();
+  else drawMachineIdOnLastPanel();
 
   // ---------- เลื่อนโซน 1 ----------
-  if (textWidth > 64) {
+  if (textWidth > NAME_ZONE_PX) {
     cursor_x--;
-    if (cursor_x < -textWidth) cursor_x = 64;
+    if (cursor_x < -textWidth) cursor_x = NAME_ZONE_PX;
   }
 
   // 💡 สลับภาพที่วาดเสร็จแล้วทั้งหมดไปแสดงผลพร้อมกันทีเดียว (กำจัดแสงกระพริบ 100%)

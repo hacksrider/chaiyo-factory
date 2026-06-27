@@ -433,6 +433,23 @@ class ProductionMonitorController extends Controller
 
                 return response()->json(array_merge(['pending' => true], $state));
             }
+
+            // ไม่มี state บน server เลย (ไม่มีงาน active, ไม่มี cache) →
+            // ส่ง showClock:true เพื่อให้ ESP หยุดค้างที่ "กำลังซิงก์.." แล้วแสดงนาฬิกาแทน
+            if ($wasOffline || $resync) {
+                $clockCmd = $this->stampLedCommandFingerprint([
+                    'pending'   => true,
+                    'showClock' => true,
+                    'text'      => '',
+                    'r'         => 0,
+                    'g'         => 255,
+                    'b'         => 0,
+                    'actual'    => '0',
+                    'target'    => '0',
+                ]);
+
+                return response()->json(array_merge(['pending' => true], $clockCmd));
+            }
         }
 
         $command = Cache::get("led_cmd_{$machineId}");

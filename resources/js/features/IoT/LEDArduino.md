@@ -1787,7 +1787,7 @@ void pollTask(void* pv) {
           Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());
         }
       }
-      if (!pending && g_clockMode) {
+      if (!pending && (g_clockMode || isTransientStatusText(currentText))) {
         g_requestStatusSync = true;
       }
     }
