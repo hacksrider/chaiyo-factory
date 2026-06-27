@@ -29,6 +29,9 @@ Route::prefix('production-monitor')->group(function () {
     Route::get('/stream', [ProductionMonitorController::class, 'stream'])
         ->withoutMiddleware(['throttle:api']);
 
+    // Debug endpoint — ป้องกันด้วย ?token=... (ไม่ต้อง login)
+    Route::get('/led-diag/{machineId}', [ProductionMonitorController::class, 'ledDiag']);
+
     Route::post('/scale-command/{machineId}', [ProductionMonitorController::class, 'storeScaleCommand']);
     Route::get('/scale-command/{machineId}', [ProductionMonitorController::class, 'fetchScaleCommand']);
     Route::post('/scale-confirm/{machineId}', [ProductionMonitorController::class, 'storeScaleConfirm']);
@@ -108,6 +111,5 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
 
     Route::middleware('admin')->group(function () {
         Route::get('/debug', [ProductionMonitorController::class, 'debug']);
-        Route::get('/led-diag/{machineId}', [ProductionMonitorController::class, 'ledDiag']);
     });
 });

@@ -2106,8 +2106,13 @@ private function publishEvent(string $type, array $data): void
      * Debug endpoint สำหรับ Shared Hosting — ดูสถานะ LED cache + log ล่าสุดผ่าน browser
      * ต้อง login (admin) เท่านั้น
      */
-    public function ledDiag(string $machineId): JsonResponse
+    public function ledDiag(Request $request, string $machineId): JsonResponse
     {
+        $secret = config('app.led_diag_token', 'chaiyo-led-diag-2024');
+        if ($request->query('token') !== $secret) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
         $now = microtime(true);
 
         // ── Cache state ──────────────────────────────────────────────────────────
