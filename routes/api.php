@@ -108,5 +108,6 @@ Route::prefix('production-monitor')->middleware(['sanctum.query', 'auth:sanctum'
 
     Route::middleware('admin')->group(function () {
         Route::get('/debug', [ProductionMonitorController::class, 'debug']);
+        Route::get('/led-diag/{machineId}', [ProductionMonitorController::class, 'ledDiag']);
     });
 });

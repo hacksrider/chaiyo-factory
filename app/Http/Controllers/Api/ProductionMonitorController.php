@@ -423,14 +423,32 @@ class ProductionMonitorController extends Controller
         $ackFp = trim((string) $request->query('ack', ''));
         if ($ackFp !== '') {
             $pending = Cache::get("led_cmd_{$machineId}");
-            if (is_array($pending) && (string) ($pending['_fp'] ?? '') === $ackFp) {
+            if (is_array($pending)) {
+                $cachedFp   = (string) ($pending['_fp'] ?? '');
                 $isForced   = ! empty($pending['_force']);
                 $storedAt   = $pending['_storedAt'] ?? 0;
                 $ageSeconds = is_numeric($storedAt) ? (microtime(true) - (float) $storedAt) : 999;
-                // _force=true → ลบทันทีโดยไม่รอเวลา (bypass age guard)
-                // ปกติ: รออย่างน้อย 2 วินาทีเพื่อกัน stale-ack ลบ command ใหม่ที่เพิ่งเขียน
-                if ($isForced || $ageSeconds >= 2.0) {
-                    Cache::forget("led_cmd_{$machineId}");
+
+                if ($cachedFp === $ackFp) {
+                    // _force=true → ลบทันทีโดยไม่รอเวลา (bypass age guard)
+                    // ปกติ: รออย่างน้อย 2 วินาทีเพื่อกัน stale-ack ลบ command ใหม่ที่เพิ่งเขียน
+                    if ($isForced || $ageSeconds >= 2.0) {
+                        Cache::forget("led_cmd_{$machineId}");
+                        Log::debug("[LED-ACK] cleared led_cmd_{$machineId}", [
+                            'fp' => substr($ackFp, 0, 60), 'age' => round($ageSeconds, 2), 'forced' => $isForced,
+                        ]);
+                    } else {
+                        Log::debug("[LED-ACK] fp match but too young ({$ageSeconds}s)", [
+                            'machineId' => $machineId, 'fp' => substr($ackFp, 0, 60),
+                        ]);
+                    }
+                } else {
+                    Log::debug("[LED-ACK] fp mismatch — ack not cleared", [
+                        'machineId' => $machineId,
+                        'ack_fp'    => substr($ackFp, 0, 60),
+                        'cache_fp'  => substr($cachedFp, 0, 60),
+                        'age'       => round($ageSeconds, 2),
+                    ]);
                 }
             }
         }
@@ -452,6 +470,16 @@ class ProductionMonitorController extends Controller
             && (trim((string) ($command['text'] ?? '')) !== '' || ! empty($command['showClock']))) {
             // รีเฟรช TTL โดยไม่เปลี่ยนเนื้อหาหรือ fingerprint
             Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
+
+            $cmdAge = is_numeric($command['_storedAt'] ?? null)
+                ? round(microtime(true) - (float) $command['_storedAt'], 1)
+                : '?';
+            Log::debug("[LED-POLL] serving pending cmd", [
+                'machineId' => $machineId,
+                'fp'        => substr((string) ($command['_fp'] ?? ''), 0, 60),
+                'age'       => $cmdAge,
+                'forced'    => ! empty($command['_force']),
+            ]);
 
             return response()->json(array_merge(['pending' => true], $command));
         }
@@ -1158,8 +1186,8 @@ class ProductionMonitorController extends Controller
      * Scale ESP32 ส่งน้ำหนัก+ประเภท ทุกครั้งที่กดปุ่ม
      * Body: { orderId, sheetName, type, weight, employeeId, shift, actualCount }
      *
-     * ถ้า type=good: อัปเดต led_cmd_{machineId} ด้วย actual count ใหม่
-     * เพื่อให้ป้ายไฟอัปเดตอัตโนมัติโดยไม่ต้องรอ web page
+     * ถ้า type=good: อัปเดต led_state_{machineId} เพื่อให้ reconcile sync นำไปแสดงที่ป้ายภายใน ~4s
+     * (ไม่เขียน led_cmd_ — การเขียน led_cmd_ ทุกครั้งจะ block reconcile sync ของ firmware)
      */
     public function storeScaleWeight(Request $request, string $machineId): JsonResponse
     {
@@ -1378,7 +1406,12 @@ class ProductionMonitorController extends Controller
             'event'     => $payloadOut,
         ]);
 
-        // ซิงก์เลขจาก DB เข้ากับป้ายไฟ (ESP ยัง poll led_cmd queue)
+        // อัปเดต led_state_ เพื่อให้ UI และ reconcile sync รู้ว่า actual/target เปลี่ยน
+        // *** ไม่เขียน led_cmd_ *** — เหตุผลสำคัญ:
+        //   การเขียน led_cmd_ ทุกครั้งที่กดตาชั่ง ทำให้ led_cmd_ ไม่เคยว่าง
+        //   → ESP poll ได้ pending:true ทุกรอบ → skipSyncThisCycle=true ตลอด
+        //   → reconcile sync [line 1825 firmware] ถูก block → ป้ายไม่อัปเดตเลย
+        //   counter update ให้ ESP รับผ่าน reconcileLedStateWithWeb() แทน (ทุก ~4s)
         if (($payload['type'] ?? '') === 'good' && $sessionAfter) {
             $ledState = $this->buildLedStateFromSession(
                 $sessionAfter,
@@ -1386,9 +1419,6 @@ class ProductionMonitorController extends Controller
             );
             if ($ledState !== null) {
                 $ledState = $this->stampLedCommandFingerprint($ledState);
-                $ledState['_storedAt'] = microtime(true);   // ← กำหนดเวลาเก็บ เพื่อให้ ack age-guard ทำงานถูก
-                unset($ledState['_force']);                  // ← weight event ไม่ใช่ forced
-                Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
                 Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
                 $this->publishEvent('led_state', [
                     'machineId' => $machineId,
@@ -2070,6 +2100,92 @@ private function publishEvent(string $type, array $data): void
      * Returns DB sessions (primary) merged over cache sessions (fallback).
      * Response: { sessions: { [machineId]: state }, queue: { [machineId]: [...] }, serverTime: <epoch_ms> }
      */
+    /**
+     * GET /api/production-monitor/led-diag/{machineId}
+     *
+     * Debug endpoint สำหรับ Shared Hosting — ดูสถานะ LED cache + log ล่าสุดผ่าน browser
+     * ต้อง login (admin) เท่านั้น
+     */
+    public function ledDiag(string $machineId): JsonResponse
+    {
+        $now = microtime(true);
+
+        // ── Cache state ──────────────────────────────────────────────────────────
+        $cmd   = Cache::get("led_cmd_{$machineId}");
+        $state = Cache::get("led_state_{$machineId}");
+
+        $cmdInfo = null;
+        if (is_array($cmd)) {
+            $storedAt   = $cmd['_storedAt'] ?? null;
+            $ageSeconds = is_numeric($storedAt) ? round($now - (float) $storedAt, 2) : null;
+            $cmdInfo = [
+                'fp'         => $cmd['_fp'] ?? null,
+                'text'       => $cmd['text'] ?? null,
+                'actual'     => $cmd['actual'] ?? null,
+                'target'     => $cmd['target'] ?? null,
+                'showClock'  => $cmd['showClock'] ?? false,
+                'storedAt'   => $storedAt,
+                'ageSeconds' => $ageSeconds,
+                'forced'     => ! empty($cmd['_force']),
+            ];
+        }
+
+        $stateInfo = null;
+        if (is_array($state)) {
+            $stateInfo = [
+                'fp'        => $state['_fp'] ?? null,
+                'text'      => $state['text'] ?? null,
+                'actual'    => $state['actual'] ?? null,
+                'target'    => $state['target'] ?? null,
+                'updatedAt' => $state['updatedAt'] ?? null,
+            ];
+        }
+
+        // ── Session from DB ───────────────────────────────────────────────────────
+        $session = ProductionSession::where('machine_id', $machineId)->first();
+        $sessionInfo = $session ? [
+            'status'       => $session->status,
+            'pipe_counter' => $session->pipe_counter,
+            'remaining_qty'=> $session->remaining_qty,
+            'product_name' => $session->product_name,
+            'product_code' => $session->product_code,
+        ] : null;
+
+        // ── Log tail (ล่าสุด 60 บรรทัดที่มีคำว่า LED-) ──────────────────────────
+        $logPath  = storage_path('logs/laravel.log');
+        $ledLines = [];
+        if (file_exists($logPath) && is_readable($logPath)) {
+            // อ่านไฟล์จากท้าย (ประสิทธิภาพสูง ไม่โหลดทั้งไฟล์)
+            $fp   = fopen($logPath, 'r');
+            $size = filesize($logPath);
+            if ($fp && $size > 0) {
+                $chunkSize = min($size, 65536); // อ่านสูงสุด 64 KB จากท้าย
+                fseek($fp, -$chunkSize, SEEK_END);
+                $chunk = fread($fp, $chunkSize);
+                fclose($fp);
+                $lines = explode("\n", $chunk);
+                foreach (array_reverse($lines) as $line) {
+                    if (str_contains($line, '[LED-') || str_contains($line, 'LED-ACK') || str_contains($line, 'LED-POLL')) {
+                        $ledLines[] = trim($line);
+                        if (count($ledLines) >= 40) break;
+                    }
+                }
+                $ledLines = array_reverse($ledLines);
+            }
+        }
+
+        return response()->json([
+            'machineId'       => $machineId,
+            'serverTimeMs'    => (int) round($now * 1000),
+            'led_cmd_exists'  => $cmd !== null,
+            'led_cmd'         => $cmdInfo,
+            'led_state'       => $stateInfo,
+            'db_session'      => $sessionInfo,
+            'log_tail_led'    => $ledLines,
+            'log_path'        => $logPath,
+        ]);
+    }
+
     public function stateSnapshot(): JsonResponse
     {
         $sessions = $this->buildMachineSessionsSnapshot();
