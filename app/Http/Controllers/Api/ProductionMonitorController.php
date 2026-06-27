@@ -855,6 +855,42 @@ class ProductionMonitorController extends Controller
     }
 
     /**
+     * POST /api/production-monitor/push-to-scale/{machineId}
+     *
+     * Push full job payload to ESP32 scale (overwrite NVS state).
+     * Used to resume or force-sync scale state when it misses the initial command.
+     * Body: { order_id, product_name, target_weight, qty_target, qty_good, qty_remaining, shift, employee_id }
+     */
+    public function pushToScale(Request $request, string $machineId): JsonResponse
+    {
+        $data = $request->only([
+            'order_id', 'product_name', 'target_weight',
+            'qty_target', 'qty_good', 'qty_remaining',
+            'shift', 'employee_id',
+            // อนุญาต snake_case และ camelCase เพื่อรองรับ caller ทั้งสองแบบ
+            'orderId', 'productName', 'targetWeight',
+            'qtyTarget', 'qtyGood', 'qtyRemaining',
+            'employeeId',
+        ]);
+
+        // Normalise ให้ ESP32 ได้ field เดียวกับ storeScaleCommand เสมอ
+        $payload = [
+            'orderId'    => $data['orderId']    ?? $data['order_id']    ?? '',
+            'productName'=> $data['productName'] ?? $data['product_name'] ?? '',
+            'targetQty'  => (int) ($data['qtyTarget']  ?? $data['qty_target']  ?? $data['targetWeight'] ?? 0),
+            'qtyGood'    => (int) ($data['qtyGood']    ?? $data['qty_good']    ?? 0),
+            'qtyRemaining'=> (int) ($data['qtyRemaining'] ?? $data['qty_remaining'] ?? 0),
+            'shift'      => $data['shift']      ?? '',
+            'employeeId' => $data['employeeId'] ?? $data['employee_id'] ?? '',
+        ];
+
+        Cache::forget("scale_pending_revoked_{$machineId}");
+        Cache::put("scale_cmd_{$machineId}", $payload, now()->addMinutes(10));
+
+        return response()->json(['success' => true, 'queued' => true]);
+    }
+
+    /**
      * GET /api/production-monitor/scale-command/{machineId}
      *
      * Scale ESP32 ดึงงาน — keep-until-confirmed (อ่านโดยไม่ลบ)
@@ -2468,7 +2504,9 @@ private function publishEvent(string $type, array $data): void
             $queueOrderId = (string) ($session->order_id ?? '');
 
             DB::transaction(function () use ($session, $machineId, $now, $ts, $runUlid, $wasAwaiting, $queueOrderId) {
-                if ($wasAwaiting && $queueOrderId !== '') {
+                // คืน queue item กลับเป็น queued ทั้งตอน awaiting_scale และ live
+                // เพื่อให้ order กลับมาแสดงในคิวและสามารถ Start ใหม่ได้
+                if ($queueOrderId !== '') {
                     ProductionQueueItem::where('machine_id', $machineId)
                         ->where('status', 'started')
                         ->where('order_id', $queueOrderId)
@@ -2498,12 +2536,27 @@ private function publishEvent(string $type, array $data): void
                     now()->addMinutes(15)
                 );
             }
+
+            // แจ้ง browser ว่า queue item ถูกคืนกลับเป็น queued (ทั้ง awaiting_scale และ live)
+            if ($queueOrderId !== '') {
+                $restoredItem = ProductionQueueItem::where('machine_id', $machineId)
+                    ->where('order_id', $queueOrderId)
+                    ->where('status', 'queued')
+                    ->first();
+                if ($restoredItem) {
+                    $this->publishEvent('queue_updated', [
+                        'machineId' => $machineId,
+                        'action'    => 'restored',
+                        'item'      => $restoredItem->toFrontend(),
+                    ]);
+                }
+            }
         }
 
         Cache::forget("machine_session_{$machineId}");
         Cache::forget("session_confirm_{$machineId}");
         $this->finalizeScaleCachesForIdle($machineId);
-        $this->resetLedToWaitingState($machineId);
+        $this->resetLedToCancelState($machineId);
 
         $this->publishEvent('session_updated', [
             'machineId' => $machineId,
@@ -2973,10 +3026,10 @@ private function publishEvent(string $type, array $data): void
         $ledState = is_array($ledState) ? $ledState : [];
 
         $next = array_merge($ledState, [
-            'text'         => 'ออเดอร์ครบ/รออเดอร์',
-            'r'            => 0,
-            'g'            => 220,
-            'b'            => 50,
+            'text'         => 'ออเดอร์ครบ',
+            'r'            => 220,
+            'g'            => 180,
+            'b'            => 0,
             'fontSize'     => 1,
             'speed'        => 50,
             'actual'       => '0',
@@ -2998,7 +3051,40 @@ private function publishEvent(string $type, array $data): void
     }
 
     /**
-     * POST /api/production-monitor/finish/{machineId}
+     * Server-side safety-net LED state after cancel — red "ยกเลิกการผลิต".
+     * Browser ส่ง LED command ก่อน แต่ถ้า command ตกหล่น controller นี้ทำหน้าที่สำรอง
+     */
+    private function resetLedToCancelState(string $machineId): void
+    {
+        $ledState = Cache::get("led_state_{$machineId}");
+        $ledState = is_array($ledState) ? $ledState : [];
+
+        $next = array_merge($ledState, [
+            'text'         => 'ยกเลิกการผลิต',
+            'r'            => 220,
+            'g'            => 0,
+            'b'            => 0,
+            'fontSize'     => 1,
+            'speed'        => 50,
+            'actual'       => '0',
+            'target'       => '0',
+            'textOverride' => false,
+            'showClock'    => false,
+            'updatedAt'    => now()->toISOString(),
+        ]);
+        $next = $this->stampLedCommandFingerprint($next);
+        $next['_storedAt'] = microtime(true);
+        unset($next['_force']);
+
+        Cache::put("led_cmd_{$machineId}", $next, now()->addMinutes(5));
+        Cache::put("led_state_{$machineId}", $next, now()->addDays(30));
+        $this->publishEvent('led_state', [
+            'machineId' => $machineId,
+            'state'     => $next,
+        ]);
+    }
+
+    /**
      *
      * จบงาน: status → finished, คัดลอกข้อมูลไป production_orders
      * Body: { goodCount?, ngCount?, totalGoodWeight?, totalNgWeight?, skipGasDispatch? }

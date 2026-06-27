@@ -478,6 +478,20 @@ export const LED_BREAKDOWN_PAYLOAD = {
   target: '0',
 };
 
+/** ข้อความป้ายไฟเมื่อยกเลิกการผลิต — สีแดง */
+export const LED_CANCEL_PAYLOAD = {
+  text: 'ยกเลิกการผลิต',
+  r: 220,
+  g: 0,
+  b: 0,
+  fontSize: 1,
+  speed: 50,
+  actual: '0',
+  target: '0',
+  textOverride: false,
+  showClock: false,
+};
+
 /** ล้างป้ายไฟ — ป้ายแสดงนาฬิกา HH : MM : SS สีเขียว */
 export const LED_CLEAR_PAYLOAD = {
   text: '',
@@ -491,12 +505,12 @@ export const LED_CLEAR_PAYLOAD = {
   target: '0',
 };
 
-/** ข้อความป้ายไฟเมื่อ Finished Order / Cancel Order (ออเดอร์ครบ/รออเดอร์ - สีเขียว) */
+/** ข้อความป้ายไฟเมื่อ Finished Order (ออเดอร์ครบ - สีเหลือง) */
 export const LED_PREP_PAYLOAD = {
-  text: 'ออเดอร์ครบ/รออเดอร์',
-  r: 0,
-  g: 220,
-  b: 50,
+  text: 'ออเดอร์ครบ',
+  r: 220,
+  g: 180,
+  b: 0,
   fontSize: 1,
   speed: 50,
   actual: '0',

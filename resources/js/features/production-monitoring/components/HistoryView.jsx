@@ -171,7 +171,6 @@ const FilterBar = ({ machines, filters, onChange, total, filtered, t }) => (
       <select value={filters.status} onChange={(e) => onChange('status', e.target.value)} className={SELECT}>
         <option value="">{t('production.historyAllStatuses')}</option>
         <option value="Completed">{t('production.historyStatusCompleted')}</option>
-        <option value="In-progress">{t('production.historyStatusInProgress')}</option>
       </select>
     </div>
 

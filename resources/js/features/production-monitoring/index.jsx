@@ -10,6 +10,7 @@ import {
   queueLedCommandWithLanFallback,
   LED_BREAKDOWN_PAYLOAD,
   LED_PREP_PAYLOAD,
+  LED_CANCEL_PAYLOAD,
   buildProductionLedCommand,
   buildLedCommandFingerprint,
   storeScaleLive,
@@ -29,6 +30,7 @@ import {
   fetchScaleWeights,
   getLedHeartbeat,
   getLedStatus,
+  createOrder,
 } from './api/productionApi';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { SSE_EVENTS } from './SSE_EVENTS';
@@ -167,7 +169,26 @@ function logPauseOrClose({ machineId, machineLabel, productCode, shift, employee
     date:        _fmtDateForLog(now),
     status:      'อยู่ระหว่างเตรียมการผลิต',
     time:        _fmtTimeForLog(now),
-    cause:       'ออเดอร์ครบ / รอออเดอร์ အော်ဒါဖြည့်ဆည်း',
+    cause:       'ออเดอร์ครบ / รอออเดอร์ใหม่',
+    team:        _machineLogTeamLine(shift, employeeId),
+    reporter:    'อัตโนมัติ',
+    productCode: productCode ?? '',
+    detail:      '',
+    fix:         '',
+  }).catch(() => {});
+}
+
+/**
+ * ส่ง log สถานะ "Process Breakdown" เมื่อกด ยกเลิกผลิต — fire-and-forget
+ */
+function logCancelProduction({ machineId, machineLabel, productCode, shift, employeeId }) {
+  const now = new Date();
+  appendMachineLog({
+    machine:     _machineLogMachineLine(machineLabel, machineId),
+    date:        _fmtDateForLog(now),
+    status:      'Process Breakdown',
+    time:        _fmtTimeForLog(now),
+    cause:       'ยกเลิกการผลิต',
     team:        _machineLogTeamLine(shift, employeeId),
     reporter:    'อัตโนมัติ',
     productCode: productCode ?? '',
@@ -320,6 +341,7 @@ const ProductionMonitoring = () => {
     getMachineState,
     updateMachineState,
     resetMachineState,
+    cancelMachineState,
     addToQueue,
     removeFromQueue,
     pauseOrder,
@@ -560,6 +582,10 @@ const ProductionMonitoring = () => {
 
   const allStatesRef = useRef(allStates);
   useEffect(() => { allStatesRef.current = allStates; }, [allStates]);
+
+  // dedup: กันเรียก GAS createOrder ซ้ำ เมื่อทั้ง QueueRow และ SSE handler ทำงานพร้อมกัน
+  // key = sessionRunUlid ที่มีการ createOrder ไปแล้ว
+  const gasOrderCreatedRef = useRef(new Set());
 
   // Dedup tracker for scale_weight events received via SSE
   // (each browser has its own seen-set — server keeps all events, clients dedup locally)
@@ -852,6 +878,31 @@ const ProductionMonitoring = () => {
         waitingScale: false,
       });
     }
+
+    // Safety-net: ถ้า QueueRow unmount ก่อน handleConfirmed ทำงาน (เพราะ queue refresh หลัง startSession)
+    // ให้ index ทำ createOrder ไปยัง GAS แทน — dedup ด้วย sessionRunUlid
+    if (current?.waitingScale && current?.sessionRunUlid) {
+      const ulid = current.sessionRunUlid;
+      if (!gasOrderCreatedRef.current.has(ulid)) {
+        gasOrderCreatedRef.current.add(ulid);
+        const m = machines.find((x) => x.id === machineId);
+        createOrder({
+          machineId,
+          sheetName:   current.sheetName  ?? m?.sheetName ?? '',
+          ledIp:       current.ledIp      ?? m?.ledIp     ?? '',
+          orderId:     current.orderId    ?? '',
+          productCode: current.productCode ?? '',
+          productName: current.productName ?? '',
+          targetQty:   current.targetQty   ?? 0,
+          shift:       shift        ?? current.shift        ?? '',
+          employeeId:  employee_id  ?? current.employeeId  ?? '',
+        }).catch(() => {
+          // ถ้า fail ให้ลบออกจาก ref เผื่อลองใหม่ได้
+          gasOrderCreatedRef.current.delete(ulid);
+        });
+      }
+    }
+
     window.dispatchEvent(new CustomEvent('sse:session_confirmed', {
       detail: { machineId, shift, employee_id, confirmed_at },
     }));
@@ -866,7 +917,7 @@ const ProductionMonitoring = () => {
       if (!res?.session) return;
       applyDbSessionUpdate({ machineId, session: res.session });
     }).catch(() => {});
-  }, [updateMachineState, selectedMachineId, applyDbSessionUpdate]);
+  }, [updateMachineState, selectedMachineId, applyDbSessionUpdate, machines]);
 
   /** ส่งชื่อสินค้า + actual/target ไปป้าย — เก็บ cache บน server + LAN fallback ไป ledIp */
   const pushProductionLed = useCallback((machineId, stateLike, pipeCounter, { force = false } = {}) => {
@@ -1307,6 +1358,20 @@ const ProductionMonitoring = () => {
       .map((ip) => String(ip ?? '').trim())
       .filter(Boolean);
     queueLedCommandWithLanFallback(machineId, LED_PREP_PAYLOAD, { ips }).catch(() => {});
+  }, [machines, getMachineState]);
+
+  /** ส่งป้าย "ยกเลิกการผลิต" สีแดง เมื่อกด Cancel */
+  const pushCancelLed = useCallback((machineId) => {
+    if (!machineId) return;
+    ledTextOverrideRef.current[machineId] = false;
+    delete ledPushSigRef.current[machineId];
+    ledPushSigRef.current[machineId] = buildLedCommandFingerprint(LED_CANCEL_PAYLOAD);
+    const m = machines.find((x) => x.id === machineId);
+    const st = getMachineState(machineId);
+    const ips = [st?.ledIp, m?.ledIp]
+      .map((ip) => String(ip ?? '').trim())
+      .filter(Boolean);
+    queueLedCommandWithLanFallback(machineId, LED_CANCEL_PAYLOAD, { ips }).catch(() => {});
   }, [machines, getMachineState]);
 
   /** Pause จาก Live Monitor → setup + ป้าย "เตรียมการ" */
@@ -2008,17 +2073,38 @@ const ProductionMonitoring = () => {
                     onCancelOrder={() => {
                       const mid = selectedMachineId;
                       if (!mid) return;
+                      const snapshot = allStatesRef.current[mid] ?? machineState;
                       void (async () => {
                         try {
                           await dbCancelSession(mid);
                         } catch {
                           /* session cancel is best-effort */
                         }
-                        resetMachineState(mid);
+                        // ล้าง NVS ของตาชั่ง — ต้องทำก่อน reset state เพื่อให้ buildScaleLivePayload ยังมี orderId
+                        storeScaleLive(mid, { live: false }).catch(() => {});
+                        // ส่งป้ายไฟแดง "ยกเลิกการผลิต"
+                        pushCancelLed(mid);
+                        // บันทึกสถานะ Process Breakdown ลง Google Sheet Machine Log
+                        logCancelProduction({
+                          machineId:    mid,
+                          machineLabel: selectedMachine?.label ?? mid,
+                          productCode:  snapshot?.productCode ?? '',
+                          shift:        snapshot?.shift       ?? '',
+                          employeeId:   snapshot?.employeeId  ?? '',
+                        });
+                        // ล้าง state ทั้งหมด รวม pausedOrder — ไม่ให้ข้อมูลค้าง
+                        cancelMachineState(mid);
                         if (pushDebounceRef.current[mid]) clearTimeout(pushDebounceRef.current[mid]);
                         setTimeout(() => {
                           storeMachineSession(mid, allStatesRef.current[mid]).catch(() => {});
                         }, 50);
+                        // โหลด queue ใหม่จาก DB เพราะ cancel จะ restore queue item กลับเป็น queued
+                        try {
+                          const res = await dbGetQueue(mid);
+                          if (Array.isArray(res?.queue)) setQueueFromDb(mid, res.queue);
+                        } catch {
+                          /* queue refresh optional */
+                        }
                       })();
                     }}
                     onCloseAndStart={async (item) => {
@@ -2145,6 +2231,12 @@ const ProductionMonitoring = () => {
                     }}
                     onStartProduction={(data) => {
                       const mid = selectedMachineId;
+                      // QueueRow เรียก createOrder แล้ว — mark ULID เพื่อกัน handleSseSessionConfirmed ยิงซ้ำ
+                      // ใช้ ULID จาก machineState ที่ถูก applyDbSessionUpdate ก่อนหน้านี้แล้ว
+                      const knownUlid = allStatesRef.current[mid]?.sessionRunUlid ?? data.sessionRunUlid;
+                      if (knownUlid) {
+                        gasOrderCreatedRef.current.add(knownUlid);
+                      }
                       // Remove from queue (DB + local)
                       if (data.queueId) handleDbRemoveFromQueue(mid, data.queueId);
                       // Optimistic local state update

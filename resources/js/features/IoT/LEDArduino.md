@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.20
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.24
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -19,6 +19,10 @@
      แก้กรณีป้ายค้างนาฬิกาแม้ server ส่งข้อความใหม่แล้ว — cmdQueue บน core อื่น
      อาจไม่ drain ทัน หรือ skipSyncThisCycle บล็อก /led-status sync
   v2.20 — JSON buffer 8192 สำหรับข้อความไทย + fallback sync เมื่อ parse/apply ล้มเหลว
+  v2.21 — HTTP ใช้ IP+Host apex ก่อน (แก้ poll 404 บน factory network / www vhost)
+  v2.22 — อ่าน HTTP body ใหม่ + direct URL ก่อน IP (แก้ HTTP 200 แต่ body ว่าง)
+  v2.23 — IP+Host ก่อน + อ่าน body แบบ stream + ลอง www/apex หลายแบบ
+  v2.24 — apex URL + IP fallback (ipUrl+Host header) + ลด retry (แก้ HTTP 400)
 */
 
 #include <WiFi.h>
@@ -90,15 +94,16 @@ void maybeRestartAfterPollFailures(uint32_t nowMs);
 //  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
 #define MACHINE_ID  "EM 9A"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
-#define FIRMWARE_VERSION "2.20"
 
 // ── WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น) ──────────
 // IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
 // บอร์ดใช้ DHCP ปกติ — ถ้า IT ผูก MAC แล้วจะได้ IP คงที่อัตโนมัติ
 #define WIFI_SSID   "KANOK-AP"
 #define WIFI_PASS   "kanok2564"
-#define WIFI_SERVER "https://www.chaiyo-factory.com"
+#define WIFI_SERVER "https://chaiyo-factory.com"
 #define SERVER_FALLBACK_IP "103.80.48.27"   // chaiyo-factory.com — ใช้เมื่อ DNS router ล้มเหลว
+
+#define FIRMWARE_VERSION "2.24"
 
 const char* MACHINE_ID_LIST[] = {
   "EM 01","EM 02","EM 03","EM 04","EM 05","EM 06","EM 07","EM 08",
@@ -200,6 +205,7 @@ static const uint32_t    POLL_FAIL_STREAK_RESTART       = 0;     // ปิด �
 static const uint32_t    POLL_STALE_RESTART_MS          = 1800000; // 30 นาทีไม่ poll สำเร็จ (เดิม 10 นาที)
 static const uint32_t    WIFI_FULL_RECONNECT_AFTER_MS   = 45000;  // ก่อน 45s ใช้ reconnect เงียบๆ ไม่ทับจอ
 static int               g_lastPollHttpCode             = 0;
+static int               g_lastPollBodyLen               = 0;
 static int               g_lastSyncHttpCode              = 0;
 static uint32_t          g_lastPollAttemptMs            = 0;
 static uint32_t          g_lastPollSuccessMs            = 0;
@@ -237,10 +243,18 @@ static uint8_t           g_lastClockB                     = 255;
 static bool              g_needsPollResync                = false;
 
 String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
+  WiFiClient* stream = http.getStreamPtr();
+
+  // รอ TLS stream (ESP32 มักได้ 200 ก่อน body พร้อม)
+  uint32_t waitUntil = millis() + min(timeoutMs, (uint32_t)350);
+  while ((int)millis() < (int)waitUntil) {
+    if (stream && (stream->available() > 0 || http.getSize() > 0)) break;
+    delay(20);
+  }
+
   String body = http.getString();
   if (body.length() > 0) return body;
 
-  WiFiClient* stream = http.getStreamPtr();
   if (!stream) return body;
 
   int total = http.getSize();
@@ -248,23 +262,62 @@ String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
   if (total > 0 && total < 16384) {
     body.reserve((unsigned)total + 1);
     while ((int)body.length() < total && (int)millis() < (int)deadline) {
-      if (stream->available()) body += (char)stream->read();
-      else if (!stream->connected() && !stream->available()) break;
-      else delay(1);
+      while (stream->available()) body += (char)stream->read();
+      if ((int)body.length() >= total) break;
+      if (!stream->connected() && !stream->available()) delay(40);
+      else delay(3);
     }
-  } else {
-    while ((int)millis() < (int)deadline) {
-      if (stream->available()) {
-        body += (char)stream->read();
-        deadline = millis() + 500;
-      } else if (!stream->connected() && !stream->available()) {
-        break;
-      } else {
-        delay(1);
-      }
+    if (body.length() > 0) return body;
+  }
+
+  deadline = millis() + timeoutMs;
+  while ((int)millis() < (int)deadline) {
+    while (stream->available()) body += (char)stream->read();
+    if (!stream->connected() && !stream->available()) {
+      delay(60);
+      while (stream->available()) body += (char)stream->read();
+      break;
     }
+    delay(5);
   }
   return body;
+}
+
+/** ลอง GET แล้วคืน code + body (ไม่ end http จนกว่าจะอ่าน body เสร็จ) */
+int httpGetOnce(const String& url, String* bodyOut, uint32_t timeoutMs, bool viaIp) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  http.setConnectTimeout(min(timeoutMs, (uint32_t)8000));
+  http.setReuse(false);
+
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  tls.setTimeout(timeoutMs / 1000 + 5);
+
+  int code = -1;
+  if (viaIp && url.startsWith("https://") && g_serverDnsOk) {
+    String path = extractUrlPath(url);
+    String ipUrl = "https://" + g_serverDnsIp.toString() + path;
+    String host  = apexServerHost();
+    if (host.isEmpty()) return -1;
+    if (!http.begin(tls, ipUrl)) return -2;
+    http.addHeader("Host", host);
+  } else if (url.startsWith("https://")) {
+    if (!http.begin(tls, url)) return -2;
+  } else {
+    WiFiClient plain;
+    plain.setTimeout(timeoutMs / 1000 + 5);
+    if (!http.begin(plain, url)) return -2;
+  }
+
+  http.addHeader("User-Agent", "ChaiyoLED/" FIRMWARE_VERSION);
+  http.addHeader("Accept", "application/json");
+  code = http.GET();
+  if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
+  http.end();
+  return code;
 }
 
 String jsonEscapeString(const String& s) {
@@ -486,26 +539,11 @@ String extractUrlPath(const String& url) {
   return pathStart >= 0 ? url.substring(pathStart) : "/";
 }
 
-int httpGetViaResolvedIp(const String& url, String* bodyOut, uint32_t timeoutMs) {
+/** Host สำหรับ header Host: — ใช้ apex (ไม่มี www) เพื่อกัน nginx vhost 404 */
+String apexServerHost() {
   String host = resolveServerHost();
-  if (host.isEmpty() || !g_serverDnsOk) return -1;
-
-  String path = extractUrlPath(url);
-  String ipUrl = "https://" + g_serverDnsIp.toString() + path;
-  HTTPClient http;
-  http.setTimeout(timeoutMs);
-  http.setReuse(false);
-  WiFiClientSecure tls;
-  tls.setInsecure();
-  tls.setTimeout(timeoutMs / 1000 + 5);
-  if (!http.begin(tls, ipUrl)) return -2;
-  http.addHeader("Host", host);
-  http.addHeader("User-Agent", "ChaiyoLED/2.15");
-  http.addHeader("Accept", "application/json");
-  int code = http.GET();
-  if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
-  http.end();
-  return code;
+  if (host.startsWith("www.")) return host.substring(4);
+  return host;
 }
 
 int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
@@ -513,102 +551,51 @@ int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
 
   if (!g_serverDnsOk) refreshServerDns();
 
-  HTTPClient http;
-  http.setTimeout(timeoutMs);
-  http.setConnectTimeout(min(timeoutMs, (uint32_t)8000));
-  http.setReuse(false);
+  String body;
+  String* out = bodyOut ? bodyOut : &body;
+  String ipBody, dirBody;
+  int ipCode = -1, dirCode = -1;
 
-  int code = -1;
-  if (url.startsWith("https://")) {
-    WiFiClientSecure tls;
-    tls.setInsecure();
-    tls.setTimeout(timeoutMs / 1000 + 5);
-    if (!http.begin(tls, url)) {
-      g_lastHttpError = "begin fail";
-      return -2;
+  // 1) IP + Host header (ESP32 core เก่าไม่มี connect(IP,port,hostname) สำหรับ SNI)
+  if (url.startsWith("https://") && g_serverDnsOk) {
+    ipCode = httpGetOnce(url, &ipBody, timeoutMs, true);
+    if (ipCode == 200 && ipBody.length() > 0) {
+      *out = ipBody;
+      g_lastHttpError = "";
+      return 200;
     }
-    http.addHeader("User-Agent", "ChaiyoLED/2.15");
-    http.addHeader("Accept", "application/json");
-    code = http.GET();
-  } else {
-    WiFiClient plain;
-    plain.setTimeout(timeoutMs / 1000 + 5);
-    if (!http.begin(plain, url)) {
-      g_lastHttpError = "begin fail";
-      return -2;
-    }
-    http.addHeader("User-Agent", "ChaiyoLED/2.15");
-    http.addHeader("Accept", "application/json");
-    code = http.GET();
-  }
-
-  if (bodyOut && code == 200) {
-    *bodyOut = readHttpResponseBody(http, timeoutMs);
-  }
-  http.end();
-
-  if (code < 0 && url.startsWith("https://")) {
-    g_lastHttpError = "tls:" + String(code);
-    Serial.printf("[HTTP] TLS GET %d heap=%u — retry http.begin(url)\n", code, ESP.getFreeHeap());
-    HTTPClient fb;
-    fb.setTimeout(timeoutMs);
-    fb.setReuse(false);
-    if (fb.begin(url)) {
-      fb.addHeader("User-Agent", "ChaiyoLED/2.15");
-      fb.addHeader("Accept", "application/json");
-      code = fb.GET();
-      if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(fb, timeoutMs);
-      if (code < 0) {
-        g_lastHttpError = "fb:" + fb.errorToString(code);
-        Serial.printf("[HTTP] fallback GET %d (%s) heap=%u\n",
-                      code, g_lastHttpError.c_str(), ESP.getFreeHeap());
-      }
-    }
-    fb.end();
-  }
-
-  if (code < 0 && url.startsWith("https://") && g_serverDnsOk) {
-    Serial.printf("[HTTP] retry via IP %s heap=%u\n", g_serverDnsIp.toString().c_str(), ESP.getFreeHeap());
-    int ipCode = httpGetViaResolvedIp(url, bodyOut, timeoutMs);
-    if (ipCode >= 0) code = ipCode;
-    else g_lastHttpError = "ip:" + String(ipCode);
-  }
-
-  if (code >= 400 && url.startsWith("https://") && g_serverDnsOk) {
-    Serial.printf("[HTTP] GET HTTP %d — retry via IP %s\n", code, g_serverDnsIp.toString().c_str());
-    String retryBody;
-    int ipCode = httpGetViaResolvedIp(url, &retryBody, timeoutMs);
-    if (ipCode == 200) {
-      code = 200;
-      if (bodyOut) *bodyOut = retryBody;
-    } else if (ipCode >= 0) {
-      code = ipCode;
-      if (bodyOut && ipCode == 200) *bodyOut = retryBody;
+    if (ipCode > 0) {
+      Serial.printf("[HTTP] IP+SNI code=%d body=%u\n", ipCode, (unsigned)ipBody.length());
     }
   }
 
-  if (code == 200 && bodyOut && bodyOut->length() == 0 && url.startsWith("https://")) {
-    Serial.println("[HTTP] empty body on 200 — retry via IP");
-    if (g_serverDnsOk) {
-      String retryBody;
-      int ipCode = httpGetViaResolvedIp(url, &retryBody, timeoutMs);
-      if (ipCode == 200 && retryBody.length() > 0) {
-        *bodyOut = retryBody;
-      } else if (ipCode >= 0) {
-        code = ipCode;
-      }
-    }
+  // 2) Direct URL (SNI จาก hostname ใน URL)
+  dirCode = httpGetOnce(url, &dirBody, timeoutMs, false);
+  if (dirCode == 200 && dirBody.length() > 0) {
+    *out = dirBody;
+    g_lastHttpError = "";
+    return 200;
+  }
+  if (dirCode > 0 && dirCode != 200) {
+    Serial.printf("[HTTP] direct code=%d body=%u\n", dirCode, (unsigned)dirBody.length());
   }
 
+  if (ipCode == 200 || dirCode == 200) {
+    *out = dirBody.length() > 0 ? dirBody : ipBody;
+    g_lastHttpError = "empty body";
+    Serial.printf("[HTTP] 200 with empty body — url tail ...%s\n",
+                  url.substring(url.length() > 48 ? url.length() - 48 : 0).c_str());
+    return -4;
+  }
+
+  int code = dirCode >= 0 ? dirCode : ipCode;
   if (code < 0) {
-    if (g_lastHttpError.length() == 0 || g_lastHttpError == "begin fail") {
-      g_lastHttpError = "conn fail";
-    }
+    if (g_lastHttpError.length() == 0) g_lastHttpError = "conn fail";
     if (code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_CONNECTION_LOST) {
       g_serverDnsOk = false;
     }
   } else {
-    g_lastHttpError = "";
+    g_lastHttpError = "http:" + String(code);
   }
   return code;
 }
@@ -1186,6 +1173,7 @@ void handleStatus() {
               + ",\"uptime\":\"" + jsonEscapeString(formatUptimeSec(millis() / 1000UL)) + "\""
               + ",\"cpuTemperatureC\":" + String(g_internalTempC, 1)
               + ",\"lastPollHttpCode\":" + String(g_lastPollHttpCode)
+              + ",\"lastPollBodyLen\":" + String(g_lastPollBodyLen)
               + ",\"lastSyncHttpCode\":" + String(g_lastSyncHttpCode)
               + ",\"pollFailStreak\":" + String(g_pollFailStreak)
               + ",\"lastPollAgoSec\":" + String(pollAgo)
@@ -1764,6 +1752,7 @@ void pollTask(void* pv) {
     g_lastPollUrl = url;
     String body;
     int code = httpGetUrl(url, &body, 5000);
+    g_lastPollBodyLen = (int)body.length();
     recordCommandPollResult(code);
     maybeRestartAfterPollFailures(currentMs);
 

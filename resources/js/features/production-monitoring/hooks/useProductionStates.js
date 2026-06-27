@@ -87,7 +87,7 @@ export const useProductionStates = () => {
     });
   }, []);
 
-  /** Reset to setup mode, preserving queue and pausedOrder. */
+  /** Reset to setup mode, preserving queue and pausedOrder (used for Finish). */
   const resetMachineState = useCallback((machineId) => {
     setAllStates((prev) => {
       const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
@@ -99,6 +99,26 @@ export const useProductionStates = () => {
           pausedOrder:     current.pausedOrder      ?? null,
           // จำ orderId ที่เพิ่งปิด เพื่อกัน stale 'live' push จาก browser อื่น
           finishedOrderId: current.orderId          || null,
+        }),
+      };
+    });
+  }, []);
+
+  /**
+   * Reset to setup mode on cancel — clears ALL in-memory state including pausedOrder.
+   * ใช้เมื่อยกเลิกการผลิต เพื่อไม่ให้ข้อมูลค้างอยู่ในหน่วยความจำ
+   */
+  const cancelMachineState = useCallback((machineId) => {
+    setAllStates((prev) => {
+      const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
+      return {
+        ...prev,
+        [machineId]: stamp({
+          ...DEFAULT_MACHINE_STATE,
+          queue: current.queue ?? [],
+          // ล้าง pausedOrder และ finishedOrderId — cancel ไม่ควรมีข้อมูลค้าง
+          pausedOrder:     null,
+          finishedOrderId: null,
         }),
       };
     });
@@ -350,7 +370,8 @@ export const useProductionStates = () => {
     setAllStates((prev) => {
       const current = prev[machineId] ?? { ...DEFAULT_MACHINE_STATE };
       let nextQueue = current.queue ?? [];
-      if (action === 'added' && item) {
+      if (action === 'added' || action === 'restored') {
+        if (item) {
         // Dedupe vs optimistic row + SSE: match DB id OR same queueId (server stores queue_key as queueId)
         const exists = nextQueue.some((q) => {
           if (q.id != null && item.id != null && Number(q.id) === Number(item.id)) return true;
@@ -359,6 +380,7 @@ export const useProductionStates = () => {
           return false;
         });
         if (!exists) nextQueue = [...nextQueue, item];
+        }
       } else if (action === 'removed') {
         const idNum = Number(itemId);
         nextQueue = nextQueue.filter((q) => {
@@ -411,6 +433,7 @@ export const useProductionStates = () => {
     getMachineState,
     updateMachineState,
     resetMachineState,
+    cancelMachineState,
     addToQueue,
     removeFromQueue,
     pauseOrder,
