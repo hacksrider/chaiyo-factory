@@ -434,16 +434,16 @@ class ProductionMonitorController extends Controller
                     // ปกติ: รออย่างน้อย 2 วินาทีเพื่อกัน stale-ack ลบ command ใหม่ที่เพิ่งเขียน
                     if ($isForced || $ageSeconds >= 2.0) {
                         Cache::forget("led_cmd_{$machineId}");
-                        Log::debug("[LED-ACK] cleared led_cmd_{$machineId}", [
+                        Log::warning("[LED-ACK] cleared led_cmd_{$machineId}", [
                             'fp' => substr($ackFp, 0, 60), 'age' => round($ageSeconds, 2), 'forced' => $isForced,
                         ]);
                     } else {
-                        Log::debug("[LED-ACK] fp match but too young ({$ageSeconds}s)", [
+                        Log::warning("[LED-ACK] fp match but too young ({$ageSeconds}s)", [
                             'machineId' => $machineId, 'fp' => substr($ackFp, 0, 60),
                         ]);
                     }
                 } else {
-                    Log::debug("[LED-ACK] fp mismatch — ack not cleared", [
+                    Log::warning("[LED-ACK] fp mismatch — ack not cleared", [
                         'machineId' => $machineId,
                         'ack_fp'    => substr($ackFp, 0, 60),
                         'cache_fp'  => substr($cachedFp, 0, 60),
@@ -474,7 +474,7 @@ class ProductionMonitorController extends Controller
             $cmdAge = is_numeric($command['_storedAt'] ?? null)
                 ? round(microtime(true) - (float) $command['_storedAt'], 1)
                 : '?';
-            Log::debug("[LED-POLL] serving pending cmd", [
+            Log::warning("[LED-POLL] serving pending cmd", [
                 'machineId' => $machineId,
                 'fp'        => substr((string) ($command['_fp'] ?? ''), 0, 60),
                 'age'       => $cmdAge,
@@ -2157,19 +2157,31 @@ private function publishEvent(string $type, array $data): void
         ] : null;
 
         // ── Log tail (ล่าสุด 60 บรรทัดที่มีคำว่า LED-) ──────────────────────────
-        $logPath  = storage_path('logs/laravel.log');
-        $ledLines = [];
-        if (file_exists($logPath) && is_readable($logPath)) {
-            // อ่านไฟล์จากท้าย (ประสิทธิภาพสูง ไม่โหลดทั้งไฟล์)
+        $logPath   = storage_path('logs/laravel.log');
+        $ledLines  = [];
+        $rawLines  = [];
+        $logExists = file_exists($logPath);
+        $logReadable = $logExists && is_readable($logPath);
+        if ($logReadable) {
             $fp   = fopen($logPath, 'r');
             $size = filesize($logPath);
             if ($fp && $size > 0) {
-                $chunkSize = min($size, 65536); // อ่านสูงสุด 64 KB จากท้าย
+                $chunkSize = min($size, 131072); // อ่านสูงสุด 128 KB จากท้าย
                 fseek($fp, -$chunkSize, SEEK_END);
                 $chunk = fread($fp, $chunkSize);
                 fclose($fp);
                 $lines = explode("\n", $chunk);
-                foreach (array_reverse($lines) as $line) {
+                $reversed = array_reverse($lines);
+                // raw 20 บรรทัดสุดท้าย (ทุก level) สำหรับ debug
+                foreach ($reversed as $line) {
+                    if (trim($line) !== '') {
+                        $rawLines[] = trim($line);
+                        if (count($rawLines) >= 20) break;
+                    }
+                }
+                $rawLines = array_reverse($rawLines);
+                // LED-specific lines
+                foreach ($reversed as $line) {
                     if (str_contains($line, '[LED-') || str_contains($line, 'LED-ACK') || str_contains($line, 'LED-POLL')) {
                         $ledLines[] = trim($line);
                         if (count($ledLines) >= 40) break;
@@ -2187,6 +2199,9 @@ private function publishEvent(string $type, array $data): void
             'led_state'       => $stateInfo,
             'db_session'      => $sessionInfo,
             'log_tail_led'    => $ledLines,
+            'log_tail_raw'    => $rawLines,
+            'log_exists'      => $logExists,
+            'log_readable'    => $logReadable,
             'log_path'        => $logPath,
         ]);
     }
