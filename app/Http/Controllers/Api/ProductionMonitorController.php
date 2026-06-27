@@ -414,6 +414,14 @@ class ProductionMonitorController extends Controller
      */
     public function fetchLedCommand(Request $request, string $machineId): JsonResponse
     {
+        // ── ตรวจจับ machine ID จริงที่ ESP32 ใช้ poll (ยิงทุก request) ──────────
+        Log::warning('[LED-REQ] fetchLedCommand called', [
+            'machineId' => $machineId,
+            'raw_url'   => $request->fullUrl(),
+            'ack'       => $request->query('ack', ''),
+            'ip'        => $request->ip(),
+        ]);
+
         $wasOffline = $this->espHeartbeatWasOffline("led_heartbeat_{$machineId}");
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
@@ -2182,7 +2190,7 @@ private function publishEvent(string $type, array $data): void
                 $rawLines = array_reverse($rawLines);
                 // LED-specific lines
                 foreach ($reversed as $line) {
-                    if (str_contains($line, '[LED-') || str_contains($line, 'LED-ACK') || str_contains($line, 'LED-POLL')) {
+                    if (str_contains($line, '[LED-') || str_contains($line, 'LED-ACK') || str_contains($line, 'LED-POLL') || str_contains($line, 'LED-REQ')) {
                         $ledLines[] = trim($line);
                         if (count($ledLines) >= 40) break;
                     }
