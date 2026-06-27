@@ -423,8 +423,10 @@ class ProductionMonitorController extends Controller
 
         // ถ้ามี pending command อยู่แล้ว ให้ส่ง command เดิมก่อนเสมอ
         // เพื่อกัน race ตอนเว็บเพิ่งกดแก้ข้อความ แล้ว ESP reconnect/resync พอดี
+        // ตรวจว่า command มีเนื้อหาจริง (ไม่ใช่ empty command ที่ firmware รับไม่ได้)
         $command = Cache::get("led_cmd_{$machineId}");
-        if (is_array($command)) {
+        if (is_array($command)
+            && (trim((string) ($command['text'] ?? '')) !== '' || ! empty($command['showClock']))) {
             $command = $this->normalizeLedPanelCounters($machineId, $command);
             $command = $this->stampLedCommandFingerprint($command);
             Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
