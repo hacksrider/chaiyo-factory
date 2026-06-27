@@ -48,6 +48,7 @@ function buildClockPayload(colorHex, cfg = {}) {
   return {
     text: '',
     showClock: true,
+    textOverride: false,
     r,
     g,
     b,
@@ -1179,7 +1180,7 @@ const DeviceStat = ({ label, value, valueClass = 'text-white', hint = null }) =>
 // ─── ControlPanel ─────────────────────────────────────────────────────────────
 const ControlPanel = ({
   machine, config, onChange, onSpeedChange, onOpenPopup, onOpenQuick, onClearLed,
-  onReboot, sendStatus, pingStatus, pingMsg, errorMsg,
+  onReboot, onResend, sendStatus, pingStatus, pingMsg, errorMsg,
   wifiStatus = 'noip', clearStatus = 'idle', speedForAll, onSpeedForAllChange,
   deviceLocalIp = null, heartbeatSecondsAgo = null, deviceRssi = null, deviceTemp = null,
   localPollHint = null,
@@ -1439,6 +1440,24 @@ const ControlPanel = ({
               )}
             </button>
           </div>
+
+          {onResend && (
+            <button
+              type="button"
+              onClick={onResend}
+              disabled={!canSend}
+              className={`flex w-full items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition-all ${
+                !canSend
+                  ? 'cursor-not-allowed bg-gray-700/20 text-gray-600'
+                  : 'border border-gray-600/50 bg-gray-800/50 text-gray-300 hover:border-gray-500/60 hover:bg-gray-700/50 hover:text-white'
+              }`}
+            >
+              <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>ส่งปัจจุบันไปป้ายอีกครั้ง</span>
+            </button>
+          )}
 
           <div className={`rounded-xl border border-gray-700/40 bg-gray-800/30 px-3 py-3 sm:px-4 ${liveColorLocked ? 'border-emerald-500/20' : ''}`}>
             <label className="mb-2 block text-xs font-medium text-gray-400">
@@ -1709,6 +1728,7 @@ const LedSignView = ({
     let displayG = 255;
     let displayB = 255;
 
+    let usedLiveText = false;
     if (!isOverridden && mState?.mode === 'live') {
       const liveTxt = getLiveProductText(machineId);
       if (liveTxt) {
@@ -1716,8 +1736,11 @@ const LedSignView = ({
         displayR = 0;
         displayG = 255;
         displayB = 0;
+        usedLiveText = true;
       }
-    } else {
+    }
+    // Use cfg color when: overridden, OR not live, OR live but no live text available
+    if (!usedLiveText) {
       const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
       displayR = r;
       displayG = g;
@@ -1757,6 +1780,42 @@ const LedSignView = ({
   useEffect(() => {
     pushLedDisplayToDeviceRef.current = pushLedDisplayToDevice;
   }, [pushLedDisplayToDevice]);
+
+  // ── Auto-push when color/speed changes in ControlPanel (debounced 700ms) ──
+  // User changes color picker or speed slider → debounce then push to LED board
+  const colorPushTimerRef = useRef(null);
+  const prevConfigSigRef = useRef({});
+  useEffect(() => {
+    if (!sid) return;
+    const cfg = configs[sid];
+    if (!cfg) return;
+
+    const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+    const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
+    const configSig = `${r},${g},${b}|${cfg.fontSize ?? 1}|${speedMs}`;
+
+    const prev = prevConfigSigRef.current[sid];
+    prevConfigSigRef.current[sid] = configSig;
+
+    // Skip on first render per machine (avoid pushing stale state on mount)
+    if (prev === undefined || prev === configSig) return;
+
+    // Only auto-push when there's something to display (text or clock)
+    const ledState = ledStatesRef.current[sid];
+    const hasDisplayContent = String(cfg.text ?? '').trim()
+      || String(ledState?.text ?? '').trim()
+      || Boolean(ledState?.showClock)
+      || allMachineStatesRef.current[sid]?.mode === 'live';
+    if (!hasDisplayContent) return;
+
+    clearTimeout(colorPushTimerRef.current);
+    colorPushTimerRef.current = setTimeout(() => {
+      pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {});
+    }, 700);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, configs[sid]?.colorHex, configs[sid]?.scrollSpeed, configs[sid]?.fontSize]);
+
+  useEffect(() => () => clearTimeout(colorPushTimerRef.current), []);
 
   const machineLivePrevRef = useRef({});
   // อัปเดต preview เมื่อจบ Live (ไม่ส่งไปป้าย — backend/finish handler จัดการแล้ว)
@@ -2599,6 +2658,7 @@ const LedSignView = ({
               onOpenQuick={() => { setQuickError(''); setQuickOpen(true); }}
               onClearLed={handleClearLed}
               clearStatus={clearStatus}
+              onResend={() => pushLedDisplayToDeviceRef.current?.(sid, { force: true }).catch(() => {})}
               onReboot={handleRebootBoard}
               rebooting={rebootingBoard}
               sendStatus={statuses[sid]      ?? 'idle'}

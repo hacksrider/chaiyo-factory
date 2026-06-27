@@ -355,7 +355,7 @@ class ProductionMonitorController extends Controller
             }
         }
 
-        $ledState = $this->normalizeLedPanelCounters($machineId, $ledState);
+        $ledState = $this->normalizeLedPanelCounters($machineId, $ledState, $session);
         $ledState = $this->stampLedCommandFingerprint($ledState);
 
         // Pending command — ESP32 poll ซ้ำได้จนกว่าจะ ack (TTL 5 นาที)
@@ -448,19 +448,23 @@ class ProductionMonitorController extends Controller
 
             // ไม่มี state บน server เลย (ไม่มีงาน active, ไม่มี cache) →
             // ส่ง showClock:true เพื่อให้ ESP หยุดค้างที่ "กำลังซิงก์.." แล้วแสดงนาฬิกาแทน
+            // พร้อมเก็บ led_state_ ไว้เพื่อให้ reconcile loop ครั้งต่อไปรู้ว่าสถานะถูกต้องคือ clock
             if ($wasOffline || $resync) {
-                $clockCmd = $this->stampLedCommandFingerprint([
-                    'pending'   => true,
-                    'showClock' => true,
-                    'text'      => '',
-                    'r'         => 0,
-                    'g'         => 255,
-                    'b'         => 0,
-                    'actual'    => '0',
-                    'target'    => '0',
-                ]);
+                $clockBase = [
+                    'text'         => '',
+                    'showClock'    => true,
+                    'r'            => 0,
+                    'g'            => 255,
+                    'b'            => 0,
+                    'actual'       => '0',
+                    'target'       => '0',
+                    'textOverride' => false,
+                    'updatedAt'    => now()->toISOString(),
+                ];
+                $clockCmd = $this->stampLedCommandFingerprint(array_merge(['pending' => true], $clockBase));
+                Cache::put("led_state_{$machineId}", $clockBase, now()->addDays(30));
 
-                return response()->json(array_merge(['pending' => true], $clockCmd));
+                return response()->json($clockCmd);
             }
         }
 
@@ -2524,7 +2528,7 @@ private function publishEvent(string $type, array $data): void
         $base      = is_array($base) ? $base : [];
 
         if ((bool) ($base['textOverride'] ?? false)) {
-            return $this->normalizeLedPanelCounters($machineId, $base);
+            return $this->normalizeLedPanelCounters($machineId, $base, $session);
         }
 
         $code    = trim((string) ($session->product_code ?? ''));
@@ -2563,7 +2567,7 @@ private function publishEvent(string $type, array $data): void
             'updatedAt'    => now()->toISOString(),
         ]);
 
-        return $this->normalizeLedPanelCounters($machineId, $ledState);
+        return $this->normalizeLedPanelCounters($machineId, $ledState, $session);
     }
 
     /**
@@ -2651,7 +2655,7 @@ private function publishEvent(string $type, array $data): void
     /**
      * จอแผ่นที่ 4: แสดงเลขผลิตเฉพาะ session ที่ active และไม่ได้ override ข้อความ
      */
-    private function normalizeLedPanelCounters(string $machineId, array $ledState): array
+    private function normalizeLedPanelCounters(string $machineId, array $ledState, ?object $preloadedSession = null): array
     {
         // textOverride หมายความว่า user กำหนดข้อความเองโดยตรง — ไม่ต้องแสดง counter จาก session
         if ((bool) ($ledState['textOverride'] ?? false)) {
@@ -2660,11 +2664,11 @@ private function publishEvent(string $type, array $data): void
             return $ledState;
         }
 
-        $session = ProductionSession::where('machine_id', $machineId)->first();
+        // ใช้ session ที่โหลดมาก่อนแล้ว (ถ้ามี) เพื่อลด DB query
+        $session = $preloadedSession ?? ProductionSession::where('machine_id', $machineId)->first();
         $activeSession = $session && in_array($session->status ?? '', ['live', 'paused', 'awaiting_scale'], true);
-        $showCounters = $activeSession && ! (bool) ($ledState['textOverride'] ?? false);
 
-        if ($showCounters) {
+        if ($activeSession) {
             $ledState['actual'] = (string) ((int) ($session->pipe_counter ?? 0));
             $remaining = (int) ($session->remaining_qty ?? 0);
             $fallbackTarget = (int) ($session->target_qty ?? 0);
