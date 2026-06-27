@@ -450,6 +450,19 @@ class ProductionMonitorController extends Controller
                             'machineId' => $machineId, 'fp' => substr($ackFp, 0, 60),
                         ]);
                     }
+                } elseif ($ageSeconds >= ($isForced ? 0.5 : 2.0)) {
+                    // Stale ACK — ESP ยืนยัน state เก่า (เช่น CLOCK) แต่คิวมีคำสั่งใหม่ (เช่น Test)
+                    // ถ้าปล่อย pending=true ต่อ → firmware ตั้ง skipSyncThisCycle=true ทุก poll → sync ถูกบล็อก
+                    // ลบคิว + ส่ง pending=false → ESP ใช้ syncLedDisplayFromServer() ดึงจาก /led-status
+                    Cache::forget("led_cmd_{$machineId}");
+                    Log::warning("[LED-ACK] stale ack — cleared led_cmd to unblock sync", [
+                        'machineId' => $machineId,
+                        'ack_fp'    => substr($ackFp, 0, 60),
+                        'cache_fp'  => substr($cachedFp, 0, 60),
+                        'age'       => round($ageSeconds, 2),
+                    ]);
+
+                    return response()->json(['pending' => false]);
                 } else {
                     Log::warning("[LED-ACK] fp mismatch — ack not cleared", [
                         'machineId' => $machineId,
@@ -468,20 +481,27 @@ class ProductionMonitorController extends Controller
         $freshBoot = is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120;
 
         // ถ้ามี pending command อยู่แล้ว ให้ส่ง command เดิมก่อนเสมอ
-        // เพื่อกัน race ตอนเว็บเพิ่งกดแก้ข้อความ แล้ว ESP reconnect/resync พอดี
         // *** ไม่ call normalizeLedPanelCounters / stampLedCommandFingerprint อีกต่อไป ***
-        // เหตุผล: การ re-stamp _fp ทุก poll ทำให้ fingerprint drift — ESP ส่ง ack ด้วย FP เก่า
-        //         แต่ cache มี FP ใหม่ (counter เพิ่ม) → ack ไม่ match → queue ค้างตลอด
-        //         ให้ weight event / storeLedCommand เป็นผู้สร้าง FP ที่ถูกต้องเอง
+        // *** ไม่ refresh TTL ตอน poll — กันคิวค้างตลอดชีวิต ***
         $command = Cache::get("led_cmd_{$machineId}");
         if (is_array($command)
             && (trim((string) ($command['text'] ?? '')) !== '' || ! empty($command['showClock']))) {
-            // รีเฟรช TTL โดยไม่เปลี่ยนเนื้อหาหรือ fingerprint
-            Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
-
             $cmdAge = is_numeric($command['_storedAt'] ?? null)
                 ? round(microtime(true) - (float) $command['_storedAt'], 1)
-                : '?';
+                : 999;
+
+            // คิวค้างนานเกิน 15s โดย ESP ไม่ ack → ปลดล็อกให้ sync ผ่าน /led-status
+            if ($cmdAge >= 15.0) {
+                Cache::forget("led_cmd_{$machineId}");
+                Log::warning("[LED-STUCK] cleared aged pending cmd", [
+                    'machineId' => $machineId,
+                    'fp'        => substr((string) ($command['_fp'] ?? ''), 0, 60),
+                    'age'       => $cmdAge,
+                ]);
+
+                return response()->json(['pending' => false]);
+            }
+
             Log::warning("[LED-POLL] serving pending cmd", [
                 'machineId' => $machineId,
                 'fp'        => substr((string) ($command['_fp'] ?? ''), 0, 60),
@@ -495,14 +515,17 @@ class ProductionMonitorController extends Controller
         if ($wasOffline || $resync || ($freshBoot && ! Cache::get($bootKey))) {
             $state = $this->resolveAuthoritativeLedState($machineId, null);
             if (is_array($state)) {
-                $state = $this->stampLedCommandFingerprint($state);
-                $state['_storedAt'] = microtime(true);
-                Cache::put("led_cmd_{$machineId}", $state, now()->addMinutes(5));
                 if ($freshBoot) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
                 }
+                // มี led_state แล้ว → ส่ง pending=false ให้ ESP sync ผ่าน /led-status
+                // ไม่เขียน led_cmd_ ซ้ำ (กัน pending loop ที่บล็อก skipSync)
+                Log::warning('[LED-RESYNC] defer to led-status sync', [
+                    'machineId' => $machineId,
+                    'fp'        => substr((string) ($state['_fp'] ?? ''), 0, 60),
+                ]);
 
-                return response()->json(array_merge(['pending' => true], $state));
+                return response()->json(['pending' => false]);
             }
 
             // ไม่มี state บน server เลย (ไม่มีงาน active, ไม่มี cache) →
