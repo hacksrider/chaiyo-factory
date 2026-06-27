@@ -2180,12 +2180,27 @@ private function publishEvent(string $type, array $data): void
             'product_code' => $session->product_code,
         ] : null;
 
-        // ── Log tail (ล่าสุด 60 บรรทัดที่มีคำว่า LED-) ──────────────────────────
-        $logPath   = storage_path('logs/laravel.log');
-        $ledLines  = [];
-        $rawLines  = [];
-        $logExists = file_exists($logPath);
-        $logReadable = $logExists && is_readable($logPath);
+        // ── Log tail — รองรับทั้ง single-file และ daily driver ─────────────────
+        // หา log file ที่ใหม่ที่สุด: ลองวันนี้ก่อน ถ้าไม่มีใช้ laravel.log
+        $today       = now()->format('Y-m-d');
+        $candidates  = [
+            storage_path("logs/laravel-{$today}.log"),
+            storage_path('logs/laravel.log'),
+        ];
+        $logPath     = storage_path('logs/laravel.log'); // fallback
+        $logExists   = false;
+        $logReadable = false;
+        foreach ($candidates as $candidate) {
+            if (file_exists($candidate) && is_readable($candidate) && filesize($candidate) > 0) {
+                $logPath     = $candidate;
+                $logExists   = true;
+                $logReadable = true;
+                break;
+            }
+        }
+
+        $ledLines = [];
+        $rawLines = [];
         if ($logReadable) {
             $fp   = fopen($logPath, 'r');
             $size = filesize($logPath);
@@ -2194,9 +2209,9 @@ private function publishEvent(string $type, array $data): void
                 fseek($fp, -$chunkSize, SEEK_END);
                 $chunk = fread($fp, $chunkSize);
                 fclose($fp);
-                $lines = explode("\n", $chunk);
+                $lines    = explode("\n", $chunk);
                 $reversed = array_reverse($lines);
-                // raw 20 บรรทัดสุดท้าย (ทุก level) สำหรับ debug
+                // raw 20 บรรทัดสุดท้าย (ทุก level)
                 foreach ($reversed as $line) {
                     if (trim($line) !== '') {
                         $rawLines[] = trim($line);
