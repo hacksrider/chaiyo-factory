@@ -312,6 +312,9 @@ class ProductionMonitorController extends Controller
      */
     public function storeLedCommand(Request $request, string $machineId): JsonResponse
     {
+        // force=true → กดปุ่ม "ส่งปัจจุบันไปป้ายอีกครั้ง" — เขียนทับ cache ทันทีโดยไม่รอ
+        $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOL);
+
         $payload = $request->only([
             'text', 'r', 'g', 'b', 'fontSize', 'speed',
             'actual', 'target', 'showClock', 'textOverride',
@@ -358,6 +361,13 @@ class ProductionMonitorController extends Controller
         $ledState = $this->normalizeLedPanelCounters($machineId, $ledState, $session);
         $ledState = $this->stampLedCommandFingerprint($ledState);
         $ledState['_storedAt'] = microtime(true);
+
+        // _force=true → ESP32 ack handler ข้ามเงื่อนไข age-guard ทันที
+        if ($force) {
+            $ledState['_force'] = true;
+        } else {
+            unset($ledState['_force']);
+        }
 
         // Pending command — ESP32 poll ซ้ำได้จนกว่าจะ ack (TTL 5 นาที)
         Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
@@ -408,14 +418,18 @@ class ProductionMonitorController extends Controller
         $this->recordEspHeartbeat($request, $machineId, 'led');
 
         // ESP ยืนยันรับคำสั่งแล้ว — ลบคิวเฉพาะเมื่อ fingerprint ตรงกัน
-        // และคำสั่งถูกบันทึกไว้อย่างน้อย 2 วินาทีแล้ว (กัน ack จากคำสั่งเก่า ลบคำสั่งใหม่ที่ content เหมือนกัน)
+        // กัน ack เก่า (content เดิม, _fp เดิม) ลบคำสั่งใหม่ที่เพิ่งถูก queue ไว้ไม่นาน
+        // หาก command มี _force=true (กดปุ่ม "ส่งซ้ำ") → ข้ามเงื่อนไขอายุทันที
         $ackFp = trim((string) $request->query('ack', ''));
         if ($ackFp !== '') {
             $pending = Cache::get("led_cmd_{$machineId}");
             if (is_array($pending) && (string) ($pending['_fp'] ?? '') === $ackFp) {
-                $storedAt = $pending['_storedAt'] ?? 0;
+                $isForced   = ! empty($pending['_force']);
+                $storedAt   = $pending['_storedAt'] ?? 0;
                 $ageSeconds = is_numeric($storedAt) ? (microtime(true) - (float) $storedAt) : 999;
-                if ($ageSeconds >= 2.0) {
+                // _force=true → ลบทันทีโดยไม่รอเวลา (bypass age guard)
+                // ปกติ: รออย่างน้อย 2 วินาทีเพื่อกัน stale-ack ลบ command ใหม่ที่เพิ่งเขียน
+                if ($isForced || $ageSeconds >= 2.0) {
                     Cache::forget("led_cmd_{$machineId}");
                 }
             }
@@ -429,12 +443,14 @@ class ProductionMonitorController extends Controller
 
         // ถ้ามี pending command อยู่แล้ว ให้ส่ง command เดิมก่อนเสมอ
         // เพื่อกัน race ตอนเว็บเพิ่งกดแก้ข้อความ แล้ว ESP reconnect/resync พอดี
-        // ตรวจว่า command มีเนื้อหาจริง (ไม่ใช่ empty command ที่ firmware รับไม่ได้)
+        // *** ไม่ call normalizeLedPanelCounters / stampLedCommandFingerprint อีกต่อไป ***
+        // เหตุผล: การ re-stamp _fp ทุก poll ทำให้ fingerprint drift — ESP ส่ง ack ด้วย FP เก่า
+        //         แต่ cache มี FP ใหม่ (counter เพิ่ม) → ack ไม่ match → queue ค้างตลอด
+        //         ให้ weight event / storeLedCommand เป็นผู้สร้าง FP ที่ถูกต้องเอง
         $command = Cache::get("led_cmd_{$machineId}");
         if (is_array($command)
             && (trim((string) ($command['text'] ?? '')) !== '' || ! empty($command['showClock']))) {
-            $command = $this->normalizeLedPanelCounters($machineId, $command);
-            $command = $this->stampLedCommandFingerprint($command);
+            // รีเฟรช TTL โดยไม่เปลี่ยนเนื้อหาหรือ fingerprint
             Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
 
             return response()->json(array_merge(['pending' => true], $command));
@@ -1370,6 +1386,8 @@ class ProductionMonitorController extends Controller
             );
             if ($ledState !== null) {
                 $ledState = $this->stampLedCommandFingerprint($ledState);
+                $ledState['_storedAt'] = microtime(true);   // ← กำหนดเวลาเก็บ เพื่อให้ ack age-guard ทำงานถูก
+                unset($ledState['_force']);                  // ← weight event ไม่ใช่ forced
                 Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
                 Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
                 $this->publishEvent('led_state', [
@@ -2516,6 +2534,8 @@ private function publishEvent(string $type, array $data): void
         }
 
         $ledState = $this->stampLedCommandFingerprint($ledState);
+        $ledState['_storedAt'] = microtime(true);   // ← กำหนดเวลาเก็บเพื่อให้ ack age-guard ทำงานถูก
+        unset($ledState['_force']);                  // ← session-start command ไม่ใช่ forced
         Cache::put("led_cmd_{$machineId}", $ledState, now()->addMinutes(5));
         Cache::put("led_state_{$machineId}", $ledState, now()->addDays(30));
         $this->publishEvent('led_state', [
@@ -2711,6 +2731,8 @@ private function publishEvent(string $type, array $data): void
             'updatedAt'    => now()->toISOString(),
         ]);
         $next = $this->stampLedCommandFingerprint($next);
+        $next['_storedAt'] = microtime(true);   // ← กำหนดเวลาเก็บ
+        unset($next['_force']);                  // ← reset command ไม่ใช่ forced
 
         Cache::put("led_cmd_{$machineId}", $next, now()->addMinutes(5));
         Cache::put("led_state_{$machineId}", $next, now()->addDays(30));

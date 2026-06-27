@@ -1718,7 +1718,7 @@ const LedSignView = ({
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex);
       if (!force && lastQueuedSigRef.current[machineId] === sig) return;
-      await queueLedForMachine(machineId, payload);
+      await queueLedForMachine(machineId, force ? { ...payload, force: true } : payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
     }
@@ -1755,7 +1755,7 @@ const LedSignView = ({
       const payload = buildClockPayload(cfg.colorHex, cfg);
       const sig = buildClockSignature(cfg.colorHex ?? '#00ff00');
       if (!force && lastQueuedSigRef.current[machineId] === sig) return;
-      await queueLedForMachine(machineId, payload);
+      await queueLedForMachine(machineId, force ? { ...payload, force: true } : payload);
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
       return;
     }
@@ -1773,6 +1773,7 @@ const LedSignView = ({
       fontSize: cfg.fontSize ?? 1,
       speed: speedMs,
       textOverride: isOverridden,
+      ...(force ? { force: true } : {}),
       ...getPanelCounterPayload(machineId, isOverridden),
     });
     lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [machineId]: sig };
