@@ -421,12 +421,22 @@ class ProductionMonitorController extends Controller
         $bootKey  = "led_esp_boot_synced_{$machineId}";
         $freshBoot = is_numeric($uptime) && (int) $uptime >= 0 && (int) $uptime < 120;
 
+        // ถ้ามี pending command อยู่แล้ว ให้ส่ง command เดิมก่อนเสมอ
+        // เพื่อกัน race ตอนเว็บเพิ่งกดแก้ข้อความ แล้ว ESP reconnect/resync พอดี
+        $command = Cache::get("led_cmd_{$machineId}");
+        if (is_array($command)) {
+            $command = $this->normalizeLedPanelCounters($machineId, $command);
+            $command = $this->stampLedCommandFingerprint($command);
+            Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
+
+            return response()->json(array_merge(['pending' => true], $command));
+        }
+
         if ($wasOffline || $resync || ($freshBoot && ! Cache::get($bootKey))) {
             $state = $this->resolveAuthoritativeLedState($machineId, null);
             if (is_array($state)) {
                 $state = $this->stampLedCommandFingerprint($state);
                 Cache::put("led_cmd_{$machineId}", $state, now()->addMinutes(5));
-                Cache::put("led_state_{$machineId}", $state, now()->addDays(30));
                 if ($freshBoot) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
                 }
@@ -450,16 +460,6 @@ class ProductionMonitorController extends Controller
 
                 return response()->json(array_merge(['pending' => true], $clockCmd));
             }
-        }
-
-        $command = Cache::get("led_cmd_{$machineId}");
-        if (is_array($command)
-            && (trim((string) ($command['text'] ?? '')) !== '' || ! empty($command['showClock']))) {
-            $command = $this->normalizeLedPanelCounters($machineId, $command);
-            $command = $this->stampLedCommandFingerprint($command);
-            Cache::put("led_cmd_{$machineId}", $command, now()->addMinutes(5));
-
-            return response()->json(array_merge(['pending' => true], $command));
         }
 
         return response()->json(['pending' => false]);

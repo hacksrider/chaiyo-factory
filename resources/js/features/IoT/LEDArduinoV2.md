@@ -864,8 +864,11 @@ bool syncLedDisplayFromServer() {
   if (!doc["success"].as<bool>() || !doc["hasState"].as<bool>()) {
     Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — NVS หรือนาฬิกา");
     bool loaded = loadStateFromPrefs();
-    if (!loaded) applyClockVisual();
-    return loaded || g_clockMode;
+    if (!loaded) {
+      // ไม่มี state และไม่มี NVS ให้คงหน้าจอเดิมไว้ก่อน (กันเด้งกลับ clock จากภาวะชั่วคราว)
+      return false;
+    }
+    return true;
   }
 
   JsonObject st = doc["state"];
@@ -1227,11 +1230,10 @@ void pollTask(void* pv) {
 
     if (g_serverUrl.isEmpty()) continue;
 
-    // ───── Reconcile: /led-status ทุก ~4s ให้ตรง actual/target + ข้อความ โดยไม่พึ่งกดซิงก์ ─────
+    // ───── Reconcile: /led-status ทุก ~4s (ทำหลัง poll command เพื่อไม่แซงคำสั่งใหม่) ─────
     pollCycle++;
-    if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) {
-      reconcileLedStateWithWeb();
-    }
+    bool shouldReconcileThisCycle = (pollCycle % RECONCILE_EVERY_N_POLLS == 0);
+    bool gotPendingCommandThisCycle = false;
 
     HTTPClient http;
     // URL-encode MACHINE_ID (ช่องว่างต้องเป็น %20 ไม่งั้น HTTP request จะ malformed)
@@ -1260,11 +1262,12 @@ void pollTask(void* pv) {
     if (code == 200) {
       StaticJsonDocument<512> doc;
       if (!deserializeJson(doc, http.getString()) && doc["pending"].as<bool>()) {
+        gotPendingCommandThisCycle = true;
         LedCmd cmd = {};
         cmd.showClock = doc["showClock"] | false;
         String t = doc["text"].as<String>();
         t.trim();
-        if (t.length() == 0 || cmd.showClock) {
+        if (cmd.showClock) {
           cmd.showClock = true;
           cmd.text[0] = '\0';
         } else {
@@ -1286,7 +1289,6 @@ void pollTask(void* pv) {
           cmd.target[sizeof(cmd.target) - 1] = '\0';
         }
         xQueueSend(cmdQueue, &cmd, 0); // ส่งไปให้ loop() นำไปใช้
-        s_ledStateFingerprint = buildFingerprintFromStateJson(doc.as<JsonObject>());
         Serial.println("[Poll] New command queued: " + String(cmd.text));
       }
     } else if (code > 0) {
@@ -1296,6 +1298,11 @@ void pollTask(void* pv) {
       Serial.printf("[Poll] Error %d — ตรวจสอบ SERVER_URL=%s\n", code, g_serverUrl.c_str());
     }
     http.end();
+
+    // ทำ reconcile หลัง poll และข้ามรอบที่เพิ่งได้ pending command เพื่อลดการสลับไป clock ก่อน
+    if (shouldReconcileThisCycle && !gotPendingCommandThisCycle) {
+      reconcileLedStateWithWeb();
+    }
 
     // ── ตรวจจับค้าง "กำลังเชื่อมต่อ.." หรือ transient text นาน > 30s → force sync ──
     {

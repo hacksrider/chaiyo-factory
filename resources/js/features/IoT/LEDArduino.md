@@ -1363,9 +1363,10 @@ bool syncLedDisplayFromServer() {
       g_lastSyncError = "no-state";
       g_lastSyncServerTextLen = 0;
       g_awaitingBootSync = false;
-      applyClockVisual(0, 255, 0);
-      Serial.println("[Sync] no server state — clock fallback");
-      return true;
+      // ไม่มี state บน server ไม่ควร override จอปัจจุบันทันที
+      // (กันเคส cache วูบชั่วคราวแล้วป้ายเด้งกลับเป็นนาฬิกา)
+      Serial.println("[Sync] no server state — keep current display");
+      return false;
     }
   }
 
