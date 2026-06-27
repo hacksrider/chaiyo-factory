@@ -1,5 +1,5 @@
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.18
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16)  — v2.19
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
   - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
   - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
@@ -15,6 +15,9 @@
      กรณี driver ค้าง internal state ทำให้ reconnect() ไม่ทำงานจริงแม้สัญญาณ AP ดี
   v2.18 — ack หลังแสดงจริง: ส่ง ack ไป server เมื่อป้าย apply คำสั่งแล้วเท่านั้น
      (คู่กับ Laravel ที่เก็บคิวจนกว่า ESP จะ ack — ข้อความจาก LedSignView ไม่หายก่อนแสดง)
+  v2.19 — apply คำสั่ง pending ทันทีใน pollTask (ไม่พึ่ง cmdQueue อย่างเดียว)
+     แก้กรณีป้ายค้างนาฬิกาแม้ server ส่งข้อความใหม่แล้ว — cmdQueue บน core อื่น
+     อาจไม่ drain ทัน หรือ skipSyncThisCycle บล็อก /led-status sync
 */
 
 #include <WiFi.h>
@@ -1769,19 +1772,35 @@ void pollTask(void* pv) {
         DeserializationError jerr = deserializeJson(doc, body);
         pending = (!jerr && doc["pending"].as<bool>());
         if (!jerr && pending) {
-          LedCmd cmd = {};
-          stateJsonToLedCmd(doc.as<JsonObject>(), cmd);
-          if (cmd.text[0] != '\0') flushLedCommandQueue();
-          if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
-            Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
-            g_awaitingBootSync = false;
-            g_bootSyncWaitingSinceMs = 0;
-            g_needsPollResync = false;
-            // fingerprint + ack ตั้งใน applyLedCommandFromQueue() หลังแสดงจริง — กันส่ง ack ก่อนป้ายอัปเดต
-            skipSyncThisCycle = true;
-          } else {
-            g_needsPollResync = true;
-            Serial.println("[Poll] cmdQueue full — จะ poll ซ้ำ");
+          JsonObject root = doc.as<JsonObject>();
+          String serverFp = buildFingerprintFromStateJson(root);
+          bool appliedDirect = false;
+
+          // fp ต่างจากที่แสดงอยู่ → apply ทันทีใน pollTask (sync path ใช้วิธีเดียวกัน)
+          if (serverFp.length() > 0 && serverFp != s_ledStateFingerprint) {
+            appliedDirect = applyLedStateFromServer(root);
+            if (appliedDirect) {
+              Serial.printf("[Poll] Applied directly: %s\n", serverFp.c_str());
+              g_awaitingBootSync = false;
+              g_bootSyncWaitingSinceMs = 0;
+              g_needsPollResync = false;
+            }
+          }
+
+          if (!appliedDirect) {
+            LedCmd cmd = {};
+            stateJsonToLedCmd(root, cmd);
+            if (cmd.text[0] != '\0') flushLedCommandQueue();
+            if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
+              Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
+              g_awaitingBootSync = false;
+              g_bootSyncWaitingSinceMs = 0;
+              g_needsPollResync = false;
+              skipSyncThisCycle = true;
+            } else {
+              g_needsPollResync = true;
+              Serial.println("[Poll] cmdQueue full — จะ poll ซ้ำ");
+            }
           }
         } else if (jerr) {
           Serial.printf("[Poll] JSON parse fail: %s\n", jerr.c_str());

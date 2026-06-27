@@ -451,18 +451,16 @@ class ProductionMonitorController extends Controller
                         ]);
                     }
                 } elseif ($ageSeconds >= ($isForced ? 0.5 : 2.0)) {
-                    // Stale ACK — ESP ยืนยัน state เก่า (เช่น CLOCK) แต่คิวมีคำสั่งใหม่ (เช่น Test)
-                    // ถ้าปล่อย pending=true ต่อ → firmware ตั้ง skipSyncThisCycle=true ทุก poll → sync ถูกบล็อก
-                    // ลบคิว + ส่ง pending=false → ESP ใช้ syncLedDisplayFromServer() ดึงจาก /led-status
+                    // Stale ACK — ลบคิวแล้ว push state จาก led_state_ แบบ one-shot (ไม่ cache ซ้ำ)
                     Cache::forget("led_cmd_{$machineId}");
-                    Log::warning("[LED-ACK] stale ack — cleared led_cmd to unblock sync", [
+                    Log::warning("[LED-ACK] stale ack — push led_state one-shot", [
                         'machineId' => $machineId,
                         'ack_fp'    => substr($ackFp, 0, 60),
                         'cache_fp'  => substr($cachedFp, 0, 60),
                         'age'       => round($ageSeconds, 2),
                     ]);
 
-                    return response()->json(['pending' => false]);
+                    return $this->ledPushOneShotResponse($machineId);
                 } else {
                     Log::warning("[LED-ACK] fp mismatch — ack not cleared", [
                         'machineId' => $machineId,
@@ -493,13 +491,13 @@ class ProductionMonitorController extends Controller
             // คิวค้างนานเกิน 15s โดย ESP ไม่ ack → ปลดล็อกให้ sync ผ่าน /led-status
             if ($cmdAge >= 15.0) {
                 Cache::forget("led_cmd_{$machineId}");
-                Log::warning("[LED-STUCK] cleared aged pending cmd", [
+                Log::warning("[LED-STUCK] cleared aged pending cmd — push one-shot", [
                     'machineId' => $machineId,
                     'fp'        => substr((string) ($command['_fp'] ?? ''), 0, 60),
                     'age'       => $cmdAge,
                 ]);
 
-                return response()->json(['pending' => false]);
+                return $this->ledPushOneShotResponse($machineId);
             }
 
             Log::warning("[LED-POLL] serving pending cmd", [
@@ -518,14 +516,13 @@ class ProductionMonitorController extends Controller
                 if ($freshBoot) {
                     Cache::put($bootKey, true, now()->addMinutes(10));
                 }
-                // มี led_state แล้ว → ส่ง pending=false ให้ ESP sync ผ่าน /led-status
-                // ไม่เขียน led_cmd_ ซ้ำ (กัน pending loop ที่บล็อก skipSync)
-                Log::warning('[LED-RESYNC] defer to led-status sync', [
+                // push state แบบ one-shot (pending=true, ไม่เขียน led_cmd_) ให้ ESP apply ทันที
+                Log::warning('[LED-RESYNC] push led_state one-shot', [
                     'machineId' => $machineId,
                     'fp'        => substr((string) ($state['_fp'] ?? ''), 0, 60),
                 ]);
 
-                return response()->json(['pending' => false]);
+                return $this->ledPushOneShotResponse($machineId, $state);
             }
 
             // ไม่มี state บน server เลย (ไม่มีงาน active, ไม่มี cache) →
@@ -2835,6 +2832,32 @@ private function publishEvent(string $type, array $data): void
      * @param  array<string, mixed>  $ledState
      * @return array<string, mixed>
      */
+    /**
+     * ส่ง state ให้ ESP แบบ one-shot: pending=true โดยไม่เขียน led_cmd_ (กันคิวค้าง)
+     *
+     * @param  array<string, mixed>|null  $state
+     */
+    private function ledPushOneShotResponse(string $machineId, ?array $state = null): JsonResponse
+    {
+        if ($state === null) {
+            $state = Cache::get("led_state_{$machineId}");
+        }
+        if (! is_array($state)) {
+            return response()->json(['pending' => false]);
+        }
+
+        $hasText  = trim((string) ($state['text'] ?? '')) !== '';
+        $hasClock = ! empty($state['showClock']);
+        if (! $hasText && ! $hasClock) {
+            return response()->json(['pending' => false]);
+        }
+
+        $payload = $this->stampLedCommandFingerprint($state);
+        unset($payload['_storedAt'], $payload['_force']);
+
+        return response()->json(array_merge(['pending' => true], $payload));
+    }
+
     private function stampLedCommandFingerprint(array $ledState): array
     {
         if (! empty($ledState['showClock'])) {
