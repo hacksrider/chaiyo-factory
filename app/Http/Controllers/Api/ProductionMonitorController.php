@@ -2154,8 +2154,24 @@ private function publishEvent(string $type, array $data): void
             ];
         }
 
+        // ── ESP32 heartbeat ────────────────────────────────────────────────────────
+        $hb     = Cache::get("led_heartbeat_{$machineId}");
+        $espInfo = null;
+        if (is_array($hb)) {
+            $lastSeen  = $hb['time'] ?? null;
+            $secAgo    = $lastSeen ? round((microtime(true) - strtotime($lastSeen)), 1) : null;
+            $espInfo = [
+                'last_seen'    => $lastSeen,
+                'seconds_ago'  => $secAgo,
+                'is_online'    => $secAgo !== null && $secAgo <= 15,
+                'localIp'      => $hb['localIp'] ?? null,
+                'rssi'         => $hb['rssi'] ?? null,
+                'uptime'       => $hb['uptime'] ?? null,
+            ];
+        }
+
         // ── Session from DB ───────────────────────────────────────────────────────
-        $session = ProductionSession::where('machine_id', $machineId)->first();
+        $session = ProductionSession::where('machine_id', $machineId)->latest('started_at')->first();
         $sessionInfo = $session ? [
             'status'       => $session->status,
             'pipe_counter' => $session->pipe_counter,
@@ -2202,6 +2218,7 @@ private function publishEvent(string $type, array $data): void
         return response()->json([
             'machineId'       => $machineId,
             'serverTimeMs'    => (int) round($now * 1000),
+            'esp32_heartbeat' => $espInfo,
             'led_cmd_exists'  => $cmd !== null,
             'led_cmd'         => $cmdInfo,
             'led_state'       => $stateInfo,
