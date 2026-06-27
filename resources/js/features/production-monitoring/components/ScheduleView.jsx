@@ -373,7 +373,7 @@ const DaySection = ({ dateKey, rows, isToday, isPast, onAddToQueue, onRemoveFrom
               {t('production.scheduleToday')}
             </span>
           )}
-          {!isToday && !isPast && compareBangkokDates(dateKey, todayStr) > 0 && (
+          {!isToday && !isPast && (
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400">
               {t('production.scheduleFuture')}
             </span>
