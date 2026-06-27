@@ -30,7 +30,7 @@ class ProductionSession extends Model
         'std_weight'        => 'float',
         'min_weight'        => 'float',
         'max_weight'        => 'float',
-        'ts'                => 'integer',
+        'ts'                => 'string',   // BIGINT — keep as string to avoid PHP int overflow risk
         'paused_order'      => 'array',
         'started_at'        => 'datetime',
         'paused_at'         => 'datetime',
@@ -72,7 +72,7 @@ class ProductionSession extends Model
             'pausedAt'       => $this->paused_at?->toISOString(),
             'finishedAt'     => $this->finished_at?->toISOString(),
             'pausedOrder'    => $this->paused_order,
-            '_ts'            => $this->ts,
+            '_ts'            => (int) $this->ts,
             '_db'            => true,  // flag so frontend knows this came from DB
         ];
     }

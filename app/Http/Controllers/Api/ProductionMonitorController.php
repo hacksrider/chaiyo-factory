@@ -943,7 +943,7 @@ class ProductionMonitorController extends Controller
         if ($session->status === 'awaiting_scale') {
             $session->status = 'live';
         }
-        $session->ts = (int) (now()->timestamp * 1000);
+        $session->ts = (int) round(microtime(true) * 1000);
         $session->save();
 
         // ลบ scale_cmd เมื่อยืนยันแล้ว — ไม่ต้องส่งคำสั่งเดิมซ้ำอีก
@@ -1008,7 +1008,7 @@ class ProductionMonitorController extends Controller
                 if ($session->status === 'awaiting_scale') {
                     $session->status = 'live';
                 }
-                $session->ts = (int) (now()->timestamp * 1000);
+                $session->ts = (int) round(microtime(true) * 1000);
                 $session->save();
 
                 // ลบ scale_cmd เมื่อยืนยันแล้ว — ป้องกัน scale poll แล้วได้งานเดิมซ้ำ
@@ -1421,7 +1421,7 @@ class ProductionMonitorController extends Controller
                     $createdEventId = $weightEvent->id;
 
                     if ($session) {
-                        $tsMs = (int) (now()->timestamp * 1000);
+                        $tsMs = (int) round(microtime(true) * 1000);
                         if ($type === 'good') {
                             $session->increment('pipe_counter');
                             $session->increment('total_good_weight', $weight);
@@ -2347,6 +2347,16 @@ private function publishEvent(string $type, array $data): void
      */
     public function enqueueItem(Request $request, string $machineId): JsonResponse
     {
+        try {
+            return $this->enqueueItemImpl($request, $machineId);
+        } catch (\Throwable $e) {
+            Log::error("enqueueItem failed for {$machineId}: " . $e->getMessage(), ['exception' => $e]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    private function enqueueItemImpl(Request $request, string $machineId): JsonResponse
+    {
         $data = $request->only([
             'orderId', 'productCode', 'productName', 'targetQty', 'remainingQty',
             'planDate', 'sheetName', 'ledIp', 'queueKey',
@@ -2393,8 +2403,8 @@ private function publishEvent(string $type, array $data): void
             'order_id'     => $data['orderId'],
             'product_code' => $data['productCode'] ?? '',
             'product_name' => $data['productName'] ?? '',
-            'target_qty'   => (int) ($data['targetQty'] ?? 0),
-            'remaining_qty'=> (int) ($data['remainingQty'] ?? $data['targetQty'] ?? 0),
+            'target_qty'   => $this->safeUnsignedInt($data['targetQty'] ?? 0),
+            'remaining_qty'=> $this->safeUnsignedInt($data['remainingQty'] ?? $data['targetQty'] ?? 0),
             'plan_date'    => $data['planDate'] ?? '',
             'sheet_name'   => $data['sheetName'] ?? '',
             'led_ip'       => $data['ledIp'] ?? '',
@@ -2496,10 +2506,9 @@ private function publishEvent(string $type, array $data): void
             ->first();
 
         $now = now();
-        $ts  = (int) ($now->timestamp * 1000);
+        $ts  = (int) round(microtime(true) * 1000);
 
         if ($session) {
-            $runUlid = $session->session_run_ulid;
             $wasAwaiting = ((string) ($session->status ?? '')) === 'awaiting_scale';
             $queueOrderId = (string) ($session->order_id ?? '');
 
@@ -2632,7 +2641,7 @@ private function publishEvent(string $type, array $data): void
             : (string) Str::ulid();
 
         $now = now();
-        $ts  = (int) ($now->timestamp * 1000);
+        $ts  = (int) round(microtime(true) * 1000);
 
         $sessionData = [
             'machine_id'        => $machineId,
@@ -2640,8 +2649,8 @@ private function publishEvent(string $type, array $data): void
             'order_id'          => $data['orderId'],
             'product_code'      => $data['productCode'] ?? '',
             'product_name'      => $data['productName'] ?? '',
-            'target_qty'        => (int) ($data['targetQty'] ?? 0),
-            'remaining_qty'     => (int) ($data['remainingQty'] ?? $data['targetQty'] ?? 0),
+            'target_qty'        => $this->safeUnsignedInt($data['targetQty'] ?? 0),
+            'remaining_qty'     => $this->safeUnsignedInt($data['remainingQty'] ?? $data['targetQty'] ?? 0),
             'plan_date'         => $data['planDate'] ?? '',
             'sheet_name'        => $data['sheetName'] ?? '',
             'led_ip'            => $data['ledIp'] ?? '',
@@ -2760,7 +2769,7 @@ private function publishEvent(string $type, array $data): void
             'status'       => 'paused',
             'paused_at'    => now(),
             'paused_order' => $request->input('pausedOrder'),
-            'ts'           => (int) (now()->timestamp * 1000),
+            'ts'           => (int) round(microtime(true) * 1000),
         ]);
 
         // เพิ่มบรรทัดนี้: คืนป้ายไฟเป็น "ออเดอร์ครบ/รออเดอร์" อัตโนมัติเมื่อหยุดงาน
@@ -2988,6 +2997,18 @@ private function publishEvent(string $type, array $data): void
     }
 
     /**
+     * ป้องกัน overflow: clamp ค่าให้อยู่ใน range ของ INT UNSIGNED (0 – 4 294 967 295)
+     * ป้องกัน Sheet ส่งค่า timestamp/ms หรือค่าขนาดใหญ่มาใน targetQty / remainingQty
+     */
+    private function safeUnsignedInt(mixed $value, int $max = 2_000_000): int
+    {
+        $n = (int) $value;
+        if ($n < 0) return 0;
+        if ($n > $max) return $max;
+        return $n;
+    }
+
+    /**
      * จอแผ่นที่ 4: แสดงเลขผลิตเฉพาะ session ที่ active และไม่ได้ override ข้อความ
      */
     private function normalizeLedPanelCounters(string $machineId, array $ledState, ?object $preloadedSession = null): array
@@ -3178,7 +3199,7 @@ private function publishEvent(string $type, array $data): void
                 'ng_count'          => $ngCount,
                 'total_good_weight' => $totalGoodWeight,
                 'total_ng_weight'   => $totalNgWeight,
-                'ts'          => (int) ($now->timestamp * 1000),
+                'ts'          => (int) round(microtime(true) * 1000),
             ]);
 
             // Write summary to production_orders (for history queries)
