@@ -2949,6 +2949,7 @@ private function publishEvent(string $type, array $data): void
 
         $payload = $state;
         unset($payload['_storedAt'], $payload['_force'], $payload['_fp'], $payload['updatedAt'], $payload['textOverride']);
+        $payload['text'] = (string) ($payload['text'] ?? '');
 
         if (trim((string) ($payload['text'] ?? '')) !== '') {
             $payload['showClock'] = false;

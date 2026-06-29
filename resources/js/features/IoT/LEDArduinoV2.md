@@ -1,46 +1,38 @@
 /* ช่วยแก้ไขไฟล์นี้ถ้ามีสิ่งที่ต้องแก้ไข จะ Copy ไปอัปโหลดลง Code */
 /*
-  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16) — รุ่น 1/4 Scan
+  โปรแกรมควบคุมป้ายไฟ LED P10 (32x16) จำนวน 4 จอ (128x16) — รุ่น 1/4 Scan — v2.24
   - โซน 1 (จอ 1-3): แสดงชื่อสินค้า
-  - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย / Machine ID
+  - โซน 2 (จอ 4): แสดงยอดที่ผลิตได้และเป้าหมาย
+  - เพิ่มระบบอ่านอุณหภูมิภายในตัวชิป (ESP32 Internal Temperature Sensor)
+  - ดูอุณหภูมิผ่านหน้าเว็บโดยพิมพ์: http://<IP_ADDRESS>/temp
 
-  การรับคำสั่ง (Polling + Reconcile อัตโนมัติ):
-  - ESP32 เป็นฝ่าย poll ไปดึงคำสั่งคิว ทุก 2 วินาที
-  - URL: GET {SERVER_URL}/api/production-monitor/led-command/{MACHINE_ID} (เฉพาะเมื่อเว็บ push คำสั่งใหม่)
-  - นอกจากนี้: GET .../led-status/{MACHINE_ID} ทุก ~4 วิ เปรียบเทียบกับ “fingerprint” ล่าสุด
-    → ถ้า state บนเซิร์ฟเวอร์ต่างจากที่ป้ายแสดง (รวม actual/target) จะส่งลง queue ให้ตรงกับหน้าเว็บโดย **ไม่ต้องกดซิงก์**
-  - หลัง WiFi กลับมา: รีเซ็ต fingerprint แล้ว reconcile ทันที 2 รอบ ให้ตรง server อีกครั้ง
-  - ไม่ต้องให้ PC รู้ IP ของ ESP32 — ESP32 เป็นฝ่ายเชื่อมต่อออกเอง
-  - Serial fallback: text|actual|target|r|g|b
-
-  WiFi (Multi-Network + DHCP อัตโนมัติ):
-  - ESP32 จะสแกนสัญญาณ → เลือก SSID ที่รู้จักและ RSSI ดีที่สุดอัตโนมัติ
-  - ใช้ DHCP — Router แจก IP เอง ไม่ต้อง hardcode IP ของป้ายในโค้ดหรือชีต
-  - ESP32 รายงาน IP จริงของตัวเองมาที่ server ผ่าน polling ทุก 2 วินาที
-    → เว็บรู้ IP ปัจจุบันเสมอ ไม่ว่าจะเชื่อม AP ไหน หรือ Router แจก IP เลขอะไรให้
-  - เพิ่ม/แก้รายการ WiFi ได้ใน WIFI_PROFILES ด้านล่าง
-  - SERVER_URL ใช้ "https://www.chaiyo-factory.com" เดียวกันทุก network
-  - ตั้งค่า MACHINE_ID ให้ตรงกับ Machine ID ในชีต Settings (ไม่ต้องตั้ง LED_IP ในชีตแล้ว)
-
-  ถอดปลั๊กแล้วเสียบใหม่แล้ว WiFi ไม่ขึ้น (สาเหตุที่พบบ่อย):
-  - แรงดันตก (Brownout): จอ HUB75 กินไฟมากตอนบูต — ถ้า adapter เล็กไป ESP32 รีเซ็ตหรือ WiFi ล้มเหลว
-    → ใช้ adapter กระแสเพียงพอ, สายสั้น, หรือลดความสว่างตอนบูต (โค้ดลด brightness ก่อน WiFi แล้วค่อยคืน)
-  - Router ยังไม่พร้อม: ลองเชื่อมซ้ำอัตโนมัติ (boot retry + pollTask ช่วงห่าง ไม่สแกนถี่เกิน)
-
-  หมายเหตุการแสดงผล (1/4 Scan):
+  หมายเหตุการแสดงผล (1/4 Scan) — ห้ามเปลี่ยนส่วน display/pixel mapping:
   - ป้ายรุ่นนี้ใช้ 1/4 Scan — ต้องหลอกไลบรารีว่าเป็นจอ 64x8 (DMA_RES_X=64, DMA_RES_Y=8)
   - ใช้ P10_1_4_Display เป็น Pixel Mapper แปลงพิกัด physical → DMA ก่อนส่งออก
-  - ห้ามเปลี่ยนส่วน display/pixel mapping นี้เด็ดขาด
+  - Logic/flow อื่นๆ ให้ตรงกับ LEDArduino.md (scan มาตรฐาน)
 
-  Dependencies (Library Manager):
-  - ESP32-HUB75-MatrixPanel-I2S-DMA
-  - Adafruit GFX Library
-  - U8g2_for_Adafruit_GFX (by Oli Kraus)
-  - ArduinoJson (by Benoit Blanchon)
-  - ElegantOTA
+  v2.17 — แก้ไข 3 บั๊ก:
+  1) exitSyncWaitingWithFallback() — ลอง sync จาก server ก่อนเสมอ (server เก็บ state
+     ไว้ 30 วัน) แทนที่จะพึ่ง RAM snapshot อย่างเดียว ป้องกัน "ตื่นเช้ามาเป็นนาฬิกาหมดทุกจอ"
+     หลัง ESP32 reboot (ไฟตก/watchdog restart ทำให้ RAM snapshot หายไป)
+  2) bootSyncFromServerWithRetry() — ไม่ fallback เป็นนาฬิกาเร็วเกินไปตอน boot ถ้า sync
+     ไม่ทันใน 8 รอบแรก ปล่อยให้ pollTask ลองต่อจนครบ BOOT_SYNC_GIVE_UP_MS ก่อน
+  3) WiFi reconnect loop — เพิ่ม WiFi.disconnect() ก่อน WiFi.reconnect() ทุกครั้ง กัน
+     กรณี driver ค้าง internal state ทำให้ reconnect() ไม่ทำงานจริงแม้สัญญาณ AP ดี
+  v2.18 — ack หลังแสดงจริง: ส่ง ack ไป server เมื่อป้าย apply คำสั่งแล้วเท่านั้น
+     (คู่กับ Laravel ที่เก็บคิวจนกว่า ESP จะ ack — ข้อความจาก LedSignView ไม่หายก่อนแสดง)
+  v2.19 — apply คำสั่ง pending ทันทีใน pollTask (ไม่พึ่ง cmdQueue อย่างเดียว)
+     แก้กรณีป้ายค้างนาฬิกาแม้ server ส่งข้อความใหม่แล้ว — cmdQueue บน core อื่น
+     อาจไม่ drain ทัน หรือ skipSyncThisCycle บล็อก /led-status sync
+  v2.20 — JSON buffer 8192 สำหรับข้อความไทย + fallback sync เมื่อ parse/apply ล้มเหลว
+  v2.21 — HTTP ใช้ IP+Host apex ก่อน (แก้ poll 404 บน factory network / www vhost)
+  v2.22 — อ่าน HTTP body ใหม่ + direct URL ก่อน IP (แก้ HTTP 200 แต่ body ว่าง)
+  v2.23 — IP+Host ก่อน + อ่าน body แบบ stream + ลอง www/apex หลายแบบ
+  v2.24 — apex URL + IP fallback (ipUrl+Host header) + ลด retry (แก้ HTTP 400)
 */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -49,12 +41,15 @@
 #include <U8g2_for_Adafruit_GFX.h>
 #include <string.h>
 #include <time.h>
-#include <Preferences.h>
 #include <ElegantOTA.h>
+#include <freertos/semphr.h>
 
 // ลดโอกาสรีเซ็ตจากไฟตกตอนบูต (HUB75 กินกระแสสูง)
 #include "soc/rtc_cntl_reg.h"
 
+// ======================================================================
+//  ⚙️ โครงสร้างข้อมูล, ฟังก์ชันอ่าน Sensor และ Prototypes
+// ======================================================================
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,37 +58,96 @@ uint8_t temprature_sens_read(); // ฟังก์ชันอ่านอุณ
 }
 #endif
 
+// โครงสร้างคำสั่งที่รับจาก Laravel Cache
+struct LedCmd {
+  char    text[256];
+  char    actual[16];
+  char    target[16];
+  uint8_t r, g, b;
+  uint8_t fontSize;
+  int     speed;
+  bool    showClock;
+};
+
+// ประกาศฟังก์ชันล่วงหน้าเพื่อให้คอมไพเลอร์รู้จักก่อนเรียกใช้งาน
+void updateTextProperties();
+void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0);
+String buildLedStateFingerprint(const String& text, int r, int g, int b, int fontSize, int speed, const String& act, const String& tgt);
+void showSyncWaitingVisual();
+void exitSyncWaitingWithFallback();
+void saveDisplaySnapshot();
+bool restoreDisplaySnapshot();
+bool syncLedDisplayFromServer();
+bool bootSyncFromServerWithRetry();
+void pollTask(void* pv);
+bool connectWifi(bool hardReset = true, bool runBootSync = true, bool showOnDisplay = true);
+void processSerialCommand();
+void drawAndScrollText();
+String buildFingerprintFromLedCmd(const LedCmd& c);
+void flushLedCommandQueue();
+void handleTemp();
+void handleRoot();
+void handleReboot();
+String formatUptimeSec(unsigned long sec);
+String rssiQualityLabel(int rssi);
+String buildHeartbeatQuery();
+void syncNtpIfNeeded(bool force = false);
+int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs);
+void recordCommandPollResult(int httpCode);
+void maybeRestartAfterPollFailures(uint32_t nowMs);
+
 // ======================================================================
-//  ⚙️  ปรับค่าตรงนี้ก่อน upload ทุกชุด
+//  ⚙️ ปรับค่าตรงนี้ก่อน upload ทุกชุด
 // ======================================================================
 #define MACHINE_ID  "EM 21"   // รหัสเครื่อง (ตรงกับ Machine ID ในชีต Settings)
 
-// ── รายการ WiFi ที่รู้จัก ─────────────────────────────────────────────
-// ESP32 จะ scan แล้วเลือก SSID ที่ RSSI ดีที่สุดอัตโนมัติ
-// เพิ่ม WiFi ใหม่: คัดลอกบล็อก { ... } แล้วแก้ค่าตามเน็ตเวิร์ก
-// serverUrl = URL ของ server หลัก (https://www.chaiyo-factory.com) — ใช้เดียวกันทุก network
-struct WifiProfile {
-  const char* ssid;
-  const char* pass;
-  const char* serverUrl;  // https://www.chaiyo-factory.com — server หลัก (เดียวกันทุก network)
-};
+// ── WiFi ที่ใช้งาน (เชื่อมเครือข่ายเดียว KANOK-AP เท่านั้น) ──────────
+// IT สามารถ Fix IP ได้ผ่าน DHCP Reservation (ผูก MAC → IP ที่ Router)
+// บอร์ดใช้ DHCP ปกติ — ถ้า IT ผูก MAC แล้วจะได้ IP คงที่อัตโนมัติ
+#define WIFI_SSID   "KANOK-AP"
+#define WIFI_PASS   "kanok2564"
+#define WIFI_SERVER "https://chaiyo-factory.com"
+#define SERVER_FALLBACK_IP "103.80.48.27"   // chaiyo-factory.com — ใช้เมื่อ DNS router ล้มเหลว
 
-// ใช้ DHCP — Router แจก IP เอง ไม่ต้อง hardcode
-// ESP32 รายงาน IP จริงให้ server ผ่าน heartbeat ทุก 2 วินาที → เว็บรู้ IP เสมอ
-// AP-Office และ KANOK-AP route ถึงกันได้ → ใช้ server URL เดียวกันทุก network
-const WifiProfile WIFI_PROFILES[] = {
-  { "AP-Office", "Info2024",  "https://www.chaiyo-factory.com" },
-  { "KANOK-AP",  "kanok2564", "https://www.chaiyo-factory.com" },
-};
-const int WIFI_PROFILE_COUNT = sizeof(WIFI_PROFILES) / sizeof(WIFI_PROFILES[0]);
+#define FIRMWARE_VERSION "2.24"
 
-// g_serverUrl ถูกกำหนดอัตโนมัติใน connectBestWifi() — ห้ามแก้มือที่นี่
+const char* MACHINE_ID_LIST[] = {
+  "EM 01","EM 02","EM 03","EM 04","EM 05","EM 06","EM 07","EM 08",
+  "EM 09","EM 10","EM 11","EM 12","EM 13","EM 14","EM 15","EM 16",
+  "EM 17","EM 18","EM 19","EM 20","EM 21","EM 22"
+};
+const int MACHINE_ID_COUNT = sizeof(MACHINE_ID_LIST) / sizeof(MACHINE_ID_LIST[0]);
+
+int getMachineIndex() {
+  for (int i = 0; i < MACHINE_ID_COUNT; i++) {
+    if (strcmp(MACHINE_ID, MACHINE_ID_LIST[i]) == 0) return i;
+  }
+  return -1;
+}
+
+String encodeMachineIdForPath(const String& machineId) {
+  String out;
+  out.reserve(machineId.length() + 8);
+  for (unsigned i = 0; i < machineId.length(); i++) {
+    char c = machineId[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+        || c == '-' || c == '_' || c == '.' || c == '~') {
+      out += c;
+    } else if (c == ' ') {
+      out += "%20";
+    } else {
+      char hex[4];
+      snprintf(hex, sizeof(hex), "%%%02X", (uint8_t)c);
+      out += hex;
+    }
+  }
+  return out;
+}
+
 String g_serverUrl = "";
-float g_internalTempC = 0.0f;
-unsigned long g_lastTempSampleMs = 0;
+float g_internalTempC = 0.0f; // ตัวแปร Global สำหรับเก็บค่าอุณหภูมิล่าสุดไว้แสดงบนเว็บ
 // ======================================================================
 
-// ======================================================================
 // ---------------- กำหนดขนาดของหน้าจอ ----------------
 // ขนาดทางกายภาพของป้าย P10 (ต่อ 1 แผ่น)
 #define PHYSICAL_RES_X 32
@@ -105,11 +159,9 @@ unsigned long g_lastTempSampleMs = 0;
 #define NUM_ZONE_W      PHYSICAL_RES_X
 
 // สำหรับจอ 1/4 Scan ต้องหลอกไลบรารีว่าเป็นจอ 64x8
-// เพื่อให้ ESP32 จ่ายสัญญาณ Clock ความยาว 64 บิตต่อรอบ (แก้ปัญหาจอแบ่งเป็น 2 ฝั่ง)
 #define DMA_RES_X 64
 #define DMA_RES_Y 8
 
-// ความสว่าง: ตอนบูตลดก่อนเชื่อม WiFi ลดโอกาสแรงดันตก (Brownout) เมื่อถอดปลั๊กแล้วเสียบใหม่
 #define PANEL_BRIGHTNESS_NORMAL    40
 #define PANEL_BRIGHTNESS_WIFI_BOOT 8
 
@@ -131,25 +183,25 @@ public:
         int panel_idx = x / PHYSICAL_RES_X;
         int local_x   = x % PHYSICAL_RES_X;
 
-        // 🟢 สมการหลักที่คลีนที่สุด (ไม่มีแฮ็ก): จัดเรียงพิกเซลใหม่แบบ "บล็อก 8 ดวง สลับแถว"
-        int block_idx      = local_x / 8;       // หาร 8 เพื่อหาว่าอยู่บล็อกไหน (จะได้ 0, 1, 2, 3)
-        int pixel_in_block = local_x % 8;        // ลำดับดวงไฟในบล็อกนั้น (0 ถึง 7)
-
-        // สลับครึ่งแรก(0) กับครึ่งหลัง(1) ของสายข้อมูล DMA
+        int block_idx      = local_x / 8;
+        int pixel_in_block = local_x % 8;
         int half = (y / 4) % 2;
-
-        // คำนวณหาตำแหน่ง X ในหน่วยความจำ DMA อย่างปลอดภัย
         int dma_local_X = (block_idx * 16) + (half * 8) + pixel_in_block;
-
-        // คำนวณหาตำแหน่ง Y และสัญญาณ R1/R2
         int dma_y = (y < 8) ? (y % 4) : (4 + (y % 4));
-
         int dma_X = (panel_idx * DMA_RES_X) + dma_local_X;
         dma->drawPixel(dma_X, dma_y, color);
     }
 
     void fillScreen(uint16_t color) override {
-        dma->fillScreen(color); // ล้างบัฟเฟอร์แบบรวดเร็ว
+        dma->fillScreen(color);
+    }
+
+    void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+        for (int16_t iy = y; iy < y + h; iy++) {
+            for (int16_t ix = x; ix < x + w; ix++) {
+                drawPixel(ix, iy, color);
+            }
+        }
     }
 };
 
@@ -159,17 +211,20 @@ P10_1_4_Display *p10_display = nullptr; // ใช้ตัวนี้วาด�
 U8G2_FOR_ADAFRUIT_GFX u8g2_for_gfx;
 WebServer server(80);
 
-// ---------------- โหมดนาฬิกา (เมื่อเว็บไม่มีข้อความ / กดล้างป้ายไฟ) ----------------
+// ---------------- โหมดนาฬิกา ----------------
 bool g_clockMode = false;
+bool g_awaitingBootSync = true;
 bool g_ntpSynced = false;
 unsigned long g_lastClockTickMs = 0;
+unsigned long g_lastNtpAttemptMs = 0;
+unsigned long g_lastNtpSuccessMs = 0;
 
 // ---------------- ตัวแปรข้อมูล Production ----------------
 String currentText  = "";
 String actualCount  = "0";
 String targetCount  = "0";
 uint16_t currentColor;
-int currentFontSize = 1; // 0=เล็ก(10px), 1=กลาง(14px), 2=ใหญ่(16px)
+int currentFontSize = 1;
 
 // ---------------- ตัวแปรสถานะข้อความโซน 1 ----------------
 int textWidth       = 0;
@@ -177,35 +232,468 @@ int cursor_x        = 0;
 unsigned long lastScrollTime = 0;
 int scrollSpeed     = 50;
 
-// ──────────────────────────────────────────────────────────────────────
-//  FreeRTOS — แยก polling ออกจาก display loop
-//  pollTask วิ่งบน Core 0 / display + server วิ่งบน Core 1 (default Arduino core)
-// ──────────────────────────────────────────────────────────────────────
+QueueHandle_t cmdQueue = nullptr; 
 
-// โครงสร้างคำสั่งที่รับจาก Laravel Cache
-struct LedCmd {
-  char    text[256];
-  char    actual[16];
-  char    target[16];
-  uint8_t r, g, b;
-  uint8_t fontSize;
-  int     speed;
-  bool    showClock;
-};
-
-QueueHandle_t cmdQueue = nullptr; // Queue ส่งคำสั่งจาก pollTask → loop()
-
-// fingerprint ล่าสุดที่ “ตรงกับ state บน server” แล้ว (กันยิง queue ซ้ำ + reconcile รู้ว่าเมื่อไหร่ต้องดึงใหม่)
 static String s_ledStateFingerprint;
+static const int         BOOT_SYNC_MAX_ATTEMPTS         = 8;
+static const uint32_t    BOOT_SYNC_RETRY_MS             = 1500;
 static const int         RECONCILE_EVERY_N_POLLS        = 4;  // 4 × 1s = ~4s
-// WiFi reconnect exponential backoff — เริ่ม 2s → สูงสุด 60s (± 20% jitter)
 static const uint32_t    WIFI_BACKOFF_MIN_MS            = 2000;
 static const uint32_t    WIFI_BACKOFF_MAX_MS            = 60000;
-static const uint32_t    WIFI_RECONNECT_INTERVAL_MS     = 5000; // legacy — replaced by backoff
+static const uint32_t    WIFI_RECONNECT_INTERVAL_MS     = 5000;
+static const uint32_t    WIFI_HARD_RESET_AFTER_MS       = 120000;
+static const uint32_t    WIFI_SCAN_CACHE_MS             = 180000;
+static const uint32_t    NTP_RETRY_GAP_MS               = 10000;
+static const uint32_t    NTP_RESYNC_INTERVAL_MS         = 3600000;
+static const long        NTP_GMT_OFFSET_SEC             = 7 * 3600;  // Bangkok UTC+7
+static bool              g_ntpClockConfigured           = false;
+static bool              g_hasPreferredBssid            = false;
+static uint8_t           g_preferredBssid[6]            = {0};
+static int32_t           g_preferredChannel             = 0;
+static uint32_t          g_lastWifiScanMs               = 0;
+static const uint32_t    BOOT_SYNC_GIVE_UP_MS            = 60000;
+static const uint32_t    TRANSIENT_FALLBACK_MS           = 45000;
+static uint32_t          g_bootSyncWaitingSinceMs       = 0;
+static const uint32_t    POLL_FAIL_STREAK_RESTART       = 0;     // ปิด — รีสตาร์ททำให้ค้าง "กำลังซิงก์.." ทั้งที่ WiFi ดี
+static const uint32_t    POLL_STALE_RESTART_MS          = 1800000; // 30 นาทีไม่ poll สำเร็จ (เดิม 10 นาที)
+static const uint32_t    WIFI_FULL_RECONNECT_AFTER_MS   = 45000;  // ก่อน 45s ใช้ reconnect เงียบๆ ไม่ทับจอ
+static int               g_lastPollHttpCode             = 0;
+static int               g_lastPollBodyLen               = 0;
+static int               g_lastSyncHttpCode              = 0;
+static uint32_t          g_lastPollAttemptMs            = 0;
+static uint32_t          g_lastPollSuccessMs            = 0;
+static uint32_t          g_pollFailStreak               = 0;
+static int               g_connectFailStreak              = 0;
+static IPAddress         g_serverDnsIp;
+static bool              g_serverDnsOk                    = false;
+static bool              g_serverDnsFallback              = false;
+static String            g_lastHttpError                  = "";
+static volatile bool     g_requestStatusSync              = false;
+static bool              g_lastSyncParseOk                = false;
+static int               g_lastSyncServerTextLen          = 0;
+static int               g_lastSyncBodyLen                = 0;
+static String            g_lastSyncError                  = "";
+static String            g_lastPollUrl                    = "";
+static String            g_lastSyncUrl                    = "";
+static SemaphoreHandle_t g_httpMutex                      = nullptr;
+static String            g_snapshotText                   = "";
+static String            g_snapshotActual                 = "0";
+static String            g_snapshotTarget                 = "0";
+static uint16_t          g_snapshotColor                  = 0;
+static int               g_snapshotFontSize              = 1;
+static int               g_snapshotSpeed                  = 50;
+static uint8_t           g_snapshotClockR                 = 0;
+static uint8_t           g_snapshotClockG                 = 255;
+static uint8_t           g_snapshotClockB                 = 255;
+static uint8_t           g_snapshotTextR                  = 0;
+static uint8_t           g_snapshotTextG                  = 255;
+static uint8_t           g_snapshotTextB                  = 255;
+static bool              g_snapshotValid                  = false;
+static bool              g_snapshotWasClock               = false;
+static uint8_t           g_lastClockR                     = 0;
+static uint8_t           g_lastClockG                     = 255;
+static uint8_t           g_lastClockB                     = 255;
+static bool              g_needsPollResync                = false;
 
-// Persist last-known-good state in NVS (ไม่เก็บโหมดนาฬิกา)
-static Preferences s_prefs;
-static const char* PREF_NS = "chaiyo_led";
+String readHttpResponseBody(HTTPClient& http, uint32_t timeoutMs) {
+  WiFiClient* stream = http.getStreamPtr();
+
+  // รอ TLS stream (ESP32 มักได้ 200 ก่อน body พร้อม)
+  uint32_t waitUntil = millis() + min(timeoutMs, (uint32_t)350);
+  while ((int)millis() < (int)waitUntil) {
+    if (stream && (stream->available() > 0 || http.getSize() > 0)) break;
+    delay(20);
+  }
+
+  String body = http.getString();
+  if (body.length() > 0) return body;
+
+  if (!stream) return body;
+
+  int total = http.getSize();
+  uint32_t deadline = millis() + timeoutMs;
+  if (total > 0 && total < 16384) {
+    body.reserve((unsigned)total + 1);
+    while ((int)body.length() < total && (int)millis() < (int)deadline) {
+      while (stream->available()) body += (char)stream->read();
+      if ((int)body.length() >= total) break;
+      if (!stream->connected() && !stream->available()) delay(40);
+      else delay(3);
+    }
+    if (body.length() > 0) return body;
+  }
+
+  deadline = millis() + timeoutMs;
+  while ((int)millis() < (int)deadline) {
+    while (stream->available()) body += (char)stream->read();
+    if (!stream->connected() && !stream->available()) {
+      delay(60);
+      while (stream->available()) body += (char)stream->read();
+      break;
+    }
+    delay(5);
+  }
+  return body;
+}
+
+/** ลอง GET แล้วคืน code + body (ไม่ end http จนกว่าจะอ่าน body เสร็จ) */
+int httpGetOnce(const String& url, String* bodyOut, uint32_t timeoutMs, bool viaIp) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  http.setConnectTimeout(min(timeoutMs, (uint32_t)8000));
+  http.setReuse(false);
+
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  tls.setTimeout(timeoutMs / 1000 + 5);
+
+  int code = -1;
+  if (viaIp && url.startsWith("https://") && g_serverDnsOk) {
+    String path = extractUrlPath(url);
+    String ipUrl = "https://" + g_serverDnsIp.toString() + path;
+    String host  = apexServerHost();
+    if (host.isEmpty()) return -1;
+    if (!http.begin(tls, ipUrl)) return -2;
+    http.addHeader("Host", host);
+  } else if (url.startsWith("https://")) {
+    if (!http.begin(tls, url)) return -2;
+  } else {
+    WiFiClient plain;
+    plain.setTimeout(timeoutMs / 1000 + 5);
+    if (!http.begin(plain, url)) return -2;
+  }
+
+  http.addHeader("User-Agent", "ChaiyoLED/" FIRMWARE_VERSION);
+  http.addHeader("Accept", "application/json");
+  code = http.GET();
+  if (bodyOut && code == 200) *bodyOut = readHttpResponseBody(http, timeoutMs);
+  http.end();
+  return code;
+}
+
+String jsonEscapeString(const String& s) {
+  String out;
+  out.reserve(s.length() + 16);
+  for (unsigned i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if ((unsigned char)c < 0x20) {
+      char buf[7];
+      snprintf(buf, sizeof(buf), "\\u%04X", (unsigned char)c);
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+String jsonDecodeEscapedUtf8(const String& raw) {
+  String out;
+  out.reserve(raw.length());
+  for (int i = 0; i < (int)raw.length(); i++) {
+    char c = raw[i];
+    if (c != '\\') {
+      out += c;
+      continue;
+    }
+    if (i + 1 >= (int)raw.length()) break;
+    char e = raw[++i];
+    if (e == 'u' && i + 4 < (int)raw.length()) {
+      char hex[5] = { raw[i + 1], raw[i + 2], raw[i + 3], raw[i + 4], 0 };
+      i += 4;
+      unsigned long cp = strtoul(hex, NULL, 16);
+      if (cp < 0x80) out += (char)cp;
+      else if (cp < 0x800) {
+        out += (char)(0xC0 | (cp >> 6));
+        out += (char)(0x80 | (cp & 0x3F));
+      } else {
+        out += (char)(0xE0 | (cp >> 12));
+        out += (char)(0x80 | ((cp >> 6) & 0x3F));
+        out += (char)(0x80 | (cp & 0x3F));
+      }
+    } else if (e == '"') out += '"';
+    else if (e == '\\') out += '\\';
+    else if (e == 'n') out += '\n';
+    else if (e == 'r') out += '\r';
+    else if (e == 't') out += '\t';
+    else out += e;
+  }
+  return out;
+}
+
+int jsonFindIntAfterKey(const String& body, int fromIdx, const char* key, int defVal) {
+  String pat = String("\"") + key + "\":";
+  int i = body.indexOf(pat, fromIdx);
+  if (i < 0) return defVal;
+  i += pat.length();
+  while (i < (int)body.length() && body[i] == ' ') i++;
+  String num;
+  while (i < (int)body.length() && (isdigit((unsigned char)body[i]) || body[i] == '-')) num += body[i++];
+  return num.length() ? num.toInt() : defVal;
+}
+
+String jsonPickQuotedValue(const String& body, int fromIdx, const char* key) {
+  String pat = String("\"") + key + "\":\"";
+  int start = body.indexOf(pat, fromIdx);
+  if (start < 0) return "";
+  start += pat.length();
+  String raw;
+  for (int i = start; i < (int)body.length(); i++) {
+    char c = body[i];
+    if (c == '"') {
+      int backslashes = 0;
+      for (int j = i - 1; j >= start && body[j] == '\\'; j--) backslashes++;
+      if ((backslashes % 2) == 0) break;
+    }
+    raw += c;
+  }
+  return jsonDecodeEscapedUtf8(raw);
+}
+
+bool jsonHasTruthyTextField(const String& body) {
+  int stateIdx = body.indexOf("\"state\"");
+  if (stateIdx < 0) return false;
+  String txt = jsonPickQuotedValue(body, stateIdx, "text");
+  txt.trim();
+  return txt.length() > 0;
+}
+
+bool applyLedStateFromStatusBody(const String& body) {
+  if (body.indexOf("\"hasState\":true") < 0 && body.indexOf("\"hasState\": true") < 0) return false;
+
+  int stateIdx = body.indexOf("\"state\"");
+  if (stateIdx < 0) return false;
+
+  String txt = jsonPickQuotedValue(body, stateIdx, "text");
+  txt.trim();
+
+  int r = jsonFindIntAfterKey(body, stateIdx, "r", 0);
+  int g = jsonFindIntAfterKey(body, stateIdx, "g", 255);
+  int b = jsonFindIntAfterKey(body, stateIdx, "b", 255);
+  int fontSize = jsonFindIntAfterKey(body, stateIdx, "fontSize", 1);
+  int speed = jsonFindIntAfterKey(body, stateIdx, "speed", 50);
+  String actual = jsonPickQuotedValue(body, stateIdx, "actual");
+  String target = jsonPickQuotedValue(body, stateIdx, "target");
+  if (actual.length() == 0) actual = String(jsonFindIntAfterKey(body, stateIdx, "actual", 0));
+  if (target.length() == 0) target = String(jsonFindIntAfterKey(body, stateIdx, "target", 0));
+
+  if (txt.length() > 0) {
+    g_clockMode = false;
+    currentText = txt;
+    currentFontSize = fontSize > 0 ? fontSize : 1;
+    scrollSpeed = max(20, speed > 0 ? speed : 50);
+    currentColor = dma_display->color565(r, g, b);
+    actualCount = actual.length() ? actual : String("0");
+    targetCount = target.length() ? target : String("0");
+    updateTextProperties();
+    s_ledStateFingerprint = buildLedStateFingerprint(txt, r, g, b, currentFontSize, scrollSpeed, actualCount, targetCount);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
+    Serial.println("[Sync/fb] text: \"" + currentText + "\"");
+    return true;
+  }
+
+  bool showClock = (body.indexOf("\"showClock\":true", stateIdx) >= 0)
+                || (body.indexOf("\"showClock\": true", stateIdx) >= 0);
+  if (showClock) {
+    applyClockVisual((uint8_t)r, (uint8_t)g, (uint8_t)b);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
+    Serial.println("[Sync/fb] clock mode");
+    return true;
+  }
+  return false;
+}
+
+void applyPublicDns() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  IPAddress routerDns = WiFi.dnsIP();
+  IPAddress dns1(8, 8, 8, 8);
+  IPAddress dns2(1, 1, 1, 1);
+  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+  Serial.printf("[DNS] router was %s → using %s + %s\n",
+                routerDns.toString().c_str(), dns1.toString().c_str(), dns2.toString().c_str());
+}
+
+bool tryHostByName(const char* host, IPAddress& out) {
+  for (int i = 0; i < 3; i++) {
+    if (WiFi.hostByName(host, out) == 1) return true;
+    vTaskDelay(pdMS_TO_TICKS(400));
+  }
+  return false;
+}
+
+String resolveServerHost() {
+  if (g_serverUrl.isEmpty()) return "";
+  int schemeEnd = g_serverUrl.indexOf("://");
+  if (schemeEnd < 0) return "";
+  int hostStart = schemeEnd + 3;
+  int pathStart = g_serverUrl.indexOf('/', hostStart);
+  return pathStart > hostStart
+    ? g_serverUrl.substring(hostStart, pathStart)
+    : g_serverUrl.substring(hostStart);
+}
+
+bool refreshServerDns() {
+  String host = resolveServerHost();
+  if (host.isEmpty()) {
+    g_serverDnsOk = false;
+    g_serverDnsFallback = false;
+    g_lastHttpError = "no host";
+    return false;
+  }
+
+  applyPublicDns();
+  g_serverDnsFallback = false;
+
+  if (tryHostByName(host.c_str(), g_serverDnsIp)) {
+    g_serverDnsOk = true;
+    Serial.printf("[DNS] OK %s → %s\n", host.c_str(), g_serverDnsIp.toString().c_str());
+    return true;
+  }
+
+  if (host.startsWith("www.")) {
+    String bare = host.substring(4);
+    if (tryHostByName(bare.c_str(), g_serverDnsIp)) {
+      g_serverDnsOk = true;
+      Serial.printf("[DNS] OK %s → %s\n", bare.c_str(), g_serverDnsIp.toString().c_str());
+      return true;
+    }
+  }
+
+  if (g_serverDnsIp.fromString(SERVER_FALLBACK_IP)) {
+    g_serverDnsOk = true;
+    g_serverDnsFallback = true;
+    g_lastHttpError = "dns ip fallback";
+    Serial.println("[DNS] router DNS fail — using fallback IP " SERVER_FALLBACK_IP);
+    return true;
+  }
+
+  g_serverDnsOk = false;
+  g_serverDnsFallback = false;
+  g_lastHttpError = "dns fail " + host;
+  Serial.println("[HTTP] DNS fail: " + host);
+  return false;
+}
+
+String extractUrlPath(const String& url) {
+  int schemeEnd = url.indexOf("://");
+  if (schemeEnd < 0) return url;
+  int pathStart = url.indexOf('/', schemeEnd + 3);
+  return pathStart >= 0 ? url.substring(pathStart) : "/";
+}
+
+/** Host สำหรับ header Host: — ใช้ apex (ไม่มี www) เพื่อกัน nginx vhost 404 */
+String apexServerHost() {
+  String host = resolveServerHost();
+  if (host.startsWith("www.")) return host.substring(4);
+  return host;
+}
+
+int httpGetUrlUnlocked(const String& url, String* bodyOut, uint32_t timeoutMs) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  if (!g_serverDnsOk) refreshServerDns();
+
+  String body;
+  String* out = bodyOut ? bodyOut : &body;
+  String ipBody, dirBody;
+  int ipCode = -1, dirCode = -1;
+
+  // 1) IP + Host header (ESP32 core เก่าไม่มี connect(IP,port,hostname) สำหรับ SNI)
+  if (url.startsWith("https://") && g_serverDnsOk) {
+    ipCode = httpGetOnce(url, &ipBody, timeoutMs, true);
+    if (ipCode == 200 && ipBody.length() > 0) {
+      *out = ipBody;
+      g_lastHttpError = "";
+      return 200;
+    }
+    if (ipCode > 0) {
+      Serial.printf("[HTTP] IP+SNI code=%d body=%u\n", ipCode, (unsigned)ipBody.length());
+    }
+  }
+
+  // 2) Direct URL (SNI จาก hostname ใน URL)
+  dirCode = httpGetOnce(url, &dirBody, timeoutMs, false);
+  if (dirCode == 200 && dirBody.length() > 0) {
+    *out = dirBody;
+    g_lastHttpError = "";
+    return 200;
+  }
+  if (dirCode > 0 && dirCode != 200) {
+    Serial.printf("[HTTP] direct code=%d body=%u\n", dirCode, (unsigned)dirBody.length());
+  }
+
+  if (ipCode == 200 || dirCode == 200) {
+    *out = dirBody.length() > 0 ? dirBody : ipBody;
+    g_lastHttpError = "empty body";
+    Serial.printf("[HTTP] 200 with empty body — url tail ...%s\n",
+                  url.substring(url.length() > 48 ? url.length() - 48 : 0).c_str());
+    return -4;
+  }
+
+  int code = dirCode >= 0 ? dirCode : ipCode;
+  if (code < 0) {
+    if (g_lastHttpError.length() == 0) g_lastHttpError = "conn fail";
+    if (code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_CONNECTION_LOST) {
+      g_serverDnsOk = false;
+    }
+  } else {
+    g_lastHttpError = "http:" + String(code);
+  }
+  return code;
+}
+
+int httpGetUrl(const String& url, String* bodyOut, uint32_t timeoutMs) {
+  if (!g_httpMutex) return httpGetUrlUnlocked(url, bodyOut, timeoutMs);
+  if (xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(timeoutMs + 3000)) != pdTRUE) {
+    g_lastHttpError = "http busy";
+    return -3;
+  }
+  int code = httpGetUrlUnlocked(url, bodyOut, timeoutMs);
+  xSemaphoreGive(g_httpMutex);
+  return code;
+}
+
+void recordCommandPollResult(int httpCode) {
+  g_lastPollHttpCode = httpCode;
+  g_lastPollAttemptMs = millis();
+  if (httpCode == 200) {
+    g_lastPollSuccessMs = g_lastPollAttemptMs;
+    g_pollFailStreak = 0;
+  } else {
+    g_pollFailStreak++;
+    Serial.printf("[Poll] HTTP %d — fail streak %u\n", httpCode, g_pollFailStreak);
+  }
+}
+
+void maybeRestartAfterPollFailures(uint32_t nowMs) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (POLL_FAIL_STREAK_RESTART > 0 && g_pollFailStreak >= POLL_FAIL_STREAK_RESTART) {
+    Serial.printf("[Poll] fail streak %u — restarting ESP\n", g_pollFailStreak);
+    ESP.restart();
+  }
+  if (g_lastPollSuccessMs > 0 && (nowMs - g_lastPollSuccessMs) >= POLL_STALE_RESTART_MS && g_pollFailStreak > 0) {
+    Serial.println("[Poll] no successful poll for 30 min — restarting ESP");
+    ESP.restart();
+  }
+}
+
+void ensureBangkokClockConfig() {
+  if (g_ntpClockConfigured) return;
+  configTime(NTP_GMT_OFFSET_SEC, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+  g_ntpClockConfigured = true;
+  Serial.println("[NTP] Bangkok UTC+7 offset configured");
+}
 
 bool jsonWantsClockMode(JsonObject o) {
   if (o.isNull()) return false;
@@ -218,19 +706,35 @@ bool jsonWantsClockMode(JsonObject o) {
   return false;
 }
 
-void syncNtpIfNeeded() {
+void syncNtpIfNeeded(bool force) {
   if (WiFi.status() != WL_CONNECTED) return;
+  unsigned long nowMs = millis();
+  if (!force) {
+    if (g_ntpSynced && g_lastNtpSuccessMs > 0 && (nowMs - g_lastNtpSuccessMs) < NTP_RESYNC_INTERVAL_MS) return;
+    if (g_lastNtpAttemptMs > 0 && (nowMs - g_lastNtpAttemptMs) < NTP_RETRY_GAP_MS) return;
+  }
+  g_lastNtpAttemptMs = nowMs;
+
+  // ต้องตั้ง offset +7 ก่อนเสมอ — ถ้า getLocalTime สำเร็จก่อนตั้ง TZ จะได้ UTC (ชั่วโมงช้ากว่าไทย 7 ชม.)
+  ensureBangkokClockConfig();
+
   struct tm timeinfo;
-  if (getLocalTime(&timeinfo, 0)) { g_ntpSynced = true; return; }
-  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+  if (!force && g_ntpSynced && getLocalTime(&timeinfo, 0)) {
+    g_lastNtpSuccessMs = nowMs;
+    return;
+  }
+
   for (int i = 0; i < 25; i++) {
     if (getLocalTime(&timeinfo, 500)) {
       g_ntpSynced = true;
-      Serial.println("[NTP] Synced (Bangkok UTC+7)");
+      g_lastNtpSuccessMs = millis();
+      Serial.printf("[NTP] Synced Bangkok %02d:%02d:%02d\n",
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
       return;
     }
-    delay(200);
+    vTaskDelay(pdMS_TO_TICKS(200));
   }
+  g_ntpSynced = false;
   Serial.println("[NTP] Sync timeout");
 }
 
@@ -241,8 +745,7 @@ bool formatClockTime(char* buf, size_t len) {
     buf[len - 1] = '\0';
     return false;
   }
-  snprintf(buf, len, "%02d : %02d : %02d",
-           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  strftime(buf, len, "%H : %M : %S", &timeinfo);
   return true;
 }
 
@@ -252,8 +755,102 @@ void updateClockTextProperties() {
   cursor_x  = max(0, (NAME_ZONE_PX - textWidth) / 2);
 }
 
-void applyClockVisual(uint8_t r = 0, uint8_t g = 255, uint8_t b = 0) {
+void showSyncWaitingVisual() {
   if (!dma_display) return;
+  g_clockMode     = false;
+  currentText     = "กำลังซิงก์..";
+  currentFontSize = 1;
+  scrollSpeed     = 50;
+  currentColor    = dma_display->color565(255, 140, 0);
+  actualCount     = "0";
+  targetCount     = "0";
+  updateTextProperties();
+}
+
+/**
+ * ออกจากหน้าซิงก์/เชื่อมต่อ — ไม่ค้างทั้งวัน
+ * ลำดับความสำคัญ: 1) ลองขอ state จริงจาก server ก่อนเสมอ (เก็บไว้ 30 วัน ไม่ใช่ RAM)
+ *                  2) snapshot ใน RAM (เร็วกว่า ถ้ามี — เผื่อ server ตอบช้า)
+ *                  3) นาฬิกา (ทางเลือกสุดท้ายจริงๆ)
+ * เหตุผล: snapshot ใน RAM หายไปทุกครั้งที่ ESP32 reboot (ไฟตก/watchdog restart
+ * ตอนกลางคืน) ถ้า fallback ไปนาฬิกาทันทีโดยไม่ลอง server ก่อน จะทำให้จอกลายเป็น
+ * นาฬิกาทุกครั้งที่บอร์ด reboot แม้ server ยังมีข้อความที่ถูกต้องรออยู่
+ */
+void exitSyncWaitingWithFallback() {
+  g_awaitingBootSync = false;
+  g_bootSyncWaitingSinceMs = 0;
+  g_needsPollResync = true;
+
+  if (syncLedDisplayFromServer()) {
+    Serial.println("[Sync] fallback — synced from server");
+    return;
+  }
+
+  if (restoreDisplaySnapshot()) {
+    Serial.println("[Sync] fallback — restored RAM snapshot (server sync failed)");
+    return;
+  }
+
+  applyClockVisual(0, 255, 0);
+  Serial.println("[Sync] fallback — clock mode (server + snapshot both unavailable)");
+}
+
+bool isTransientStatusText(const String& txt) {
+  return txt == "กำลังเชื่อมต่อ.." || txt == "กำลังซิงก์.." || txt == "WiFi Error";
+}
+
+void saveDisplaySnapshot() {
+  if (!dma_display || isTransientStatusText(currentText)) return;
+  g_snapshotText = currentText;
+  g_snapshotActual = actualCount;
+  g_snapshotTarget = targetCount;
+  g_snapshotColor = currentColor;
+  g_snapshotFontSize = currentFontSize;
+  g_snapshotSpeed = scrollSpeed;
+  g_snapshotWasClock = g_clockMode;
+  if (g_clockMode) {
+    g_snapshotClockR = g_lastClockR;
+    g_snapshotClockG = g_lastClockG;
+    g_snapshotClockB = g_lastClockB;
+  } else {
+    g_snapshotTextR = (uint8_t)(currentColor >> 11);
+    g_snapshotTextG = (uint8_t)((currentColor >> 5) & 0x3F);
+    g_snapshotTextB = (uint8_t)(currentColor & 0x1F);
+    g_snapshotTextR = (g_snapshotTextR * 255) / 31;
+    g_snapshotTextG = (g_snapshotTextG * 255) / 63;
+    g_snapshotTextB = (g_snapshotTextB * 255) / 31;
+  }
+  g_snapshotValid = true;
+}
+
+bool restoreDisplaySnapshot() {
+  if (!g_snapshotValid || !dma_display) return false;
+  if (g_snapshotWasClock) {
+    applyClockVisual(g_snapshotClockR, g_snapshotClockG, g_snapshotClockB);
+  } else {
+    g_clockMode = false;
+    currentText = g_snapshotText;
+    currentFontSize = g_snapshotFontSize > 0 ? g_snapshotFontSize : 1;
+    scrollSpeed = max(20, g_snapshotSpeed > 0 ? g_snapshotSpeed : 50);
+    currentColor = g_snapshotColor;
+    actualCount = g_snapshotActual.length() ? g_snapshotActual : String("0");
+    targetCount = g_snapshotTarget.length() ? g_snapshotTarget : String("0");
+    updateTextProperties();
+    s_ledStateFingerprint = buildLedStateFingerprint(
+      currentText, g_snapshotTextR, g_snapshotTextG, g_snapshotTextB,
+      currentFontSize, scrollSpeed, actualCount, targetCount);
+  }
+  g_awaitingBootSync = false;
+  g_bootSyncWaitingSinceMs = 0;
+  Serial.println("[Sync] restored pre-disconnect display");
+  return true;
+}
+
+void applyClockVisual(uint8_t r, uint8_t g, uint8_t b) {
+  if (!dma_display) return;
+  g_lastClockR = r;
+  g_lastClockG = g;
+  g_lastClockB = b;
   g_clockMode = true;
   currentFontSize = 1;
   scrollSpeed     = 50;
@@ -283,88 +880,30 @@ void tickClockIfNeeded() {
   }
 }
 
-bool isTransientStatusText(const String& txt) {
-  return txt == "กำลังเชื่อมต่อ.." || txt == "กำลังซิงก์.." || txt == "WiFi Error";
-}
-
-void flushLedCommandQueue() {
-  if (!cmdQueue) return;
-  LedCmd discard;
-  while (xQueueReceive(cmdQueue, &discard, 0) == pdTRUE) {}
-}
-
 void applyLedCommandFromQueue(const LedCmd& cmd) {
+  g_awaitingBootSync = false;
+  g_bootSyncWaitingSinceMs = 0;
+  // มีข้อความใน cmd = แสดงข้อความเสมอ (ไม่ให้ showClock ใน poll ทับ)
   if (cmd.text[0] != '\0') {
     flushLedCommandQueue();
     g_clockMode     = false;
     currentText     = String(cmd.text);
-    currentFontSize = cmd.fontSize;
+    currentFontSize = cmd.fontSize > 0 ? cmd.fontSize : 1;
     if (cmd.speed > 0) scrollSpeed = max(20, cmd.speed);
-    if (dma_display) currentColor = dma_display->color565(cmd.r, cmd.g, cmd.b);
-    if (cmd.actual[0] != '\0') actualCount = String(cmd.actual);
-    if (cmd.target[0] != '\0') targetCount = String(cmd.target);
+    currentColor    = dma_display->color565(cmd.r, cmd.g, cmd.b);
+    actualCount     = String(cmd.actual);
+    targetCount     = String(cmd.target);
     updateTextProperties();
     s_ledStateFingerprint = buildFingerprintFromLedCmd(cmd);
     Serial.println("[LED] Applied: " + currentText + " (" + actualCount + "/" + targetCount + ")");
-    saveStateToPrefs();
     return;
   }
   if (cmd.showClock) {
     applyClockVisual(cmd.r, cmd.g, cmd.b);
-    Serial.println("[LED] Clock mode (HH : MM : SS)");
+    Serial.println("[LED] Clock mode (HH:MM:SS)");
   }
 }
 
-void saveStateToPrefs() {
-  if (g_clockMode) return;
-  String t = currentText;
-  t.trim();
-  if (t.length() == 0) return;
-  if (t == "WiFi Error") return;
-  if (t == "กำลังเชื่อมต่อ..") return;
-  if (t.indexOf(':') >= 0 && t.length() == 12) return; // HH : MM : SS
-
-  s_prefs.begin(PREF_NS, false);
-  s_prefs.putString("text", t);
-  s_prefs.putString("act",  actualCount);
-  s_prefs.putString("tgt",  targetCount);
-  // store 565 bits compactly (r5/g6/b5)
-  s_prefs.putUChar("r", (uint8_t)((currentColor >> 11) & 0x1F));
-  s_prefs.putUChar("g", (uint8_t)((currentColor >> 5)  & 0x3F));
-  s_prefs.putUChar("b", (uint8_t)( currentColor        & 0x1F));
-  s_prefs.putInt("fs", currentFontSize);
-  s_prefs.putInt("sp", scrollSpeed);
-  s_prefs.end();
-}
-
-bool loadStateFromPrefs() {
-  s_prefs.begin(PREF_NS, true);
-  String t  = s_prefs.getString("text", "");
-  String a  = s_prefs.getString("act", "0");
-  String tg = s_prefs.getString("tgt", "0");
-  int fs    = s_prefs.getInt("fs", 1);
-  int sp    = s_prefs.getInt("sp", 50);
-  uint8_t r5 = s_prefs.getUChar("r", 0);
-  uint8_t g6 = s_prefs.getUChar("g", 63);
-  uint8_t b5 = s_prefs.getUChar("b", 31);
-  s_prefs.end();
-
-  t.trim();
-  if (t.length() == 0) return false;
-
-  currentText = t;
-  actualCount = a;
-  targetCount = tg;
-  currentFontSize = fs;
-  scrollSpeed = max(20, sp);
-  if (dma_display) {
-    currentColor = ((uint16_t)r5 << 11) | ((uint16_t)g6 << 5) | ((uint16_t)b5);
-  }
-  updateTextProperties();
-  return true;
-}
-
-// แปลง JSON state / คิว / LedCmd เป็น string เดียวกัน
 String buildLedStateFingerprint(
   const String& text, int r, int g, int b, int fontSize, int speed, const String& act, const String& tgt) {
   return text + "|" + String(r) + "," + String(g) + "," + String(b)
@@ -403,6 +942,10 @@ void stateJsonToLedCmd(JsonObject o, LedCmd& cmd) {
   cmd.r  = o["r"]  | 0;   cmd.g  = o["g"]  | 255;  cmd.b  = o["b"]  | 255;
   cmd.fontSize = o["fontSize"] | 1;
   cmd.speed    = o["speed"]    | 0;
+  strncpy(cmd.actual, "0", sizeof(cmd.actual) - 1);
+  cmd.actual[sizeof(cmd.actual) - 1] = '\0';
+  strncpy(cmd.target, "0", sizeof(cmd.target) - 1);
+  cmd.target[sizeof(cmd.target) - 1] = '\0';
   if (o.containsKey("actual") && !o["actual"].isNull()) {
     strncpy(cmd.actual, o["actual"].as<String>().c_str(), sizeof(cmd.actual) - 1);
     cmd.actual[sizeof(cmd.actual) - 1] = '\0';
@@ -422,32 +965,32 @@ String buildFingerprintFromLedCmd(const LedCmd& c) {
   return buildLedStateFingerprint(String(c.text), c.r, c.g, c.b, c.fontSize, c.speed, a, tg);
 }
 
-// Reconcile: นำ state ล่าสุดจาก /led-status มาเทียบ ถ้าไม่ตรงเว็บ → คิว (ไม่เรียก applyDefault)
 void reconcileLedStateWithWeb() {
   if (!cmdQueue || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return;
 
-  HTTPClient http;
-  String mid = String(MACHINE_ID);
-  mid.replace(" ", "%20");
+  String mid = encodeMachineIdForPath(String(MACHINE_ID));
   String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
-  http.begin(url);
-  http.setTimeout(4000);
-  int code = http.GET();
+  String body;
+  int code = httpGetUrl(url, &body, 4000);
+  g_lastSyncHttpCode = code;
   if (code != 200) {
     Serial.printf("[Reconcile] HTTP %d (ข้าม — รอรอบถัดไป)\n", code);
-    http.end();
     return;
   }
-  String body = http.getString();
-  http.end();
 
-  StaticJsonDocument<768> doc;
+  if (g_clockMode && jsonHasTruthyTextField(body)) {
+    g_requestStatusSync = true;
+    Serial.println("[Reconcile] server has text while clock — schedule sync");
+    return;
+  }
+
+  StaticJsonDocument<1536> doc;
   if (deserializeJson(doc, body) || !doc["success"].as<bool>()) {
-    Serial.println("[Reconcile] parse error — ข้าม");
+    if (jsonHasTruthyTextField(body)) g_requestStatusSync = true;
     return;
   }
   if (!doc["hasState"].as<bool>()) {
-    return;  // ไม่มี state บน server — ไม่ทับเนื้อหาจอ
+    return;
   }
   JsonObject st = doc["state"];
   if (st.isNull()) return;
@@ -458,17 +1001,10 @@ void reconcileLedStateWithWeb() {
     return;
   }
 
-  LedCmd cmd = {};
-  stateJsonToLedCmd(st, cmd);
-  if (xQueueSend(cmdQueue, &cmd, 0) == pdTRUE) {
-    s_ledStateFingerprint = fp;
-    Serial.println("[Reconcile] Queued ตรงกับเว็บ: " + String(cmd.text));
-  }
+  g_requestStatusSync = true;
+  Serial.println("[Reconcile] mismatch — schedule status sync");
 }
 
-// ======================================================================
-//  ฟังก์ชันเสริมสำหรับจัดการสระภาษาไทย
-// ======================================================================
 bool isThaiCombining(uint8_t b2, uint8_t b3) {
   if (b2 == 0xB8 && (b3 == 0xB1 || (b3 >= 0xB4 && b3 <= 0xBA))) return true;
   if (b2 == 0xB9 && (b3 >= 0x87 && b3 <= 0x8E)) return true;
@@ -578,23 +1114,8 @@ void printThaiText(String text, int x, int y) {
   }
 }
 
-// ======================================================================
-//  เลือกฟอนต์ตาม fontSize (0=เล็ก, 1=กลาง, 2=ใหญ่)
-//  - fontSize 0 และ 1 ใช้ฟอนต์ไทย etl14thai (ขนาด 14px)
-//  - fontSize 2 ลอง etl16thai ถ้าไม่มีให้ fallback กลับ etl14thai
-// ======================================================================
 void applyFont(int fs) {
-  if (fs == 0) {
-    // เล็ก — ใช้ฟอนต์ไทย 10px ถ้ามี ไม่งั้น fallback 14px
-    // u8g2_for_gfx.setFont(u8g2_font_etl10thai_t); // ปลดคอมเมนต์ถ้า compile ผ่าน
-    u8g2_for_gfx.setFont(u8g2_font_etl14thai_t);
-  } else if (fs == 1) {
-    u8g2_for_gfx.setFont(u8g2_font_etl14thai_t);
-  } else {
-    // ใหญ่ — ลอง 16px
-    // u8g2_for_gfx.setFont(u8g2_font_etl16thai_t); // ปลดคอมเมนต์ถ้า compile ผ่าน
-    u8g2_for_gfx.setFont(u8g2_font_etl14thai_t);
-  }
+  u8g2_for_gfx.setFont(u8g2_font_etl14thai_t);
 }
 
 void updateTextProperties() {
@@ -603,19 +1124,11 @@ void updateTextProperties() {
   cursor_x  = (textWidth <= NAME_ZONE_PX) ? (NAME_ZONE_PX - textWidth) / 2 : NAME_ZONE_PX;
 }
 
-// ======================================================================
-//  HTTP Handler: POST /led
-//  Body (JSON): { "text":"...", "r":0, "g":255, "b":255,
-//                 "fontSize":1, "speed":50, "actual":"0", "target":"100" }
-//  Response: { "ok": true, "ip": "...", "machineId": "..." }
-// ======================================================================
 void handleLed() {
-  // CORS — ต้องส่งทุก response รวมถึง OPTIONS preflight
   server.sendHeader("Access-Control-Allow-Origin",  "*");
   server.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   server.sendHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
 
-  // Browser ส่ง OPTIONS ก่อนทุก cross-origin POST — ต้องตอบ 200 (บางเบราว์เซอร์ไม่รับ 204)
   if (server.method() == HTTP_OPTIONS) {
     server.send(200, "text/plain", "");
     return;
@@ -637,9 +1150,11 @@ void handleLed() {
   if (doc.containsKey("fontSize")) currentFontSize = doc["fontSize"].as<int>();
   if (doc.containsKey("speed"))    scrollSpeed     = max(20, doc["speed"].as<int>());
   if (doc.containsKey("actual"))   actualCount     = doc["actual"].as<String>();
+  else if (doc.containsKey("text")) actualCount     = "0";
   if (doc.containsKey("target"))   targetCount     = doc["target"].as<String>();
+  else if (doc.containsKey("text")) targetCount     = "0";
   if (doc.containsKey("r") && doc.containsKey("g") && doc.containsKey("b")) {
-    if (dma_display) currentColor = dma_display->color565(
+    currentColor = dma_display->color565(
       doc["r"].as<int>(), doc["g"].as<int>(), doc["b"].as<int>()
     );
   }
@@ -661,27 +1176,6 @@ void handleLed() {
   server.send(200, "application/json", resp);
 }
 
-String jsonEscapeString(const String& s) {
-  String out;
-  out.reserve(s.length() + 16);
-  for (unsigned i = 0; i < s.length(); i++) {
-    char c = s[i];
-    if (c == '"') out += "\\\"";
-    else if (c == '\\') out += "\\\\";
-    else if (c == '\n') out += "\\n";
-    else if (c == '\r') out += "\\r";
-    else if (c == '\t') out += "\\t";
-    else if ((unsigned char)c < 0x20) {
-      char buf[7];
-      snprintf(buf, sizeof(buf), "\\u%04X", (unsigned char)c);
-      out += buf;
-    } else {
-      out += c;
-    }
-  }
-  return out;
-}
-
 String formatUptimeSec(unsigned long sec) {
   unsigned long h = sec / 3600;
   unsigned long m = (sec % 3600) / 60;
@@ -697,19 +1191,31 @@ String rssiQualityLabel(int rssi) {
   return "อ่อน — เสี่ยงหลุด";
 }
 
-void sampleInternalTempIfNeeded(bool force = false) {
-  unsigned long now = millis();
-  if (!force && g_lastTempSampleMs > 0 && (now - g_lastTempSampleMs) < 30000UL) return;
-  g_lastTempSampleMs = now;
-  g_internalTempC = (temprature_sens_read() - 32) / 1.8f;
+String buildHeartbeatQuery() {
+  if (WiFi.status() != WL_CONNECTED) return "";
+  String q = "?localIp=" + WiFi.localIP().toString()
+       + "&rssi=" + String(WiFi.RSSI())
+       + "&uptime=" + String(millis() / 1000UL)
+       + "&temp=" + String(g_internalTempC, 1);
+  if (g_needsPollResync || isTransientStatusText(currentText)) {
+    q += "&resync=1";
+  }
+  if (isTransientStatusText(currentText)) {
+    q += "&stuck=1";
+  }
+  if (s_ledStateFingerprint.length() > 0) {
+    q += "&ack=" + encodeMachineIdForPath(s_ledStateFingerprint);
+  }
+  return q;
 }
 
-// GET /status — ใช้ตรวจสอบว่าออนไลน์อยู่
 void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  sampleInternalTempIfNeeded();
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  uint32_t pollAgo = g_lastPollAttemptMs > 0 ? (millis() - g_lastPollAttemptMs) / 1000UL : 999999UL;
+  uint32_t pollOkAgo = g_lastPollSuccessMs > 0 ? (millis() - g_lastPollSuccessMs) / 1000UL : 999999UL;
   String resp = String("{\"ok\":true")
+              + ",\"firmwareVersion\":\"" + String(FIRMWARE_VERSION) + "\""
               + ",\"machineId\":\"" + jsonEscapeString(String(MACHINE_ID)) + "\""
               + ",\"ip\":\"" + jsonEscapeString(WiFi.localIP().toString()) + "\""
               + ",\"mac\":\"" + jsonEscapeString(WiFi.macAddress()) + "\""
@@ -719,13 +1225,30 @@ void handleStatus() {
               + ",\"uptimeSec\":" + String(millis() / 1000UL)
               + ",\"uptime\":\"" + jsonEscapeString(formatUptimeSec(millis() / 1000UL)) + "\""
               + ",\"cpuTemperatureC\":" + String(g_internalTempC, 1)
+              + ",\"lastPollHttpCode\":" + String(g_lastPollHttpCode)
+              + ",\"lastPollBodyLen\":" + String(g_lastPollBodyLen)
+              + ",\"lastSyncHttpCode\":" + String(g_lastSyncHttpCode)
+              + ",\"pollFailStreak\":" + String(g_pollFailStreak)
+              + ",\"lastPollAgoSec\":" + String(pollAgo)
+              + ",\"lastPollOkAgoSec\":" + String(pollOkAgo)
+              + ",\"serverUrl\":\"" + jsonEscapeString(g_serverUrl) + "\""
+              + ",\"serverDnsOk\":" + String(g_serverDnsOk ? "true" : "false")
+              + ",\"serverDnsFallback\":" + String(g_serverDnsFallback ? "true" : "false")
+              + ",\"serverDnsIp\":\"" + jsonEscapeString(g_serverDnsOk ? g_serverDnsIp.toString() : String("")) + "\""
+              + ",\"routerDns\":\"" + jsonEscapeString(WiFi.dnsIP().toString()) + "\""
+              + ",\"freeHeap\":" + String(ESP.getFreeHeap())
+              + ",\"lastHttpError\":\"" + jsonEscapeString(g_lastHttpError) + "\""
               + ",\"clockMode\":" + String(g_clockMode ? "true" : "false")
+              + ",\"lastSyncParseOk\":" + String(g_lastSyncParseOk ? "true" : "false")
+              + ",\"lastSyncServerTextLen\":" + String(g_lastSyncServerTextLen)
+              + ",\"lastSyncBodyLen\":" + String(g_lastSyncBodyLen)
+              + ",\"lastSyncError\":\"" + jsonEscapeString(g_lastSyncError) + "\""
+              + ",\"lastPollUrl\":\"" + jsonEscapeString(g_lastPollUrl) + "\""
+              + ",\"lastSyncUrl\":\"" + jsonEscapeString(g_lastSyncUrl) + "\""
               + ",\"text\":\"" + jsonEscapeString(currentText) + "\"}";
   server.send(200, "application/json", resp);
 }
 
-// GET /measure?text=... — วัดความกว้าง LED pixel จริงจากฟอนต์ etl14thai
-// เว็บ preview ใช้เพื่อตรวจว่าข้อความจะวิ่งหรือไม่ (แทนการ hardcode ค่าประมาณ)
 void handleMeasure() {
   server.sendHeader("Access-Control-Allow-Origin",  "*");
   server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -737,15 +1260,15 @@ void handleMeasure() {
   }
 
   String text = server.arg("text");
-  applyFont(1); // etl14thai — ฟอนต์เดียวกับที่แสดงบนป้าย
+  applyFont(1); 
   int px = getThaiTextWidth(text);
   String resp = "{\"px\":" + String(px) + ",\"scrolls\":" + (px > NAME_ZONE_PX ? "true" : "false") + "}";
   server.send(200, "application/json", resp);
 }
 
+// ─── ฟังก์ชันหน้าเว็บส่งค่าอุณหภูมิ ───
 void handleTemp() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  sampleInternalTempIfNeeded();
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   String resp = "{\"ok\":true,\"machineId\":\"" + String(MACHINE_ID)
               + "\",\"ip\":\"" + WiFi.localIP().toString()
@@ -765,9 +1288,9 @@ void handleReboot() {
   ESP.restart();
 }
 
+// ─── หน้าเว็บหลัก (/) แสดงข้อมูลบอร์ด: IP, MAC Address ──────────────
 void handleRoot() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  sampleInternalTempIfNeeded();
   String ip  = WiFi.localIP().toString();
   String mac = WiFi.macAddress();
   int rssi   = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
@@ -777,7 +1300,7 @@ void handleRoot() {
     "<meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>LED Panel " + String(MACHINE_ID) + "</title>"
-    "<style>body{font-family:sans-serif;max-width:520px;margin:40px auto;padding:0 16px;}"
+    "<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px;}"
     "h2{color:#333}table{border-collapse:collapse;width:100%}"
     "td{padding:8px 12px;border:1px solid #ddd}td:first-child{font-weight:bold;background:#f5f5f5}"
     "a{color:#0066cc}hr{margin:20px 0}</style></head><body>"
@@ -786,6 +1309,7 @@ void handleRoot() {
     "<tr><td>Machine ID</td><td>" + String(MACHINE_ID) + "</td></tr>"
     "<tr><td>IP Address</td><td>" + ip + "</td></tr>"
     "<tr><td>MAC Address</td><td><b>" + mac + "</b></td></tr>"
+    "<tr><td>WiFi</td><td>KANOK-AP</td></tr>"
     "<tr><td>WiFi RSSI</td><td><b>" + String(rssi) + " dBm</b> (" + rssiQualityLabel(rssi) + ")</td></tr>"
     "<tr><td>Uptime</td><td>" + up + "</td></tr>"
     "<tr><td>CPU Temp</td><td>" + String(g_internalTempC, 1) + " &deg;C</td></tr>"
@@ -794,539 +1318,616 @@ void handleRoot() {
     "<hr>"
     "<p><a href='/status'>&#128200; Status JSON</a> &nbsp;|&nbsp; "
     "<a href='/temp'>&#127777;&#65039; Temperature</a> &nbsp;|&nbsp; "
-    "<a href='/update'>&#128640; OTA Update</a> &nbsp;|&nbsp; "
-    "<a href='/reboot'>&#10227; Reboot</a></p>"
+    "<a href='/update'>&#128640; OTA Update</a></p>"
     "</body></html>";
   server.send(200, "text/html", html);
 }
 
-// ======================================================================
-//  applyDefaultLedVisual — ข้อความ/สีเริ่มต้นเมื่อเว็บไม่มีอะไรให้แสดง
-// ======================================================================
-void applyDefaultLedVisual() {
-  applyClockVisual();
-}
+bool applyLedStateFromServer(JsonObject st) {
+  if (st.isNull()) return false;
 
-String encodeQueryValue(const String& value) {
-  String out;
-  out.reserve(value.length() + 8);
-  for (unsigned i = 0; i < value.length(); i++) {
-    char c = value[i];
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-        || c == '-' || c == '_' || c == '.' || c == '~') {
-      out += c;
-    } else if (c == ' ') {
-      out += "%20";
-    } else {
-      char hex[4];
-      snprintf(hex, sizeof(hex), "%%%02X", (uint8_t)c);
-      out += hex;
-    }
-  }
-  return out;
-}
+  String txt = st["text"].as<String>();
+  txt.trim();
 
-// ======================================================================
-//  syncLedDisplayFromServer — ดึง led_state จาก Laravel ให้ตรงกับหน้าเว็บ
-//  เรียกหลัง WiFi เชื่อมสำเร็จ (บูต / reconnect)
-//  คืน true ถ้า sync สำเร็จ (มี state จากเว็บ), false ถ้า fallback
-// ======================================================================
-bool syncLedDisplayFromServer() {
-  if (!dma_display || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return false;
-
-  HTTPClient http;
-  String mid = String(MACHINE_ID);
-  mid.replace(" ", "%20");
-  String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
-  Serial.println("[Sync] GET " + url);
-  http.begin(url);
-  http.setTimeout(5000); // เพิ่มเป็น 5s กันกรณี server ช้า
-  int code = http.GET();
-
-  if (code != 200) {
-    Serial.printf("[Sync] HTTP %d — fallback default text\n", code);
-    // อย่าทับด้วย DEFAULT — ให้ใช้ state ล่าสุด (Prefs) แล้ว reconcile ต่อไป
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
-  Serial.println("[Sync] Response: " + body.substring(0, 120)); // log 120 ตัวแรก
-
-  StaticJsonDocument<768> doc;
-  if (deserializeJson(doc, body)) {
-    Serial.println("[Sync] JSON parse error — fallback default text");
-    // อย่าทับด้วย DEFAULT
-    return false;
-  }
-
-  if (!doc["success"].as<bool>() || !doc["hasState"].as<bool>()) {
-    Serial.println("[Sync] ไม่มี state บนเซิร์ฟเวอร์ — NVS หรือนาฬิกา");
-    bool loaded = loadStateFromPrefs();
-    if (!loaded) {
-      // ไม่มี state และไม่มี NVS ให้คงหน้าจอเดิมไว้ก่อน (กันเด้งกลับ clock จากภาวะชั่วคราว)
-      return false;
-    }
+  if (txt.length() > 0) {
+    g_clockMode     = false;
+    currentText     = txt;
+    currentFontSize = st["fontSize"] | 1;
+    int sp          = st["speed"] | 50;
+    scrollSpeed     = max(20, sp);
+    int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
+    currentColor    = dma_display->color565(r, g, b);
+    actualCount     = (st.containsKey("actual") && !st["actual"].isNull())
+                        ? st["actual"].as<String>() : String("0");
+    targetCount     = (st.containsKey("target") && !st["target"].isNull())
+                        ? st["target"].as<String>() : String("0");
+    updateTextProperties();
+    s_ledStateFingerprint = buildFingerprintFromStateJson(st);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
+    Serial.println("[Sync] ✓ text: \"" + currentText + "\"");
     return true;
-  }
-
-  JsonObject st = doc["state"];
-  if (st.isNull()) {
-    Serial.println("[Sync] state เป็น null");
-    return false;
   }
 
   if (jsonWantsClockMode(st)) {
-    Serial.println("[Sync] เว็บล้างป้าย — แสดงนาฬิกา");
-    applyClockVisual();
+    int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
+    applyClockVisual((uint8_t)r, (uint8_t)g, (uint8_t)b);
+    flushLedCommandQueue();
+    g_awaitingBootSync = false;
+    g_bootSyncWaitingSinceMs = 0;
+    Serial.println("[Sync] clock mode from server");
     return true;
   }
-
-  g_clockMode     = false;
-  String txt = st["text"].as<String>();
-  txt.trim();
-  currentText     = txt;
-  currentFontSize = st["fontSize"] | 1;
-  int sp          = st["speed"] | 50;
-  scrollSpeed     = max(20, sp);
-  int r = st["r"] | 0, g = st["g"] | 255, b = st["b"] | 255;
-  currentColor    = dma_display->color565(r, g, b);
-  // กู้คืน actual/target เมื่อ reconnect WiFi
-  if (st.containsKey("actual")) actualCount = st["actual"].as<String>();
-  if (st.containsKey("target")) targetCount = st["target"].as<String>();
-  updateTextProperties();
-  s_ledStateFingerprint = buildFingerprintFromStateJson(st);
-  Serial.println("[Sync] ✓ ตรงกับเว็บ: \"" + currentText + "\" (" + actualCount + "/" + targetCount + ")");
-  saveStateToPrefs();
-  return true;
+  return false;
 }
 
-// ======================================================================
-//  connectBestWifi — สแกนแล้วเลือก WiFi ที่ RSSI ดีที่สุดจากรายการ
-//  คืนค่า true เมื่อเชื่อมต่อสำเร็จ และตั้งค่า g_serverUrl ให้อัตโนมัติ
-// ======================================================================
-bool connectBestWifi() {
-  WiFi.persistent(false);   // ป้องกัน credentials เก่าใน flash รบกวน
-  WiFi.disconnect(true);    // ตัด connection เดิมและล้าง state
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);     // กันอาการหลุด/ค้างจาก power-save บนบางบอร์ด
-  WiFi.setTxPower(WIFI_POWER_19_5dBm); // เพิ่มกำลังส่ง (ช่วยในโรงงาน/สัญญาณอ่อน)
-  delay(300);               // รอ mode switch เสร็จสมบูรณ์
+void flushLedCommandQueue() {
+  if (!cmdQueue) return;
+  LedCmd discard;
+  while (xQueueReceive(cmdQueue, &discard, 0) == pdTRUE) { /* drop stale clock cmds */ }
+}
 
-  Serial.println("[WiFi] Scanning...");
-  int found = WiFi.scanNetworks();
-  Serial.printf("[WiFi] พบ %d เครือข่าย\n", found);
+bool syncLedDisplayFromServer() {
+  if (!dma_display || g_serverUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return false;
 
-  int bestProfileIdx = -1;
-  int bestRssi       = -9999;
+  String mid = encodeMachineIdForPath(String(MACHINE_ID));
+  String url = g_serverUrl + "/api/production-monitor/led-status/" + mid;
+  g_lastSyncUrl = url;
+  Serial.println("[Sync] GET " + url);
+  String body;
+  int code = httpGetUrl(url, &body, 8000);
+  g_lastSyncHttpCode = code;
 
-  for (int s = 0; s < found; s++) {
-    String ssid = WiFi.SSID(s);
-    int    rssi = WiFi.RSSI(s);
-    bool   known = false;
-    for (int p = 0; p < WIFI_PROFILE_COUNT; p++) {
-      if (ssid == WIFI_PROFILES[p].ssid) {
-        known = true;
-        if (rssi > bestRssi) { bestRssi = rssi; bestProfileIdx = p; }
-      }
-    }
-    // แสดงเฉพาะตัวที่รู้จักในรายการ (✓) เพื่อไม่ให้ Serial รก
-    if (known) Serial.printf("  ✓ %-22s  RSSI=%d\n", ssid.c_str(), rssi);
-  }
-  WiFi.scanDelete(); // คืน memory
-  delay(300);        // ← สำคัญ: รอ radio ออกจาก scan mode ก่อน connect
-
-  if (bestProfileIdx < 0) {
-    Serial.println("[WiFi] ไม่พบ WiFi ที่รู้จักในรายการ!");
+  if (code != 200) {
+    Serial.printf("[Sync] HTTP %d — รอ retry\n", code);
     return false;
   }
 
-  const WifiProfile& net = WIFI_PROFILES[bestProfileIdx];
-  Serial.printf("[WiFi] เลือก \"%s\"  RSSI=%d\n", net.ssid, bestRssi);
-
-  // แสดงบนป้ายว่ากำลังเชื่อมต่อ
-  if (dma_display) {
-    currentText     = "กำลังเชื่อมต่อ..";
-    currentFontSize = 1;
-    currentColor    = dma_display->color565(255, 140, 0); // สีส้ม
-    updateTextProperties();
+  Serial.println("[Sync] Response: " + body.substring(0, 120));
+  g_lastSyncBodyLen = body.length();
+  if (body.length() == 0) {
+    g_lastSyncParseOk = false;
+    g_lastSyncError = "empty body";
+    g_lastSyncServerTextLen = 0;
+    return false;
   }
 
-  WiFi.begin(net.ssid, net.pass); // DHCP — Router แจก IP เอง
+  DynamicJsonDocument doc(5120);
+  DeserializationError jerr = deserializeJson(doc, body);
+  if (!jerr && doc["success"].as<bool>()) {
+    if (doc["hasState"].as<bool>()) {
+      JsonObject st = doc["state"];
+      if (!st.isNull()) {
+        g_lastSyncParseOk = true;
+        g_lastSyncError = "json";
+        g_lastSyncServerTextLen = (int)st["text"].as<String>().length();
+        g_awaitingBootSync = false;
+        return applyLedStateFromServer(st);
+      }
+    } else {
+      g_lastSyncParseOk = true;
+      g_lastSyncError = "no-state";
+      g_lastSyncServerTextLen = 0;
+      g_awaitingBootSync = false;
+      // ไม่มี state บน server ไม่ควร override จอปัจจุบันทันที
+      // (กันเคส cache วูบชั่วคราวแล้วป้ายเด้งกลับเป็นนาฬิกา)
+      Serial.println("[Sync] no server state — keep current display");
+      return false;
+    }
+  }
+
+  Serial.printf("[Sync] fallback parser (json=%s bodyLen=%u)\n", jerr.c_str(), body.length());
+  g_lastSyncParseOk = applyLedStateFromStatusBody(body);
+  g_lastSyncError = g_lastSyncParseOk ? "fallback" : (jerr ? jerr.c_str() : "fallback fail");
+  g_lastSyncServerTextLen = g_lastSyncParseOk ? currentText.length() : 0;
+  g_awaitingBootSync = false;
+  return g_lastSyncParseOk;
+}
+
+bool bootSyncFromServerWithRetry() {
+  uint32_t retryDelay = BOOT_SYNC_RETRY_MS;
+  for (int attempt = 1; attempt <= BOOT_SYNC_MAX_ATTEMPTS; attempt++) {
+    Serial.printf("[BootSync] attempt %d/%d\n", attempt, BOOT_SYNC_MAX_ATTEMPTS);
+    if (syncLedDisplayFromServer()) return true;
+    if (attempt < BOOT_SYNC_MAX_ATTEMPTS) {
+      vTaskDelay(pdMS_TO_TICKS(retryDelay));
+      // เพิ่ม delay ทีละนิด — กันเซิร์ฟเวอร์ถูกถามถี่เกินไปตอนหลายบอร์ด boot พร้อมกัน
+      // (เช่นไฟกลับมาทีเดียวตอนเช้า ทุกจอ sync พร้อมกันหมด)
+      retryDelay = min(retryDelay + 500, (uint32_t)4000);
+    }
+  }
+  // BOOT_SYNC_MAX_ATTEMPTS ครั้งไม่พอ — ยังไม่ยอมแพ้ทันที ปล่อยให้ g_awaitingBootSync
+  // ค้างไว้ ให้ loop ใน pollTask() ลอง sync ต่อทุก 4s จนกว่าจะครบ BOOT_SYNC_GIVE_UP_MS
+  // (ดู pollTask) ก่อนจะค่อย fallback เป็นนาฬิกาจริงๆ — ป้องกันนาฬิกาขึ้นเร็วเกินไป
+  // ตอนเช้าที่เน็ตติดขัดชั่วคราว
+  Serial.println("[BootSync] ยังซิงก์ไม่ได้ใน budget แรก — ปล่อยให้ pollTask ลองต่อก่อน fallback");
+  return false;
+}
+
+bool refreshPreferredAp() {
+  uint32_t now = millis();
+  if (g_hasPreferredBssid && (now - g_lastWifiScanMs) < WIFI_SCAN_CACHE_MS) return true;
+
+  int n = WiFi.scanNetworks(false, true);
+  g_lastWifiScanMs = now;
+  if (n <= 0) {
+    g_hasPreferredBssid = false;
+    return false;
+  }
+
+  int bestIndex = -1;
+  int bestRssi = -127;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) != WIFI_SSID) continue;
+    int rssi = WiFi.RSSI(i);
+    if (bestIndex < 0 || rssi > bestRssi) {
+      bestIndex = i;
+      bestRssi = rssi;
+    }
+  }
+
+  if (bestIndex < 0) {
+    g_hasPreferredBssid = false;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  uint8_t* bssid = WiFi.BSSID(bestIndex);
+  if (!bssid) {
+    g_hasPreferredBssid = false;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  memcpy(g_preferredBssid, bssid, sizeof(g_preferredBssid));
+  g_preferredChannel = WiFi.channel(bestIndex);
+  g_hasPreferredBssid = true;
+
+  Serial.printf("[WiFi] Lock AP BSSID=%02X:%02X:%02X:%02X:%02X:%02X ch=%d RSSI=%d\n",
+                g_preferredBssid[0], g_preferredBssid[1], g_preferredBssid[2],
+                g_preferredBssid[3], g_preferredBssid[4], g_preferredBssid[5],
+                (int)g_preferredChannel, bestRssi);
+  WiFi.scanDelete();
+  return true;
+}
+
+void beginWifiWithBestAp() {
+  bool hasPreferred = refreshPreferredAp();
+  if (hasPreferred && g_preferredChannel > 0) {
+    WiFi.begin(WIFI_SSID, WIFI_PASS, g_preferredChannel, g_preferredBssid, true);
+    return;
+  }
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+bool connectWifi(bool hardReset, bool runBootSync, bool showOnDisplay) {
+  WiFi.persistent(false);
+  if (hardReset) {
+    WiFi.disconnect(true);
+    vTaskDelay(pdMS_TO_TICKS(300));
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  WiFi.setHostname(MACHINE_ID);
+
+  // ใช้ DHCP — IT สามารถ fix IP ได้ผ่าน DHCP Reservation ที่ Router โดยใช้ MAC Address
+  // บอร์ดนี้เชื่อมเฉพาะ KANOK-AP เท่านั้น
+  Serial.printf("[WiFi] %s connect to \"%s\" ...\n", hardReset ? "Hard" : "Soft", WIFI_SSID);
+  Serial.printf("[WiFi] MAC Address: %s\n", WiFi.macAddress().c_str());
+
+  if (dma_display && showOnDisplay) {
+    g_clockMode     = false;
+    currentText     = "กำลังเชื่อมต่อ..";
+    currentFontSize = 1;
+    scrollSpeed     = 50;
+    currentColor    = dma_display->color565(255, 140, 0);
+    actualCount     = "0";
+    targetCount     = "0";
+    updateTextProperties();
+    drawAndScrollText();
+  }
+
+  beginWifiWithBestAp();
   Serial.print("[WiFi] Connecting");
 
   int tries = 0;
   int failedCount = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 60) { // 60×500ms = 30 วินาที
-    delay(500);
+  while (WiFi.status() != WL_CONNECTED && tries < 60) {
+    vTaskDelay(pdMS_TO_TICKS(500));
     Serial.print(".");
     tries++;
-    // WL_CONNECT_FAILED (4) อาจเกิดจาก RF interference ของ HUB75 DMA หรือ AP ยุ่ง
-    // → ไม่หยุดทันที แต่ถ้าเกิดซ้ำ 5 ครั้งติดกันค่อยถือว่ารหัสผ่านผิดจริง
     if (WiFi.status() == WL_CONNECT_FAILED) {
       failedCount++;
-      Serial.printf("\n[WiFi] status=4 (ครั้งที่ %d) — retry...\n", failedCount);
-      if (failedCount >= 5) {
-        Serial.printf("[WiFi] ✗ AP ปฏิเสธซ้ำ 5 ครั้ง  ssid=\"%s\"  pass=\"%s\"\n",
-                      net.ssid, net.pass);
-        if (dma_display) {
-          currentText  = "WiFi Error";
-          currentColor = dma_display->color565(255, 0, 0);
-          updateTextProperties();
-        }
-        return false;
-      }
-      // รีเซ็ต connection แล้วลองใหม่
+      if (failedCount >= 5) return false;
       WiFi.disconnect(false);
-      delay(1000);
-      WiFi.begin(net.ssid, net.pass);
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      beginWifiWithBestAp();
     }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    g_serverUrl = net.serverUrl;
-    Serial.printf("\n[WiFi] OK! IP=%s  →  %s\n",
-                  WiFi.localIP().toString().c_str(), g_serverUrl.c_str());
-    // รอ 1.5s ให้ routing/DHCP ของ router พร้อมก่อน — ถ้าเรียก HTTP ทันทีมักจะ timeout
-    delay(1500);
+    g_connectFailStreak = 0;
+    g_serverUrl = WIFI_SERVER;
+    Serial.printf("\n[WiFi] ✓ Connected! IP: %s  MAC: %s\n",
+                  WiFi.localIP().toString().c_str(),
+                  WiFi.macAddress().c_str());
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    applyPublicDns();
     syncNtpIfNeeded();
-    syncLedDisplayFromServer();
+    refreshServerDns();
+    g_needsPollResync = true;
+    if (runBootSync) {
+      bootSyncFromServerWithRetry();
+    }
+    drawAndScrollText();
     return true;
   }
-
-  // status codes: 1=NO_SSID, 4=CONNECT_FAILED(รหัสผิด), 6=DISCONNECTED(timeout)
-  Serial.printf("\n[WiFi] เชื่อมต่อไม่สำเร็จ  status=%d\n", WiFi.status());
-  if (dma_display) {
-    currentText  = "WiFi Error";
-    currentColor = dma_display->color565(255, 0, 0); // สีแดง
-    updateTextProperties();
+  g_connectFailStreak++;
+  if (g_connectFailStreak >= 3) {
+    g_hasPreferredBssid = false;
+    g_lastWifiScanMs = 0;
+    Serial.println("[WiFi] connect fail — clear BSSID lock for rescan");
   }
+  Serial.println("\n[WiFi] Connection failed");
   return false;
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starting LED Matrix Panel (1/4 Scan)...");
-  // Disable brownout detector (หลายชุดเจอรีเซ็ตวนเมื่อจอ HUB75 ดึงกระแสตอนบูต)
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
-  HUB75_I2S_CFG mxconfig(DMA_RES_X, DMA_RES_Y, PANEL_CHAIN);
+  // แสดง MAC Address ทันทีตอนเปิดเครื่อง (ก่อน WiFi เชื่อม) — ให้ IT นำไป fix IP ที่ Router
+  WiFi.mode(WIFI_STA);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+#if defined(ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      Serial.printf("[WiFi] Event: STA_DISCONNECTED reason=%d\n", info.wifi_sta_disconnected.reason);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+      Serial.println("[WiFi] Event: STA_CONNECTED");
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      Serial.printf("[WiFi] Event: GOT_IP %s\n", WiFi.localIP().toString().c_str());
+    }
+#elif defined(SYSTEM_EVENT_STA_DISCONNECTED)
+    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+      Serial.printf("[WiFi] Event: STA_DISCONNECTED reason=%d\n", info.disconnected.reason);
+    } else if (event == SYSTEM_EVENT_STA_CONNECTED) {
+      Serial.println("[WiFi] Event: STA_CONNECTED");
+    } else if (event == SYSTEM_EVENT_STA_GOT_IP) {
+      Serial.printf("[WiFi] Event: GOT_IP %s\n", WiFi.localIP().toString().c_str());
+    }
+#endif
+  });
+  Serial.printf("[BOOT] Machine ID : %s\n", MACHINE_ID);
+  Serial.printf("[BOOT] MAC Address: %s\n", WiFi.macAddress().c_str());
+  Serial.println("[BOOT] LED Matrix Panel (1/4 Scan)");
 
-  // ปิดขา C, D, E ไม่ใช้สำหรับ 1/4 Scan
+  HUB75_I2S_CFG mxconfig(DMA_RES_X, DMA_RES_Y, PANEL_CHAIN);
   mxconfig.gpio.c = -1;
   mxconfig.gpio.d = -1;
   mxconfig.gpio.e = -1;
-
-  // =========================================================================
-  // 🟢 Timing มาตรฐาน
-  // =========================================================================
-  mxconfig.clkphase      = false;
+  mxconfig.clkphase       = false;
   mxconfig.latch_blanking = 4;
-  mxconfig.i2sspeed      = HUB75_I2S_CFG::HZ_10M;
-  // =========================================================================
-
-  // 💡 เปิดระบบ Double Buffering
-  mxconfig.double_buff = true;
+  mxconfig.i2sspeed       = HUB75_I2S_CFG::HZ_10M;
+  mxconfig.double_buff    = true;
 
   dma_display = new MatrixPanel_I2S_DMA(mxconfig);
   dma_display->begin();
-
   p10_display = new P10_1_4_Display(dma_display);
-
-  // ลดความสว่างก่อน WiFi — จอ HUB75 กินไฟมาก ถ้าเต็มทันทีแรงดันอาจตกจน ESP32/WiFi ล้มเหลวหลังเสียบปลั๊ก
   dma_display->setBrightness8(PANEL_BRIGHTNESS_WIFI_BOOT);
   dma_display->clearScreen();
-  delay(1200); // ให้ PSU นิ่งก่อน (ชุด PSU/ชิลด์บางตัวต้องรอมากขึ้น)
+  delay(1200);
 
   u8g2_for_gfx.begin(*p10_display);
-
-  // 💡 [แก้ไขจุดสำคัญที่สุด]: เปลี่ยนเป็นโหมดโปร่งใส (1)
-  // ป้องกันปัญหากล่องข้อความสีดำไปลบข้อความข้างเคียงจนเกิดเป็นไฟกระพริบแหว่งๆ ตอนตัวหนังสือเลื่อน
   u8g2_for_gfx.setFontMode(1);
   u8g2_for_gfx.setFontDirection(0);
 
-  if (dma_display) currentColor = dma_display->color565(0, 255, 255);
-  updateTextProperties();
+  g_awaitingBootSync = true;
+  g_bootSyncWaitingSinceMs = millis();
+  showSyncWaitingVisual();
 
-  // แสดง state จาก NVS ทันทีระหว่างรอ WiFi (ถ้าไม่มี → นาฬิกาชั่วคราวหลัง NTP)
-  if (!loadStateFromPrefs()) {
-    applyClockVisual();
-  }
-
-  // ---------- WiFi (auto-select best signal) — ลองหลายรอบตอนบูต ----------
   bool wifiOk = false;
   for (int bootTry = 0; bootTry < 10 && !wifiOk; bootTry++) {
-    if (bootTry > 0) {
-      Serial.printf("[WiFi] Boot retry %d/10...\n", bootTry + 1);
-      delay(3000); // รอ 3s ให้ RF settle ก่อน retry (HUB75 DMA อาจรบกวน 2.4GHz)
-    }
-    wifiOk = connectBestWifi();
+    if (bootTry > 0) delay(3000);
+    wifiOk = connectWifi();
   }
+  if (wifiOk) syncNtpIfNeeded(true);
 
   dma_display->setBrightness8(PANEL_BRIGHTNESS_NORMAL);
 
-  // wifiOk: ข้อความบนป้ายถูกตั้งแล้วใน syncLedDisplayFromServer() ภายใน connectBestWifi()
   if (!wifiOk) {
     currentText = "WiFi Error";
     updateTextProperties();
   }
 
-  // ---------- HTTP server ----------
-  server.on("/",        HTTP_ANY, handleRoot);
+  // ลงทะเบียนหน้าเว็บ Endpoint ต่างๆ
+  server.on("/",        HTTP_ANY, handleRoot);   // หน้าหลัก — แสดง IP + MAC Address
   server.on("/led",     HTTP_ANY, handleLed);
   server.on("/status",  HTTP_ANY, handleStatus);
   server.on("/measure", HTTP_ANY, handleMeasure);
   server.on("/temp",    HTTP_ANY, handleTemp);
   server.on("/reboot",  HTTP_ANY, handleReboot);
-  // OTA firmware update ผ่านหน้าเว็บ: http://<ESP_IP>/update
+  
   ElegantOTA.begin(&server);
   server.begin();
-  Serial.println("HTTP server started on port 80");
 
-  // ---------- FreeRTOS polling task ----------
-  // สร้าง queue รับคำสั่งจาก pollTask (จุ 3 คำสั่ง)
   cmdQueue = xQueueCreate(3, sizeof(LedCmd));
-
-  // รัน pollTask บน Core 0, stack 8KB, priority 1
-  // Core 1 (default Arduino core) ทำ display + HTTP server
-  xTaskCreatePinnedToCore(pollTask, "pollTask", 8192, nullptr, 1, nullptr, 0);
-
-  Serial.println("Poll task started (Core 0, every 2s)");
-  Serial.println("SERVER_URL: " + g_serverUrl);
-  Serial.println("MACHINE_ID: " + String(MACHINE_ID));
-  Serial.println("IP: " + WiFi.localIP().toString() + " (DHCP — รายงานให้ server อัตโนมัติ)");
+  g_httpMutex = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(pollTask, "pollTask", 20480, nullptr, 1, nullptr, 0);
   Serial.println("Ready!");
 }
 
-// ======================================================================
-//  loop  (Core 1 — display + HTTP server)
-//  ไม่มี blocking call ที่นี่เลย → scroll ลื่น 50ms ทุกครั้ง
-// ======================================================================
 void loop() {
   server.handleClient();
-  ElegantOTA.loop(); // OTA upload handler
+  ElegantOTA.loop(); 
   processSerialCommand();
-  tickClockIfNeeded();
 
   LedCmd cmd;
   if (cmdQueue && xQueueReceive(cmdQueue, &cmd, 0) == pdTRUE) {
     applyLedCommandFromQueue(cmd);
   }
 
+  // หลัง queue แล้ว — sync ทำใน pollTask เท่านั้น (กัน HTTPS ชนกันข้าม core)
+  tickClockIfNeeded();
   drawAndScrollText();
 }
 
-// ======================================================================
-//  pollTask — วิ่งบน Core 0 เป็น background task
-//  ดึงคำสั่งจาก Laravel Cache ทุก 2 วินาที
-//  ไม่ block loop() เลย เพราะรันบน task แยก
-//
-//  กลยุทธ์ WiFi reconnect:
-//  ① ทันทีที่หลุด → แสดง "กำลังเชื่อมต่อ.." บนป้าย (ผ่าน queue)
-//  ② หลุดแล้วลอง WiFi.reconnect() ทันที (ครั้งแรกของรอบหลุด) แล้วทุก ~5s สลับกับ full scan
-//  ③ ถ้า reconnect ล้มเหลว หรือหลุดนานเกิน 60s → connectBestWifi() (full scan)
-//  ④ วนซ้ำตลอดไป ไม่มีเงื่อนไขหยุด
-// ======================================================================
 void pollTask(void* pv) {
   const TickType_t pollInterval = pdMS_TO_TICKS(1000);
 
   static uint32_t lastReconnectMs          = 0;
-  static uint32_t wifiBackoffMs            = WIFI_BACKOFF_MIN_MS;
+  static uint32_t wifiBackoffMs            = WIFI_BACKOFF_MIN_MS; 
   static uint32_t disconnectedSince        = 0;
   static bool     showingConnecting        = false;
   static bool     wifiImmediateRecoverTried = false;
   static int      pollCycle                 = 0;
 
-  // ส่ง cmd "กำลังเชื่อมต่อ.." ผ่าน queue (thread-safe — ไม่แก้ global โดยตรง)
-  auto sendConnectingMsg = []() {
-    if (!cmdQueue) return;
-    LedCmd cmd = {};
-    strncpy(cmd.text, "กำลังเชื่อมต่อ..", sizeof(cmd.text) - 1);
-    cmd.text[sizeof(cmd.text) - 1] = '\0';
-    cmd.r = 255; cmd.g = 140; cmd.b = 0; // สีส้ม
-    cmd.fontSize = 1; cmd.speed = 50;
-    xQueueSend(cmdQueue, &cmd, 0);
+  // ─── ➕ ตัวแปรจับเวลาล็อกอุณหภูมิ ───
+  static uint32_t lastTempLogMs            = 0; 
+
+  // ตอน WiFi หลุด → เก็บ snapshot แล้วคงข้อความเดิม (ไม่สลับเป็นนาฬิกา)
+  auto onWifiDisconnected = []() {
+    saveDisplaySnapshot();
   };
 
   for (;;) {
-    // ───── WiFi ไม่ได้เชื่อมอยู่ → พยายามเชื่อมตลอด ─────
+    // ─── ➕ อ่านอุณหภูมิอัปเดตเข้าตัวแปรหลักและล็อก Serial ทุก 30 วินาที ───
+    uint32_t currentMs = millis();
+    if (currentMs - lastTempLogMs >= 30000 || lastTempLogMs == 0) {
+      lastTempLogMs = currentMs;
+      g_internalTempC = (temprature_sens_read() - 32) / 1.8f;
+      Serial.printf("[TEMP] ESP32 internal: %.1f°C\n", g_internalTempC);
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
       uint32_t now = millis();
-
-      // บันทึกเวลาที่เริ่มหลุดครั้งแรก
-      if (disconnectedSince == 0) disconnectedSince = now;
-
-      // แสดง "กำลังเชื่อมต่อ.." บนป้ายครั้งเดียว (ไม่ spam queue)
+      if (disconnectedSince == 0) {
+        disconnectedSince = now;
+        g_ntpSynced = false;
+        g_awaitingBootSync = true;
+        g_bootSyncWaitingSinceMs = now;
+        s_ledStateFingerprint = "";
+        g_serverDnsOk = false;
+        onWifiDisconnected();
+      }
       if (!showingConnecting) {
         showingConnecting = true;
-        sendConnectingMsg();
       }
 
-      // ครั้งแรกหลุด: ลอง WiFi.reconnect() ทันที ไม่รอ interval
       if (!wifiImmediateRecoverTried) {
         wifiImmediateRecoverTried = true;
-        Serial.println("[Poll] WiFi หลุด — ลอง reconnect ทันที");
+        // WiFi.reconnect() เฉยๆ บางครั้งไม่ทำอะไรเลยถ้า internal state ของ driver
+        // ไม่ใช่ idle (เช่น AP สัญญาณแกว่งแต่ไม่ขาดสนิท) — disconnect() ก่อน
+        // เพื่อบีบให้ driver กลับสู่ idle แล้วค่อย reconnect จริง
+        WiFi.disconnect(false);
+        vTaskDelay(pdMS_TO_TICKS(100));
         WiFi.reconnect();
-        for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) {
-          vTaskDelay(pdMS_TO_TICKS(200));
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-          continue; // กลับไป loop นอก branch (จะ reset state บรรทัดล่าง)
-        }
+        for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(200));
+        if (WiFi.status() == WL_CONNECTED) continue;
       }
 
-      // ── Exponential backoff reconnect ──────────────────────────────
       if (lastReconnectMs == 0 || now - lastReconnectMs >= wifiBackoffMs) {
         lastReconnectMs = now;
         uint32_t disconnectedFor = now - disconnectedSince;
-
         if (disconnectedFor < 60000) {
-          Serial.printf("[Poll] WiFi หลุด %lus — Quick reconnect (backoff=%lums)...\n",
-            disconnectedFor / 1000, wifiBackoffMs);
+          WiFi.disconnect(false);
+          vTaskDelay(pdMS_TO_TICKS(100));
           WiFi.reconnect();
-          for (int i = 0; i < 16 && WiFi.status() != WL_CONNECTED; i++) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+          for (int i = 0; i < 16 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if (WiFi.status() != WL_CONNECTED) {
+          bool hardReset = (disconnectedFor >= WIFI_HARD_RESET_AFTER_MS);
+          if (disconnectedFor >= WIFI_FULL_RECONNECT_AFTER_MS) {
+            connectWifi(hardReset, false, false);
+            if (WiFi.status() != WL_CONNECTED && !hardReset && disconnectedFor >= 60000) {
+              connectWifi(true, false, false);
+            }
           }
         }
-
-        if (WiFi.status() != WL_CONNECTED) {
-          Serial.println("[Poll] Quick reconnect ไม่สำเร็จ — Full scan...");
-          connectBestWifi();
-        }
-
         if (WiFi.status() != WL_CONNECTED) {
           uint32_t next = min(wifiBackoffMs * 2, WIFI_BACKOFF_MAX_MS);
           int32_t jitter = (int32_t)(next * 0.2f) * (random(0, 200) - 100) / 100;
           wifiBackoffMs = (uint32_t)max((int32_t)WIFI_BACKOFF_MIN_MS, (int32_t)next + jitter);
-          Serial.printf("[Poll] Next retry in %lums\n", wifiBackoffMs);
         }
       }
       vTaskDelay(pollInterval); // ป้องกัน busy-loop ระหว่างรอ reconnect
       continue;
     }
 
-    // ───── เชื่อมอยู่ → รีเซ็ต state ─────
     bool justReconnected = showingConnecting;
-    disconnectedSince = 0;
-    lastReconnectMs   = 0;
-    wifiBackoffMs     = WIFI_BACKOFF_MIN_MS; // reset on success
-    showingConnecting = false;
-    wifiImmediateRecoverTried = false;
+    disconnectedSince = 0; lastReconnectMs = 0; wifiBackoffMs = WIFI_BACKOFF_MIN_MS;
+    showingConnecting = false; wifiImmediateRecoverTried = false;
+
+    // ─── Log RSSI ทุก 30 วินาที เพื่อ diagnose signal ──────────────────
+    static uint32_t s_lastRssiLogMs = 0;
+    if (currentMs - s_lastRssiLogMs >= 30000UL || s_lastRssiLogMs == 0) {
+      s_lastRssiLogMs = currentMs;
+      int rssi = WiFi.RSSI();
+      Serial.printf("[WiFi] RSSI: %d dBm%s\n", rssi,
+        rssi < -75 ? " ⚠️ WEAK" : (rssi < -60 ? " OK" : " GOOD"));
+    }
 
     if (justReconnected) {
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      Serial.println("[Poll] WiFi เชื่อมสำเร็จ — sync จาก server ทันที...");
-      syncNtpIfNeeded();
-      s_ledStateFingerprint = "";
       flushLedCommandQueue();
-      if (!syncLedDisplayFromServer()) {
-        reconcileLedStateWithWeb();
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        reconcileLedStateWithWeb();
+      g_needsPollResync = true;
+      bool restored = restoreDisplaySnapshot();
+      if (!restored) {
+        g_awaitingBootSync = true;
+        g_bootSyncWaitingSinceMs = currentMs;
+      } else {
+        g_awaitingBootSync = false;
+        g_bootSyncWaitingSinceMs = 0;
       }
+      applyPublicDns();
+      refreshServerDns();
+      syncNtpIfNeeded(true);
+      s_ledStateFingerprint = "";
     }
 
     if (g_serverUrl.isEmpty()) continue;
 
-    // ───── Reconcile: /led-status ทุก ~4s (ทำหลัง poll command เพื่อไม่แซงคำสั่งใหม่) ─────
-    pollCycle++;
-    bool shouldReconcileThisCycle = (pollCycle % RECONCILE_EVERY_N_POLLS == 0);
-    bool gotPendingCommandThisCycle = false;
-
-    HTTPClient http;
-    // URL-encode MACHINE_ID (ช่องว่างต้องเป็น %20 ไม่งั้น HTTP request จะ malformed)
-    String mid = String(MACHINE_ID);
-    mid.replace(" ", "%20");
-    String url = g_serverUrl + "/api/production-monitor/led-command/" + mid
-               + "?localIp=" + WiFi.localIP().toString()
-               + "&rssi=" + String(WiFi.RSSI())
-               + "&uptime=" + String(millis() / 1000UL);
-    sampleInternalTempIfNeeded();
-    url += "&temp=" + String(g_internalTempC, 1);
-    if (s_ledStateFingerprint.length() == 0 || isTransientStatusText(currentText)) {
-      url += "&resync=1";
-    }
-    if (isTransientStatusText(currentText)) {
-      url += "&stuck=1";
-    }
-    if (s_ledStateFingerprint.length() > 0) {
-      url += "&ack=" + encodeQueryValue(s_ledStateFingerprint);
-    }
-    http.begin(url);
-    http.setTimeout(5000); // timeout ของ HTTP request (ไม่ block loop() เพราะอยู่ task แยก)
-
-    int code = http.GET();
-
-    if (code == 200) {
-      StaticJsonDocument<512> doc;
-      if (!deserializeJson(doc, http.getString()) && doc["pending"].as<bool>()) {
-        gotPendingCommandThisCycle = true;
-        LedCmd cmd = {};
-        cmd.showClock = doc["showClock"] | false;
-        String t = doc["text"].as<String>();
-        t.trim();
-        if (cmd.showClock) {
-          cmd.showClock = true;
-          cmd.text[0] = '\0';
-        } else {
-          strncpy(cmd.text, t.c_str(), sizeof(cmd.text) - 1);
-          cmd.text[sizeof(cmd.text) - 1] = '\0';
-        }
-        cmd.r        = doc["r"]        | 0;
-        cmd.g        = doc["g"]        | 255;
-        cmd.b        = doc["b"]        | 255;
-        cmd.fontSize = doc["fontSize"] | 1;
-        cmd.speed    = doc["speed"]    | 0;
-        // actual / target (จากตาชั่ง ESP32 อัปเดตผ่าน storeScaleWeight)
-        if (doc.containsKey("actual")) {
-          strncpy(cmd.actual, doc["actual"].as<String>().c_str(), sizeof(cmd.actual) - 1);
-          cmd.actual[sizeof(cmd.actual) - 1] = '\0';
-        }
-        if (doc.containsKey("target")) {
-          strncpy(cmd.target, doc["target"].as<String>().c_str(), sizeof(cmd.target) - 1);
-          cmd.target[sizeof(cmd.target) - 1] = '\0';
-        }
-        xQueueSend(cmdQueue, &cmd, 0); // ส่งไปให้ loop() นำไปใช้
-        Serial.println("[Poll] New command queued: " + String(cmd.text));
+    if (!isTransientStatusText(currentText)) {
+      static uint32_t lastSnapMs = 0;
+      if (lastSnapMs == 0 || currentMs - lastSnapMs >= 30000UL) {
+        saveDisplaySnapshot();
+        lastSnapMs = currentMs;
       }
-    } else if (code > 0) {
-      Serial.printf("[Poll] HTTP %d\n", code);
-    } else {
-      // ถ้า code < 0 แสดงว่าเชื่อมต่อไม่ได้ (ตรวจสอบ SERVER_URL)
-      Serial.printf("[Poll] Error %d — ตรวจสอบ SERVER_URL=%s\n", code, g_serverUrl.c_str());
-    }
-    http.end();
-
-    // ทำ reconcile หลัง poll และข้ามรอบที่เพิ่งได้ pending command เพื่อลดการสลับไป clock ก่อน
-    if (shouldReconcileThisCycle && !gotPendingCommandThisCycle) {
-      reconcileLedStateWithWeb();
     }
 
-    // ── ตรวจจับค้าง "กำลังเชื่อมต่อ.." หรือ transient text นาน > 30s → force sync ──
-    {
-      static uint32_t stuckTransientSinceMs = 0;
-      uint32_t nowMs = millis();
-      if (isTransientStatusText(currentText)) {
-        if (stuckTransientSinceMs == 0) stuckTransientSinceMs = nowMs;
-        else if (nowMs - stuckTransientSinceMs >= 30000UL) {
-          stuckTransientSinceMs = 0;
-          Serial.println("[Poll] stuck transient 30s — force syncLedDisplayFromServer");
-          s_ledStateFingerprint = "";
-          syncLedDisplayFromServer();
-        }
-      } else {
+    static uint32_t stuckTransientSinceMs = 0;
+    if (isTransientStatusText(currentText)) {
+      if (stuckTransientSinceMs == 0) stuckTransientSinceMs = currentMs;
+      else if (currentMs - stuckTransientSinceMs >= TRANSIENT_FALLBACK_MS) {
+        exitSyncWaitingWithFallback();
         stuckTransientSinceMs = 0;
       }
+    } else {
+      stuckTransientSinceMs = 0;
     }
 
-    vTaskDelay(pollInterval); // delay ที่ท้าย loop ให้รอบถัดไปเริ่มทันทีหลัง delay
+    pollCycle++;
+
+    // ─── POLL ก่อน SYNC — อัปเดต heartbeat ก่อน HTTP ที่ block ได้นาน ───
+    String mid = encodeMachineIdForPath(String(MACHINE_ID));
+    String url = g_serverUrl + "/api/production-monitor/led-command/" + mid + buildHeartbeatQuery();
+    g_lastPollUrl = url;
+    String body;
+    int code = httpGetUrl(url, &body, 5000);
+    g_lastPollBodyLen = (int)body.length();
+    recordCommandPollResult(code);
+    maybeRestartAfterPollFailures(currentMs);
+
+    bool skipSyncThisCycle = false;
+    if (code == 200) {
+      bool pending = false;
+      bool pollNeedsSync = false;
+      {
+        DynamicJsonDocument doc(8192);
+        DeserializationError jerr = deserializeJson(doc, body);
+        pending = (!jerr && doc["pending"].as<bool>());
+        if (jerr) {
+          Serial.printf("[Poll] JSON parse fail: %s (bodyLen=%u)\n", jerr.c_str(), body.length());
+          pollNeedsSync = g_clockMode;
+        } else if (pending) {
+          JsonObject root = doc.as<JsonObject>();
+          String serverFp = buildFingerprintFromStateJson(root);
+          bool appliedDirect = false;
+
+          if (serverFp.length() > 0 && serverFp != s_ledStateFingerprint) {
+            appliedDirect = applyLedStateFromServer(root);
+            if (appliedDirect) {
+              Serial.printf("[Poll] Applied directly: %s\n", serverFp.c_str());
+              g_awaitingBootSync = false;
+              g_bootSyncWaitingSinceMs = 0;
+              g_needsPollResync = false;
+            } else {
+              Serial.println("[Poll] Direct apply failed — will sync/queue");
+              pollNeedsSync = true;
+            }
+          }
+
+          if (!appliedDirect) {
+            LedCmd cmd = {};
+            stateJsonToLedCmd(root, cmd);
+            if (cmd.text[0] != '\0') flushLedCommandQueue();
+            if (xQueueSend(cmdQueue, &cmd, pdMS_TO_TICKS(50)) == pdTRUE) {
+              Serial.printf("[Poll] Queued cmd clock=%d text=%s\n", cmd.showClock, cmd.text);
+              g_awaitingBootSync = false;
+              g_bootSyncWaitingSinceMs = 0;
+              g_needsPollResync = false;
+              skipSyncThisCycle = true;
+            } else {
+              flushLedCommandQueue();
+              if (xQueueSend(cmdQueue, &cmd, pdMS_TO_TICKS(50)) == pdTRUE) {
+                skipSyncThisCycle = true;
+              } else {
+                g_needsPollResync = true;
+                pollNeedsSync = true;
+                Serial.println("[Poll] cmdQueue blocked — fallback sync");
+              }
+            }
+          }
+        }
+      }
+      if (!pending && (g_clockMode || isTransientStatusText(currentText))) {
+        g_requestStatusSync = true;
+      }
+      if (pollNeedsSync) {
+        g_requestStatusSync = true;
+        skipSyncThisCycle = false;
+      }
+    }
+
+    if (justReconnected && !skipSyncThisCycle) {
+      syncLedDisplayFromServer();
+    }
+
+    if (g_awaitingBootSync) {
+      static uint32_t lastAwaitingSyncMs = 0;
+      if (g_bootSyncWaitingSinceMs > 0
+          && (currentMs - g_bootSyncWaitingSinceMs) >= BOOT_SYNC_GIVE_UP_MS) {
+        lastAwaitingSyncMs = 0;
+        if (syncLedDisplayFromServer()) {
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+          g_needsPollResync = false;
+          Serial.println("[Sync] boot sync recovered on extended attempt");
+        } else {
+          exitSyncWaitingWithFallback();
+          Serial.println("[Sync] boot sync timeout — fallback display");
+        }
+      } else if (currentMs - lastAwaitingSyncMs >= 4000) {
+        lastAwaitingSyncMs = currentMs;
+        if (syncLedDisplayFromServer()) {
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+          g_needsPollResync = false;
+        }
+      }
+    }
+
+    if (pollCycle % RECONCILE_EVERY_N_POLLS == 0) reconcileLedStateWithWeb();
+
+    if ((g_requestStatusSync || g_clockMode || isTransientStatusText(currentText)) && !skipSyncThisCycle) {
+      static uint32_t lastResyncMs = 0;
+      uint32_t resyncGap = isTransientStatusText(currentText) ? 2000UL : 5000UL;
+      if (g_requestStatusSync || currentMs - lastResyncMs >= resyncGap) {
+        g_requestStatusSync = false;
+        lastResyncMs = currentMs;
+        if (syncLedDisplayFromServer()) {
+          g_needsPollResync = false;
+          g_awaitingBootSync = false;
+          g_bootSyncWaitingSinceMs = 0;
+        }
+      }
+    }
+
+    vTaskDelay(pollInterval); // delay ที่ท้าย loop ให้ command ที่มาใหม่ถูก poll ทันทีในรอบถัดไป
   }
 }
 
-// ======================================================================
-//  Serial fallback: text|actual|target|r|g|b
-// ======================================================================
 void processSerialCommand() {
   if (!Serial.available()) return;
   String input = Serial.readStringUntil('\n');
@@ -1345,39 +1946,8 @@ void processSerialCommand() {
   }
   parts[partCount++] = input.substring(startIndex);
 
-  // คำสั่งพิเศษ: !widths — พิมพ์ความกว้าง LED px ของอักขระสำคัญ (calibration)
-  if (parts[0] == "!widths") {
-    applyFont(1);
-    Serial.println("=== etl14thai glyph advance widths ===");
-    Serial.println("--- Thai (non-combining) ---");
-    const char* thaiSamples[] = { "ก","ข","ค","ง","จ","ช","ร","น","ม","ย","ว","า","ะ","ๆ" };
-    for (const char* ch : thaiSamples) {
-      Serial.print(ch); Serial.print(": "); Serial.println(u8g2_for_gfx.getUTF8Width(ch));
-    }
-    Serial.println("--- ASCII digits ---");
-    for (char c = '0'; c <= '9'; c++) {
-      String s = String(c);
-      Serial.print(c); Serial.print(": "); Serial.println(u8g2_for_gfx.getUTF8Width(s.c_str()));
-    }
-    Serial.println("--- ASCII letters (sample) ---");
-    const char* asciiSamples[] = { "A","B","I","M","W","a","i","m","w" };
-    for (const char* ch : asciiSamples) {
-      Serial.print(ch); Serial.print(": "); Serial.println(u8g2_for_gfx.getUTF8Width(ch));
-    }
-    Serial.println("======================================");
-    return;
-  }
-
-  // !W <text> — วัด LED px ของข้อความที่กำหนด
-  if (parts[0].startsWith("!W ")) {
-    String txt = parts[0].substring(3);
-    applyFont(1);
-    int px = getThaiTextWidth(txt);
-    Serial.print("[measure] \""); Serial.print(txt);
-    Serial.print("\" = "); Serial.print(px);
-    Serial.println(px > NAME_ZONE_PX ? "px (SCROLL)" : "px (static)");
-    return;
-  }
+  if (parts[0] == "!widths") return;
+  if (parts[0].startsWith("!W ")) return;
 
   if (partCount == 1) {
     currentText = parts[0];
@@ -1386,17 +1956,12 @@ void processSerialCommand() {
     actualCount  = parts[1];
     targetCount  = parts[2];
     if (partCount == 6) {
-      if (dma_display) currentColor = dma_display->color565(
-        parts[3].toInt(), parts[4].toInt(), parts[5].toInt()
-      );
+      currentColor = dma_display->color565(parts[3].toInt(), parts[4].toInt(), parts[5].toInt());
     }
   }
   updateTextProperties();
 }
 
-// ======================================================================
-//  วาดและเลื่อนข้อความ
-// ======================================================================
 void drawMachineIdOnLastPanel() {
   const uint8_t* idFonts[] = { u8g2_font_helvB08_tf, u8g2_font_6x10_tf, u8g2_font_5x7_tf, u8g2_font_4x6_tf };
   int idYOffsets[] = { 12, 12, 11, 11 };
@@ -1460,7 +2025,6 @@ void drawProductionCountersOnLastPanel() {
 
   int total_block_width = w_actual + gap + w_target;
   int start_x = NUM_ZONE_X + ((NUM_ZONE_W - total_block_width) / 2);
-
   u8g2_for_gfx.setForegroundColor(dma_display->color565(0, 255, 255));
   u8g2_for_gfx.setCursor(start_x, draw_y);
   u8g2_for_gfx.print(actualCount);
@@ -1474,7 +2038,6 @@ void drawAndScrollText() {
   if (!dma_display || !p10_display) return;
   if (millis() - lastScrollTime <= (unsigned long)scrollSpeed) return;
   lastScrollTime = millis();
-
   dma_display->clearScreen();
   p10_display->fillRect(NUM_ZONE_X, 0, NUM_ZONE_W, 16, dma_display->color565(0, 0, 0));
 
@@ -1488,7 +2051,6 @@ void drawAndScrollText() {
     return;
   }
 
-  // ---------- โซน 1 (จอ 1-3) ----------
   applyFont(currentFontSize);
   u8g2_for_gfx.setForegroundColor(currentColor);
   printThaiText(currentText, cursor_x, 14);
@@ -1496,12 +2058,10 @@ void drawAndScrollText() {
   if (shouldShowProductionCounters()) drawProductionCountersOnLastPanel();
   else drawMachineIdOnLastPanel();
 
-  // ---------- เลื่อนโซน 1 ----------
   if (textWidth > NAME_ZONE_PX) {
     cursor_x--;
     if (cursor_x < -textWidth) cursor_x = NAME_ZONE_PX;
   }
 
-  // 💡 สลับภาพที่วาดเสร็จแล้วทั้งหมดไปแสดงผลพร้อมกันทีเดียว (กำจัดแสงกระพริบ 100%)
   dma_display->flipDMABuffer();
 }
