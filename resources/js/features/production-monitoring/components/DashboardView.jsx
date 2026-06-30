@@ -760,7 +760,15 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t,
                   <td className="truncate font-bold align-middle" style={cellPad}>{machine.label}</td>
                   <td className="text-center align-middle font-bold" style={cellPad}>{statusShortLabel(status)}</td>
                   <td className="truncate text-right align-middle font-mono tabular-nums" style={cellPad}>{fmtNum(produced)}</td>
-                  <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
+                  <td
+                    className="max-w-0 truncate align-middle font-bold"
+                    style={cellPad}
+                    title={
+                      state.ledManualMode === 'production' && !state.mode?.includes('live')
+                        ? (state.ledManualText || '')
+                        : `${state.productCode || state.productName || ''}${state.orderId ? ` · ${state.orderId}` : ''}`
+                    }
+                  >
                     {state.ledManualMode === 'production' && !state.mode?.includes('live')
                       ? (state.ledManualText || '—')
                       : (state.productCode || state.productName || '—')}
@@ -957,33 +965,18 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t, nowMs 
                   >
                     {state.mode === 'live' && state.employeeId ? state.employeeId : '—'}
                   </td>
-                  <td className="align-middle min-w-0" style={cellPad}>
-                    {state.ledManualMode === 'production' && !state.mode?.includes('live') ? (
-                      <div
-                        className="truncate font-medium text-green-200"
-                        title={state.ledManualText || ''}
-                      >
-                        {state.ledManualText || '—'}
-                      </div>
-                    ) : (
-                      <>
-                        <div
-                          className="truncate font-medium"
-                          title={state.productName || state.productCode || ''}
-                        >
-                          {state.productCode || state.productName || '—'}
-                        </div>
-                        {state.orderId && (
-                          <div
-                            className={`font-mono truncate ${status.key === 'fix' ? 'text-black/55' : 'text-white/55'}`}
-                            style={{ fontSize: m.subFont }}
-                            title={state.orderId}
-                          >
-                            {state.orderId}
-                          </div>
-                        )}
-                      </>
-                    )}
+                  <td
+                    className="font-bold truncate align-middle min-w-0"
+                    style={cellPad}
+                    title={
+                      state.ledManualMode === 'production' && !state.mode?.includes('live')
+                        ? (state.ledManualText || '')
+                        : `${state.productCode || state.productName || ''}${state.orderId ? ` · ${state.orderId}` : ''}`
+                    }
+                  >
+                    {state.ledManualMode === 'production' && !state.mode?.includes('live')
+                      ? (state.ledManualText || '—')
+                      : (state.productCode || state.productName || '—')}
                   </td>
                   <td className="font-bold font-mono truncate align-middle tabular-nums" style={cellPad}>
                     {fmtNum(produced)}
@@ -996,10 +989,10 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t, nowMs 
                   </td>
                   <td className="align-middle min-w-0" style={cellPad}>
                     <div className="font-bold font-mono truncate tabular-nums">{fmtNum(target)}</div>
-                    {target > 0 && (
+                    {target > 0 && progress > 0 && (
                       <div
-                        className="mt-0.5 w-full max-w-full bg-black/20 rounded-full overflow-hidden"
-                        style={{ height: m.barH }}
+                        className="mt-0.5 w-full max-w-full overflow-hidden rounded-full"
+                        style={{ height: m.barH, background: 'transparent' }}
                       >
                         <div
                           className={`h-full rounded-full transition-all duration-500 ${

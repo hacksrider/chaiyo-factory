@@ -485,7 +485,7 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
       detail:      detail.trim(),
       fix:         fix.trim(),
       productCode: mState?.productCode ?? '',
-      colorHex:    MACHINE_STATUS_OPTIONS.find(o => o.value === status)?.colorHex ?? '#ff0000',
+      colorHex:    isProduction ? '#00ff00' : (MACHINE_STATUS_OPTIONS.find(o => o.value === status)?.colorHex ?? '#ff0000'),
       isProduction,
       causeType,
     });
@@ -763,7 +763,7 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
             <label className={labelCls}>ตัวอย่างบนป้ายไฟ</label>
             <LedPreview
               text={ledText}
-              colorHex={MACHINE_STATUS_OPTIONS.find(o => o.value === status)?.colorHex ?? '#ff0000'}
+              colorHex={isProduction ? '#00ff00' : (MACHINE_STATUS_OPTIONS.find(o => o.value === status)?.colorHex ?? '#ff0000')}
               speed={10}
             />
           </div>
@@ -869,7 +869,6 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
   const [showSuffix,       setShowSuffix]     = useState(true);
   const [errors,           setErrors]         = useState({});
   const [colorHex,         setColorHex]       = useState(null); // null = ใช้สีเดิมของเครื่อง
-  const [causeSearch,      setCauseSearch]    = useState('');
   const [causeOpen,        setCauseOpen]      = useState(false);
   const [isProduction,     setIsProduction]   = useState(false);
   const [selectedCauseType, setSelectedCauseType] = useState(null); // null | 'problem' | 'standby'
@@ -884,7 +883,6 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
     setShowSuffix(true);
     setErrors({});
     setColorHex(null);
-    setCauseSearch('');
     setCauseOpen(false);
     setIsProduction(false);
     setSelectedCauseType(null);
@@ -902,9 +900,10 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
     return () => document.removeEventListener('mousedown', handle);
   }, []);
 
-  const filteredCauses = CAUSE_OPTIONS.filter(c =>
-    !causeSearch || c.toLowerCase().includes(causeSearch.toLowerCase())
-  );
+  // กรอง CAUSE_OPTIONS ตามข้อความที่พิมพ์
+  const filteredCauses = text.trim()
+    ? CAUSE_OPTIONS.filter(c => c.toLowerCase().includes(text.toLowerCase().trim()))
+    : CAUSE_OPTIONS;
 
   const previewColorHex = colorHex ?? currentConfig?.colorHex ?? '#00ffff';
   const suffixPreview = showSuffix && recorderName
@@ -953,75 +952,7 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
             speed={currentConfig?.scrollSpeed ?? 10}
           />
 
-          {/* Dropdown เลือกข้อความด่วนจากรายการ */}
-          <div>
-            <label className={labelCls}>
-              เลือกจากรายการด่วน
-              <span className="ml-2 text-[10px] text-gray-600 font-normal">
-                <span className="text-red-400">■</span> ปัญหา &nbsp;
-                <span className="text-cyan-400">■</span> ไม่ใช่ปัญหา
-              </span>
-            </label>
-            <div ref={causeRef} className="relative">
-              <input
-                type="text"
-                value={causeSearch}
-                onChange={e => { setCauseSearch(e.target.value); setCauseOpen(true); }}
-                onFocus={() => setCauseOpen(true)}
-                placeholder="ค้นหาหรือเลือกรายการ..."
-                className={inputCls}
-              />
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={() => setCauseOpen(v => !v)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white px-1"
-              >▾</button>
-              {causeOpen && (
-                <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
-                  <div className="sticky top-0 bg-gray-800 border-b border-gray-700 px-2 py-1.5">
-                    <input
-                      type="text"
-                      value={causeSearch}
-                      onChange={e => setCauseSearch(e.target.value)}
-                      placeholder="ค้นหา..."
-                      className="w-full bg-gray-700/60 border-0 rounded px-2 py-1 text-xs text-white placeholder:text-gray-500 focus:outline-none"
-                      autoFocus
-                    />
-                  </div>
-                  {filteredCauses.map(c => {
-                    const isNonProblem = NON_PROBLEM_CAUSES.has(c);
-                    return (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => {
-                          setText(c);
-                          setColorHex(causeColorHex(c));
-                          setSelectedCauseType(isNonProblem ? 'standby' : 'problem');
-                          setCauseOpen(false);
-                          setCauseSearch('');
-                          setErrors({});
-                        }}
-                        className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700/80 transition-colors flex items-center gap-2"
-                      >
-                        <span
-                          className="flex-shrink-0 w-1.5 h-1.5 rounded-full"
-                          style={{ background: isNonProblem ? '#00ffff' : '#ff4444' }}
-                        />
-                        <span style={{ color: isNonProblem ? '#00e5ff' : '#ff6b6b' }}>{c}</span>
-                      </button>
-                    );
-                  })}
-                  {filteredCauses.length === 0 && (
-                    <p className="px-3 py-2 text-xs text-gray-500">ไม่พบรายการ</p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Text input — ให้พิมพ์เฉพาะข้อความหลัก / แก้ไขจากที่เลือก dropdown */}
+          {/* Combobox — พิมพ์ข้อความเองหรือเลือกจากรายการด่วน */}
           <div>
             <label className={labelCls}>
               ข้อความบนป้ายไฟ <span className="text-red-400">*</span>
@@ -1034,23 +965,67 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
                     border: `1px solid ${colorHex}44`,
                   }}
                 >
-                  {NON_PROBLEM_CAUSES.has(text) ? 'ไม่ใช่ปัญหา' : 'ปัญหา'}
+                  {isProduction ? 'เดินงานผลิต' : NON_PROBLEM_CAUSES.has(text) ? 'ไม่ใช่ปัญหา' : 'ปัญหา'}
                 </span>
               )}
             </label>
-            <input
-              type="text"
-              value={text}
-              onChange={e => {
-                setText(e.target.value);
-                setColorHex(null);
-                setSelectedCauseType(null);
-                setErrors({});
-              }}
-              placeholder="พิมพ์ข้อความที่ต้องการแสดง..."
-              className={`${inputCls} ${errors.text ? 'border-red-500/60' : ''}`}
-              autoFocus={!causeOpen}
-            />
+            <div ref={causeRef} className="relative">
+              <input
+                type="text"
+                value={text}
+                onChange={e => {
+                  const val = e.target.value;
+                  setText(val);
+                  // auto-detect ถ้าพิมพ์ตรงกับ CAUSE_OPTION
+                  const matched = CAUSE_OPTIONS.find(c => c.toLowerCase() === val.toLowerCase().trim());
+                  if (matched) {
+                    const isNonProblem = NON_PROBLEM_CAUSES.has(matched);
+                    if (!isProduction) setColorHex(causeColorHex(matched));
+                    setSelectedCauseType(isNonProblem ? 'standby' : 'problem');
+                  } else {
+                    if (!isProduction) setColorHex(null);
+                    setSelectedCauseType(null);
+                  }
+                  setCauseOpen(true);
+                  setErrors({});
+                }}
+                onFocus={() => setCauseOpen(true)}
+                placeholder="พิมพ์หรือเลือกจากรายการ..."
+                className={`${inputCls} pr-8 ${errors.text ? 'border-red-500/60' : ''}`}
+                autoFocus
+              />
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={() => setCauseOpen(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white px-1"
+              >▾</button>
+              {causeOpen && (
+                <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl max-h-52 overflow-y-auto">
+                  {filteredCauses.map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => {
+                        const isNonProblem = NON_PROBLEM_CAUSES.has(c);
+                        setText(c);
+                        if (!isProduction) setColorHex(causeColorHex(c));
+                        setSelectedCauseType(isNonProblem ? 'standby' : 'problem');
+                        setCauseOpen(false);
+                        setErrors({});
+                      }}
+                      className="w-full text-left px-3 py-2 text-xs text-white hover:bg-gray-700/80 transition-colors"
+                    >
+                      {c}
+                    </button>
+                  ))}
+                  {filteredCauses.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-gray-500">ไม่พบรายการ</p>
+                  )}
+                </div>
+              )}
+            </div>
             {errors.text && <p className="text-[10px] text-red-400 mt-0.5">{errors.text}</p>}
           </div>
 
@@ -1096,7 +1071,11 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
                 <input
                   type="checkbox"
                   checked={isProduction}
-                  onChange={e => setIsProduction(e.target.checked)}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setIsProduction(checked);
+                    if (checked) setColorHex('#00ff00');
+                  }}
                   className="sr-only"
                 />
                 <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
