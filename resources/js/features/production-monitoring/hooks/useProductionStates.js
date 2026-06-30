@@ -293,6 +293,13 @@ export const useProductionStates = () => {
           ? serverNg
           : (serverNg.length >= localNg.length ? serverNg : localNg);
 
+        // ledManualMode / ledManualText เป็น client-only state — server ไม่รู้จัก
+        // ต้อง preserve ไว้ทุก rule เพื่อกัน SSE poll ล้างค่าที่ผู้ใช้ตั้งไว้
+        const preservedLedManual = {
+          ledManualMode: localState?.ledManualMode ?? null,
+          ledManualText: localState?.ledManualText ?? '',
+        };
+
         // ── Rule 1: server ปิด/pause งาน → รับทันทีโดยไม่ดู _ts ────────────────
         // ป้องกัน browser อื่นที่ยัง 'live' push ทับ state ที่ปิดแล้ว
         if (serverState.mode !== 'live' && localState?.mode === 'live' && serverTs > 0) {
@@ -300,6 +307,7 @@ export const useProductionStates = () => {
             ...serverState,
             goodEvents: mergedGood,
             ngEvents:   mergedNg,
+            ...preservedLedManual,
           };
           changed = true;
           return;
@@ -341,6 +349,7 @@ export const useProductionStates = () => {
           totalNgWeight,
           goodEvents: mergedGood,
           ngEvents:   mergedNg,
+          ...preservedLedManual,
         };
         changed = true;
       });

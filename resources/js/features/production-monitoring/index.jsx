@@ -1869,6 +1869,9 @@ const ProductionMonitoring = () => {
                     if (!st || st.mode !== 'live') return Promise.resolve();
                     return queueProductionLedForMachine(mid, st, st.pipeCounter ?? 0);
                   } : undefined}
+                  onLedManualModeUpdate={(mid, mode, text) => {
+                    updateMachineState(mid, { ledManualMode: mode ?? null, ledManualText: text ?? '' });
+                  }}
                   onBack={handleExitView}
                 />
               )}

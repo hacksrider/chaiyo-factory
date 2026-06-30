@@ -75,6 +75,11 @@ function isMaintenanceLedText(text) {
   );
 }
 
+/** ตัดอักษรพม่า (Myanmar Unicode range) ออกจากข้อความ */
+function stripMyanmar(text) {
+  return String(text ?? '').replace(/[\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF]+\s*/g, '').trim();
+}
+
 function formatLedClock(now = new Date()) {
   const h = String(now.getHours()).padStart(2, '0');
   const m = String(now.getMinutes()).padStart(2, '0');
@@ -199,6 +204,7 @@ function resolveMachineStatus(machine, state, ledText, t) {
   const isLive = state?.mode === 'live';
   const hasPause = !!state?.pausedOrder;
   const maintenance = isMaintenanceLedText(ledText);
+  const ledManualMode = state?.ledManualMode ?? null;
 
   if (!isActive) {
     return {
@@ -216,6 +222,33 @@ function resolveMachineStatus(machine, state, ledText, t) {
       cardClass: 'bg-yellow-400 text-black',
     };
   }
+  if (isLive) {
+    return {
+      key: 'on',
+      label: t('production.dashboardStatusOpen'),
+      rowClass: 'bg-green-500 text-white border-b border-green-600/40',
+      cardClass: 'bg-green-500 text-white',
+    };
+  }
+  // ── Manual mode จาก LED popup (ไม่ใช่ live จริง) ────────────────────────────
+  // production/fix มาก่อน hasPause เพราะผู้ใช้ตั้งใจเลือก
+  // แต่ hasPause มาก่อน standby เพื่อแจ้งทีมว่ามีงาน pause รอ
+  if (ledManualMode === 'production') {
+    return {
+      key: 'on',
+      label: t('production.dashboardStatusOpen'),
+      rowClass: 'bg-green-500 text-white border-b border-green-600/40',
+      cardClass: 'bg-green-500 text-white',
+    };
+  }
+  if (ledManualMode === 'fix') {
+    return {
+      key: 'fix',
+      label: t('production.dashboardStatusFixing'),
+      rowClass: 'bg-yellow-400 text-black border-b border-yellow-500/40',
+      cardClass: 'bg-yellow-400 text-black',
+    };
+  }
   if (hasPause && !isLive) {
     return {
       key: 'paused',
@@ -224,12 +257,12 @@ function resolveMachineStatus(machine, state, ledText, t) {
       cardClass: 'bg-indigo-500 text-white',
     };
   }
-  if (isLive) {
+  if (ledManualMode === 'standby') {
     return {
-      key: 'on',
-      label: t('production.dashboardStatusOpen'),
-      rowClass: 'bg-green-500 text-white border-b border-green-600/40',
-      cardClass: 'bg-green-500 text-white',
+      key: 'standby',
+      label: 'Standby',
+      rowClass: 'bg-blue-500 text-white border-b border-blue-600/40',
+      cardClass: 'bg-blue-500 text-white',
     };
   }
   return {
@@ -426,7 +459,7 @@ function useFluidStatusMetrics(containerRef, zoneGroups) {
 function getLedDisplayLabel(led, t, nowMs) {
   if (led.noIp) return t('production.ledStatusNoIp');
   if (led.showClock) return formatLedClock(new Date(nowMs));
-  return led.text || t('production.dashboardLedNoText');
+  return stripMyanmar(led.text) || t('production.dashboardLedNoText');
 }
 
 function getDashboardRowData(machine, allStates, getMachineState, ledData, t, nowMs) {
@@ -681,6 +714,7 @@ const statusShortLabel = (status) => {
   if (status.key === 'on') return 'ON';
   if (status.key === 'fix') return 'FX';
   if (status.key === 'paused') return 'PA';
+  if (status.key === 'standby') return 'SB';
   return '—';
 };
 
@@ -727,7 +761,9 @@ const MachineCompactTable = ({ machines, allStates, getMachineState, ledData, t,
                   <td className="text-center align-middle font-bold" style={cellPad}>{statusShortLabel(status)}</td>
                   <td className="truncate text-right align-middle font-mono tabular-nums" style={cellPad}>{fmtNum(produced)}</td>
                   <td className="max-w-0 truncate align-middle font-medium" style={cellPad}>
-                    {state.productCode || state.productName || '—'}
+                    {state.ledManualMode === 'production' && !state.mode?.includes('live')
+                      ? (state.ledManualText || '—')
+                      : (state.productCode || state.productName || '—')}
                     {staleAlert && (
                       <span className={IDLE_BADGE_INLINE_CLASS}>
                         {t('production.dashboardStatusIdle')}
@@ -922,20 +958,31 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t, nowMs 
                     {state.mode === 'live' && state.employeeId ? state.employeeId : '—'}
                   </td>
                   <td className="align-middle min-w-0" style={cellPad}>
-                    <div
-                      className="truncate font-medium"
-                      title={state.productName || state.productCode || ''}
-                    >
-                      {state.productCode || state.productName || '—'}
-                    </div>
-                    {state.orderId && (
+                    {state.ledManualMode === 'production' && !state.mode?.includes('live') ? (
                       <div
-                        className={`font-mono truncate ${status.key === 'fix' ? 'text-black/55' : 'text-white/55'}`}
-                        style={{ fontSize: m.subFont }}
-                        title={state.orderId}
+                        className="truncate font-medium text-green-200"
+                        title={state.ledManualText || ''}
                       >
-                        {state.orderId}
+                        {state.ledManualText || '—'}
                       </div>
+                    ) : (
+                      <>
+                        <div
+                          className="truncate font-medium"
+                          title={state.productName || state.productCode || ''}
+                        >
+                          {state.productCode || state.productName || '—'}
+                        </div>
+                        {state.orderId && (
+                          <div
+                            className={`font-mono truncate ${status.key === 'fix' ? 'text-black/55' : 'text-white/55'}`}
+                            style={{ fontSize: m.subFont }}
+                            title={state.orderId}
+                          >
+                            {state.orderId}
+                          </div>
+                        )}
+                      </>
                     )}
                   </td>
                   <td className="font-bold font-mono truncate align-middle tabular-nums" style={cellPad}>
@@ -956,7 +1003,9 @@ const MachineTable = ({ machines, allStates, getMachineState, ledData, t, nowMs 
                       >
                         <div
                           className={`h-full rounded-full transition-all duration-500 ${
-                            status.key === 'fix' ? 'bg-black/50' : 'bg-cyan-300'
+                            status.key === 'fix' ? 'bg-black/50'
+                            : status.key === 'standby' ? 'bg-white/50'
+                            : 'bg-cyan-300'
                           }`}
                           style={{ width: `${progress}%` }}
                         />

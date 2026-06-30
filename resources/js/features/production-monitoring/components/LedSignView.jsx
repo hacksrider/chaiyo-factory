@@ -173,6 +173,21 @@ function serverStateToSignature(st) {
   return `${t}|${r},${g},${b}|${fs}|${ms}`;
 }
 
+/** คำนวณ ledManualMode จาก checkbox เดินงานผลิต + ประเภทสาเหตุที่เลือก */
+function computeLedManualMode(isProduction, causeType) {
+  if (isProduction) return 'production';
+  if (causeType === 'problem') return 'fix';
+  if (causeType === 'standby') return 'standby';
+  return null;
+}
+
+/** ตัด suffix ` |- ...` และตัดอักษรพม่า เพื่อใช้เป็น productText ใน Dashboard */
+function cleanLedTextForProduct(rawText) {
+  const sepIdx = rawText.indexOf(' |- ');
+  const main = sepIdx >= 0 ? rawText.substring(0, sepIdx).trim() : rawText.trim();
+  return main.replace(/[\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF]+\s*/g, '').trim();
+}
+
 /** แจ้ง index.jsx ทันทีว่าป้ายถูกตั้งข้อความเอง — กันโหมด live ส่งชื่อสินค้ามาทับ */
 function notifyLedOverrideState(machineId, state) {
   if (!machineId || !state) return;
@@ -302,6 +317,20 @@ const CAUSE_OPTIONS = [
   'เดินตามแผน အစီအစဉ်အတိုင်း ထုတ်လုပ်မှု',
 ];
 
+// ─── Non-problem causes (แสดงสีฟ้า — ไม่ใช่ปัญหาที่ทำให้ผลิตไม่ได้) ──────────
+const NON_PROBLEM_CAUSES = new Set([
+  'ออเดอร์ครบ / รอออเดอร์ အော်ဒါဖြည့်ဆည်း',
+  'วันหยุด ปิดเครื่อง နားရက်စက် ပိတ်',
+  'เปลี่ยนงาน ပစ္စည်း ပြောင်း',
+  'Start Up စတင်ပါ။',
+  'เดินตามแผน အစီအစဉ်အတိုင်း ထုတ်လုပ်မှု',
+  'เดินงานทดลอง စမ်းသပ်မှု',
+]);
+
+/** คืน hex สีสำหรับ LED ตามประเภทสาเหตุ */
+const causeColorHex = (cause) =>
+  NON_PROBLEM_CAUSES.has(cause) ? '#00ffff' : '#ff0000';
+
 // ─── Color presets ────────────────────────────────────────────────────────────
 const COLOR_PRESETS = [
   { hex: '#00ffff', label: 'ฟ้า (Cyan)' },
@@ -317,7 +346,7 @@ const COLOR_PRESETS = [
 ];
 
 // ─── LedFormPopup ─────────────────────────────────────────────────────────────
-const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting, confirmError, defaultRecorderName = '' }) => {
+const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting, confirmError, defaultRecorderName = '', isActuallyLive = false }) => {
   const [status,      setStatus]     = useState('');
   const [cause,       setCause]      = useState('');
   const [team,        setTeam]       = useState('');
@@ -332,6 +361,8 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
   const [errors,      setErrors]     = useState({});
   const [causeSearch, setCauseSearch] = useState('');
   const [causeOpen,   setCauseOpen]   = useState(false);
+  const [isProduction, setIsProduction] = useState(false);
+  const [causeType,    setCauseType]   = useState(null); // null | 'problem' | 'standby'
   const causeRef = useRef(null);
   const [reporterSearch, setReporterSearch] = useState('');
   const [reporterOpen,   setReporterOpen]   = useState(false);
@@ -365,6 +396,8 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
       setShowAddRep(false);
       setNewRep('');
       setReporterSaveError('');
+      setIsProduction(false);
+      setCauseType(null);
     }
   }, [isOpen, defaultRecorderName]);
 
@@ -453,6 +486,8 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
       fix:         fix.trim(),
       productCode: mState?.productCode ?? '',
       colorHex:    MACHINE_STATUS_OPTIONS.find(o => o.value === status)?.colorHex ?? '#ff0000',
+      isProduction,
+      causeType,
     });
   };
 
@@ -521,7 +556,7 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
               <input
                 type="text"
                 value={cause}
-                onChange={e => { setCause(e.target.value); setCauseSearch(e.target.value); setCauseOpen(true); }}
+                onChange={e => { setCause(e.target.value); setCauseSearch(e.target.value); setCauseOpen(true); setCauseType(null); }}
                 onFocus={() => { setCauseSearch(''); setCauseOpen(true); }}
                 placeholder="เลือกหรือพิมพ์สาเหตุ..."
                 className={inputCls}
@@ -546,16 +581,28 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
                       autoFocus
                     />
                   </div>
-                  {filteredCauses.map(c => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => { setCause(c); setCauseOpen(false); setCauseSearch(''); }}
-                      className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
-                    >
-                      {c}
-                    </button>
-                  ))}
+                  {filteredCauses.map(c => {
+                    const isNonProblem = NON_PROBLEM_CAUSES.has(c);
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => {
+                          setCause(c);
+                          setCauseType(isNonProblem ? 'standby' : 'problem');
+                          setCauseOpen(false);
+                          setCauseSearch('');
+                        }}
+                        className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 transition-colors flex items-center gap-2"
+                      >
+                        <span
+                          className="flex-shrink-0 w-1.5 h-1.5 rounded-full"
+                          style={{ background: isNonProblem ? '#00ffff' : '#ff4444' }}
+                        />
+                        <span style={{ color: isNonProblem ? '#00e5ff' : '#ff6b6b' }}>{c}</span>
+                      </button>
+                    );
+                  })}
                   {filteredCauses.length === 0 && (
                     <p className="px-3 py-2 text-xs text-gray-500">ไม่พบรายการ</p>
                   )}
@@ -736,6 +783,39 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
             {errors.ledText && <p className={errCls}>{errors.ledText}</p>}
           </div>
 
+          {/* Checkbox เดินงานผลิต — ซ่อนเมื่อ machine กำลัง Live จริง (Live มีผลอยู่แล้ว) */}
+          {!isActuallyLive && (
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <div className="relative flex-shrink-0 mt-0.5">
+                <input
+                  type="checkbox"
+                  checked={isProduction}
+                  onChange={e => setIsProduction(e.target.checked)}
+                  className="sr-only"
+                />
+                <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                  isProduction
+                    ? 'bg-green-500 border-green-500'
+                    : 'bg-transparent border-gray-500 group-hover:border-gray-400'
+                }`}>
+                  {isProduction && (
+                    <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none">
+                      <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-medium leading-tight transition-colors ${isProduction ? 'text-green-400' : 'text-gray-300'}`}>
+                  เดินงานผลิต
+                </p>
+                <p className="text-[10px] text-gray-600 mt-0.5">
+                  {isProduction ? 'Dashboard จะแสดงสถานะ On (เขียว)' : 'ไม่ติ๊ก = สถานะตามประเภทสาเหตุที่เลือก'}
+                </p>
+              </div>
+            </label>
+          )}
+
           {/* Error from server */}
           {confirmError && (
             <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
@@ -784,10 +864,16 @@ const LedFormPopup = ({ isOpen, onClose, onConfirm, machine, mState, submitting,
 
 // ─── QuickLedPopup ────────────────────────────────────────────────────────────
 // เปลี่ยนข้อความป้ายไฟอย่างเดียว — ไม่บันทึกสถานะเครื่องจักรลง Sheet
-const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, submitting, confirmError, recorderName = '' }) => {
-  const [text,        setText]       = useState('');
-  const [showSuffix,  setShowSuffix] = useState(true);
-  const [errors,      setErrors]     = useState({});
+const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, submitting, confirmError, recorderName = '', isActuallyLive = false }) => {
+  const [text,             setText]           = useState('');
+  const [showSuffix,       setShowSuffix]     = useState(true);
+  const [errors,           setErrors]         = useState({});
+  const [colorHex,         setColorHex]       = useState(null); // null = ใช้สีเดิมของเครื่อง
+  const [causeSearch,      setCauseSearch]    = useState('');
+  const [causeOpen,        setCauseOpen]      = useState(false);
+  const [isProduction,     setIsProduction]   = useState(false);
+  const [selectedCauseType, setSelectedCauseType] = useState(null); // null | 'problem' | 'standby'
+  const causeRef = useRef(null);
 
   // ตั้งค่าเริ่มต้นเฉพาะตอนเปิด popup — ตัด suffix ออกจาก input ให้ผู้ใช้เห็นแค่ข้อความหลัก
   useEffect(() => {
@@ -797,9 +883,30 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
     setText(sepIdx >= 0 ? raw.substring(0, sepIdx).trim() : raw.trim());
     setShowSuffix(true);
     setErrors({});
+    setColorHex(null);
+    setCauseSearch('');
+    setCauseOpen(false);
+    setIsProduction(false);
+    setSelectedCauseType(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once per open
   }, [isOpen]);
 
+  // ปิด dropdown เมื่อคลิกข้างนอก
+  useEffect(() => {
+    const handle = (e) => {
+      if (causeRef.current && !causeRef.current.contains(e.target)) {
+        setCauseOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, []);
+
+  const filteredCauses = CAUSE_OPTIONS.filter(c =>
+    !causeSearch || c.toLowerCase().includes(causeSearch.toLowerCase())
+  );
+
+  const previewColorHex = colorHex ?? currentConfig?.colorHex ?? '#00ffff';
   const suffixPreview = showSuffix && recorderName
     ? ` |- ${recorderName} ${formatDateThaiShort()} - ${formatTimeThaiDot()}`
     : '';
@@ -807,7 +914,7 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
 
   const handleConfirm = () => {
     if (!text.trim()) { setErrors({ text: 'กรุณาระบุข้อความ' }); return; }
-    onConfirm({ text: text.trim(), showSuffix });
+    onConfirm({ text: text.trim(), showSuffix, colorHex, isProduction, selectedCauseType });
   };
 
   if (!isOpen) return null;
@@ -842,20 +949,107 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
           {/* Preview — แสดงข้อความจริงที่จะส่งไปป้ายรวม suffix */}
           <LedPreview
             text={previewText}
-            colorHex={currentConfig?.colorHex ?? '#00ffff'}
+            colorHex={previewColorHex}
             speed={currentConfig?.scrollSpeed ?? 10}
           />
 
-          {/* Text input — ให้พิมพ์เฉพาะข้อความหลัก suffix ไม่ต้องพิมพ์ */}
+          {/* Dropdown เลือกข้อความด่วนจากรายการ */}
           <div>
-            <label className={labelCls}>ข้อความบนป้ายไฟ <span className="text-red-400">*</span></label>
+            <label className={labelCls}>
+              เลือกจากรายการด่วน
+              <span className="ml-2 text-[10px] text-gray-600 font-normal">
+                <span className="text-red-400">■</span> ปัญหา &nbsp;
+                <span className="text-cyan-400">■</span> ไม่ใช่ปัญหา
+              </span>
+            </label>
+            <div ref={causeRef} className="relative">
+              <input
+                type="text"
+                value={causeSearch}
+                onChange={e => { setCauseSearch(e.target.value); setCauseOpen(true); }}
+                onFocus={() => setCauseOpen(true)}
+                placeholder="ค้นหาหรือเลือกรายการ..."
+                className={inputCls}
+              />
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={() => setCauseOpen(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white px-1"
+              >▾</button>
+              {causeOpen && (
+                <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                  <div className="sticky top-0 bg-gray-800 border-b border-gray-700 px-2 py-1.5">
+                    <input
+                      type="text"
+                      value={causeSearch}
+                      onChange={e => setCauseSearch(e.target.value)}
+                      placeholder="ค้นหา..."
+                      className="w-full bg-gray-700/60 border-0 rounded px-2 py-1 text-xs text-white placeholder:text-gray-500 focus:outline-none"
+                      autoFocus
+                    />
+                  </div>
+                  {filteredCauses.map(c => {
+                    const isNonProblem = NON_PROBLEM_CAUSES.has(c);
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => {
+                          setText(c);
+                          setColorHex(causeColorHex(c));
+                          setSelectedCauseType(isNonProblem ? 'standby' : 'problem');
+                          setCauseOpen(false);
+                          setCauseSearch('');
+                          setErrors({});
+                        }}
+                        className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700/80 transition-colors flex items-center gap-2"
+                      >
+                        <span
+                          className="flex-shrink-0 w-1.5 h-1.5 rounded-full"
+                          style={{ background: isNonProblem ? '#00ffff' : '#ff4444' }}
+                        />
+                        <span style={{ color: isNonProblem ? '#00e5ff' : '#ff6b6b' }}>{c}</span>
+                      </button>
+                    );
+                  })}
+                  {filteredCauses.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-gray-500">ไม่พบรายการ</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Text input — ให้พิมพ์เฉพาะข้อความหลัก / แก้ไขจากที่เลือก dropdown */}
+          <div>
+            <label className={labelCls}>
+              ข้อความบนป้ายไฟ <span className="text-red-400">*</span>
+              {colorHex && (
+                <span
+                  className="ml-2 text-[10px] font-normal px-1.5 py-0.5 rounded"
+                  style={{
+                    color: colorHex,
+                    background: colorHex + '22',
+                    border: `1px solid ${colorHex}44`,
+                  }}
+                >
+                  {NON_PROBLEM_CAUSES.has(text) ? 'ไม่ใช่ปัญหา' : 'ปัญหา'}
+                </span>
+              )}
+            </label>
             <input
               type="text"
               value={text}
-              onChange={e => { setText(e.target.value); setErrors({}); }}
+              onChange={e => {
+                setText(e.target.value);
+                setColorHex(null);
+                setSelectedCauseType(null);
+                setErrors({});
+              }}
               placeholder="พิมพ์ข้อความที่ต้องการแสดง..."
               className={`${inputCls} ${errors.text ? 'border-red-500/60' : ''}`}
-              autoFocus
+              autoFocus={!causeOpen}
             />
             {errors.text && <p className="text-[10px] text-red-400 mt-0.5">{errors.text}</p>}
           </div>
@@ -891,6 +1085,39 @@ const QuickLedPopup = ({ isOpen, onClose, onConfirm, machine, currentConfig, sub
                 ) : (
                   <p className="text-[10px] text-gray-600 mt-0.5">ส่งเฉพาะข้อความ ไม่มีชื่อ/วันที่</p>
                 )}
+              </div>
+            </label>
+          )}
+
+          {/* Checkbox เดินงานผลิต — ซ่อนเมื่อ machine กำลัง Live จริง (Live มีผลอยู่แล้ว) */}
+          {!isActuallyLive && (
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <div className="relative flex-shrink-0 mt-0.5">
+                <input
+                  type="checkbox"
+                  checked={isProduction}
+                  onChange={e => setIsProduction(e.target.checked)}
+                  className="sr-only"
+                />
+                <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                  isProduction
+                    ? 'bg-green-500 border-green-500'
+                    : 'bg-transparent border-gray-500 group-hover:border-gray-400'
+                }`}>
+                  {isProduction && (
+                    <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none">
+                      <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-medium leading-tight transition-colors ${isProduction ? 'text-green-400' : 'text-gray-300'}`}>
+                  เดินงานผลิต
+                </p>
+                <p className="text-[10px] text-gray-600 mt-0.5">
+                  {isProduction ? 'Dashboard จะแสดงสถานะ On (เขียว)' : 'ไม่ติ๊ก = Dashboard แสดงสถานะตามปกติ'}
+                </p>
               </div>
             </label>
           )}
@@ -1554,6 +1781,7 @@ const LedSignView = ({
   onPauseOrder,
   onResumeOrder,
   onRestoreProductionLed,
+  onLedManualModeUpdate,
   onBack,
 }) => {
   const { language } = useLanguage();
@@ -2293,6 +2521,12 @@ const LedSignView = ({
       }));
       setTimeout(() => setStatuses(prev => ({ ...prev, [sid]: 'idle' })), 4000);
 
+      // อัปเดต ledManualMode ใน parent (แสดงสถานะใน Dashboard)
+      if (onLedManualModeUpdate) {
+        const mode = computeLedManualMode(formData.isProduction, formData.causeType);
+        onLedManualModeUpdate(sid, mode, cleanLedTextForProduct(formData.ledText));
+      }
+
       // Log to Machine Log sheet (fire-and-forget, don't block popup close)
       appendMachineLog({
         machine:     formData.machine,
@@ -2317,13 +2551,14 @@ const LedSignView = ({
   }, [sid, selectedMachine, configs, config, allMachineStates, onPauseOrder]);
 
   // ── Quick LED handler (ไม่ log สถานะเครื่องจักร) ──────────────────────────
-  const handleQuickLed = useCallback(async ({ text, showSuffix = true }) => {
+  const handleQuickLed = useCallback(async ({ text, showSuffix = true, colorHex: overrideColorHex = null, isProduction = false, selectedCauseType = null }) => {
     if (!selectedMachine?.id || !sid) return;
     setQuickSubmitting(true);
     setQuickError('');
     try {
       const cfg = configs[sid] ?? DEFAULT_CONFIG;
-      const { r, g, b } = hexToRgb(cfg.colorHex ?? '#00ffff');
+      const finalColorHex = overrideColorHex ?? cfg.colorHex ?? '#00ffff';
+      const { r, g, b } = hexToRgb(finalColorHex);
       const speedMs = SPEED_MS[(cfg.scrollSpeed ?? 10) - 1] ?? 50;
 
       const now = new Date();
@@ -2345,8 +2580,8 @@ const LedSignView = ({
       notifyLedOverrideState(selectedMachine.id, overrideState);
       await queueLedForMachine(selectedMachine.id, overrideState);
 
-      // อัปเดต local config และ signature (ใช้ fullText ที่ต่อท้ายชื่อ/วันที่/เวลาแล้ว)
-      const newCfg = { ...cfg, text: fullText };
+      // อัปเดต local config และ signature (ใช้ fullText + สีใหม่ถ้ามี)
+      const newCfg = { ...cfg, text: fullText, colorHex: finalColorHex };
       setConfigs(prev => ({ ...prev, [sid]: newCfg }));
       lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildLedConfigSignature(newCfg) };
       setStatuses(prev => ({ ...prev, [sid]: 'ok' }));
@@ -2362,13 +2597,20 @@ const LedSignView = ({
         },
       }));
       setTimeout(() => setStatuses(prev => ({ ...prev, [sid]: 'idle' })), 4000);
+
+      // อัปเดต ledManualMode ใน parent (แสดงสถานะใน Dashboard)
+      if (onLedManualModeUpdate) {
+        const mode = computeLedManualMode(isProduction, selectedCauseType);
+        onLedManualModeUpdate(selectedMachine.id, mode, cleanLedTextForProduct(text));
+      }
+
       setQuickOpen(false);
     } catch (err) {
       setQuickError(err?.message ?? 'เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง');
     } finally {
       setQuickSubmitting(false);
     }
-  }, [sid, selectedMachine, configs, defaultRecorderName]);
+  }, [sid, selectedMachine, configs, defaultRecorderName, onLedManualModeUpdate]);
 
   const handleRebootBoard = useCallback(async () => {
     if (!sid || rebootingBoard) return;
@@ -2698,6 +2940,7 @@ const LedSignView = ({
         submitting={popupSubmitting}
         confirmError={popupError}
         defaultRecorderName={defaultRecorderName}
+        isActuallyLive={isLiveMachine}
       />
 
       {/* ── Quick LED Popup (ไม่บันทึก Machine Log) ── */}
@@ -2710,6 +2953,7 @@ const LedSignView = ({
         submitting={quickSubmitting}
         confirmError={quickError}
         recorderName={defaultRecorderName}
+        isActuallyLive={isLiveMachine}
       />
     </div>
   );
