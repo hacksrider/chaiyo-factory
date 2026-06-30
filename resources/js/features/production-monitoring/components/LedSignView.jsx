@@ -2670,7 +2670,9 @@ const LedSignView = ({
   const handleClearLed = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;
     const cfg = configs[sid] ?? DEFAULT_CONFIG;
-    const payload = { ...buildClockPayload(cfg.colorHex, cfg), textOverride: false };
+    // นาฬิกา default สีเหลือง ไม่ใช้สีเดิมของเครื่อง
+    const CLOCK_COLOR = '#ffff00';
+    const payload = { ...buildClockPayload(CLOCK_COLOR, cfg), textOverride: false };
     setClearStatus('clearing');
     try {
       const cleared = { ...payload, textOverride: false, updatedAt: new Date().toISOString() };
@@ -2679,15 +2681,19 @@ const LedSignView = ({
       setLedStates((prev) => ({ ...prev, [sid]: cleared }));
       setConfigs((prev) => ({
         ...prev,
-        [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: '' },
+        [sid]: { ...(prev[sid] ?? DEFAULT_CONFIG), text: '', colorHex: CLOCK_COLOR },
       }));
-      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildClockSignature(cfg.colorHex) };
+      lastQueuedSigRef.current = { ...lastQueuedSigRef.current, [sid]: buildClockSignature(CLOCK_COLOR) };
+      // ล้าง ledManualMode ใน Dashboard เมื่อสลับเป็นโหมดนาฬิกา
+      if (onLedManualModeUpdate) {
+        onLedManualModeUpdate(selectedMachine.id, null, '');
+      }
       setClearStatus('ok');
     } catch {
       setClearStatus('error');
     }
     setTimeout(() => setClearStatus('idle'), 4000);
-  }, [sid, selectedMachine, configs]);
+  }, [sid, selectedMachine, configs, onLedManualModeUpdate]);
 
   const handleRestoreLiveProductText = useCallback(async () => {
     if (!selectedMachine?.id || !sid) return;
